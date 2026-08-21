@@ -1,0 +1,13 @@
+{
+  "game.fishing.name": "钓鱼",
+  "game.fishing.description": "每日抛竿钓鱼，收藏稀有鱼获，鱼市换鱼蛋",
+  "game.coinflip.name": "猜硬币",
+  "game.coinflip.description": "和猫娘玩猜硬币正反面",
+  "game.soupbubble.name": "海龟汤",
+  "game.soupbubble.description": "猫娘出题，你来猜真相",
+  "panel.title": "猫娘小游戏",
+  "panel.start": "开始",
+  "panel.stop": "停止",
+  "panel.config": "配置",
+  "panel.running": "运行中"
+}

@@ -1,0 +1,23 @@
+[project]
+name = "neko_arcade"
+version = "0.2.0"
+description = "N.E.K.O mini-games hub: catgirl plays fishing, turtle-soup, coin-flip and more."
+requires-python = ">=3.11"
+dependencies = []
+
+[tool.neko.build]
+exclude_dirs = [
+    ".vscode",
+    ".venv",
+    ".pytest_cache",
+    ".ruff_cache",
+    "tests",
+]
+exclude_files = [
+    ".gitignore",
+    "README.md",
+    "uv.lock",
+    "ruff.toml",
+    "LICENSE",
+    "data/store.db",
+]
