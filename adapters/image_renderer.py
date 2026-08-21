@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib.util
 import io
 import logging
 import os
@@ -58,11 +59,7 @@ class ImageRenderer:
 
     @staticmethod
     def _check_pil() -> bool:
-        try:
-            from PIL import Image, ImageDraw  # noqa: F401
-            return True
-        except ImportError:
-            return False
+        return importlib.util.find_spec("PIL") is not None
 
     # ══════════════════════════════════════════
     # 猫娘表情头像
