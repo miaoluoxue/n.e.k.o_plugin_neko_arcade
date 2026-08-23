@@ -6,7 +6,7 @@ from .items import ItemCatalog
 from .market import MarketManager
 from .moshi import MoShen
 from .neko import NekoCompanion
-from .npc import CombatEngine, NPC, NPCPool
+from .npc import NPC, CombatEngine, NPCPool
 from .occupation import Occupation
 from .pet import PetSystem
 from .player import PlayerSave

@@ -12,13 +12,28 @@ import time
 from typing import Any, Dict, List, Optional, Tuple
 
 from ...core.contracts import GameAdapter
-from .core import (Achievement, CombatEngine, CraftService, DailyTask,
-                   ItemCatalog, MarketManager, MoShen, NekoCompanion, NPC,
-                   NPCPool, Occupation, PetSystem, PlayerSave, Ranking,
-                   RealmSystem, XiaoShiJie, Zhutian)
+from .core import (
+    NPC,
+    Achievement,
+    CombatEngine,
+    CraftService,
+    DailyTask,
+    ItemCatalog,
+    MarketManager,
+    MoShen,
+    NekoCompanion,
+    NPCPool,
+    Occupation,
+    PetSystem,
+    PlayerSave,
+    Ranking,
+    RealmSystem,
+    XiaoShiJie,
+    Zhutian,
+)
 from .core.guild import HERB_GROW_SECONDS, GuildManager, GuildSave
 from .core.pet import QUALITY_ORDER
-from .core.player import PlayerStore, NEKO_ID
+from .core.player import NEKO_ID, PlayerStore
 from .core.prompts import SCENE_TEMPLATES, build_neko_prompt
 
 
@@ -238,7 +253,6 @@ class XiuxianGame(GameAdapter):
         save.created_at = time.time()
         save.refresh_stats()
         await self.store.save(save)
-        neko = self.neko.compute_save(save)
         msg = (f"【踏入仙途】{save.name} 踏入修仙之路喵!\n"
                f"境界：{save.realm_name()} | 炼体：{save.body_name()}\n"
                f"气血 {save.hp}/{save.max_hp} 攻击 {save.attack} 防御 {save.defense}\n"
@@ -288,7 +302,7 @@ class XiuxianGame(GameAdapter):
         msg = (f"【{save.name}】({save.gender})\n"
                f"境界：{save.realm_name()} | 炼体：{save.body_name()}\n"
                f"修为：{save.exp}\n"
-               f"气血：{save.hp}/{save.max_hp} | 灵力：{save.mana}/{save.max_mana}\n"
+               f"气血：{save.hp}/{save.max_hp}(实战{eff_hp}) | 灵力：{save.mana}/{save.max_mana}\n"
                f"攻击：{save.attack}(实战{eff_atk}) | 防御：{save.defense}(实战{eff_def})\n"
                f"装备：{eq_txt}{eq_bonus}\n"
                f"灵石：{save.lingshi_total()}\n"
@@ -1085,7 +1099,7 @@ class XiuxianGame(GameAdapter):
         if r["ok"]:
             await self.store.save(save)
             return {"message": r["msg"], "outcome": "gather",
-                    "facts": [{"kind": "gather", "item": r["item"], "kind": label}],
+                    "facts": [{"kind": "gather", "item": r["item"], "label": label}],
                     "summary": r["msg"]}
         return {"message": r["msg"], "outcome": "cd"}
 

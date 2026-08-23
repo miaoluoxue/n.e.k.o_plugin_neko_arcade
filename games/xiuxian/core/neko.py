@@ -13,7 +13,7 @@ from __future__ import annotations
 from typing import Any, Dict, Optional
 
 from .player import NEKO_ID, PlayerSave
-from .realm import REALMS, RealmSystem
+from .realm import REALMS
 
 
 class NekoCompanion:
