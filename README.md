@@ -1,7 +1,7 @@
 <p align="center">
   <h1 align="center">🎮 猫娘小游戏</h1>
-  <p align="center"><b>neko_arcade</b> · N.E.K.O 插件 · v0.2.0</p>
-  <p align="center">让猫娘陪你玩各种小游戏——钓鱼、海龟汤、猜硬币……一个插件，无限可能。</p>
+  <p align="center"><b>neko_arcade</b> · N.E.K.O 插件 · v0.3.0</p>
+  <p align="center">让猫娘陪你玩各种小游戏——钓鱼、海龟汤、猜硬币、修仙……一个插件，无限可能。</p>
 </p>
 
 ---
@@ -26,6 +26,7 @@
 | 🎣 钓鱼 | 每日抛竿钓鱼，收藏稀有鱼获，鱼市换鱼蛋，鱼竿鱼饵养成 |
 | 🍲 海龟汤 | 猫娘当裁判出题，主人猜真相，猜对出卡片 |
 | 🪙 猜硬币 | 和猫娘玩猜硬币正反面，每日次数限制 |
+| 🧘 修仙 | 诸天修仙：境界/炼体、突破渡劫、采集炼丹炼器、拍卖行、仙宠、宗门、道侣师徒，猫娘全程陪玩 |
 
 ---
 
@@ -48,7 +49,8 @@ neko_arcade/
 ├── games/                 # 小游戏包（每个 = 一个小游戏）
 │   ├── fishing/           # 钓鱼
 │   ├── soupbubble/        # 海龟汤
-│   └── coinflip/          # 猜硬币
+│   ├── coinflip/          # 猜硬币
+│   └── xiuxian/           # 诸天修仙（猫娘全程陪玩）
 ├── static/index.html      # 前端面板
 ├── i18n/                  # 语言包（zh-CN / en）
 └── docs/                  # 使用 + 接入指南
@@ -121,8 +123,8 @@ Python 运行时依赖惰性导入（httpx / Pillow / Playwright 缺失时优雅
 Push a tag matching `plugin.toml` version to create a GitHub Release asset:
 
 ```bash
-git tag v0.2.0
-git push origin v0.2.0
+git tag v0.3.0
+git push origin v0.3.0
 ```
 
 `.github/workflows/release.yml` 会构建并上传 `neko_arcade.neko-plugin`，
@@ -134,6 +136,7 @@ git push origin v0.2.0
 
 | 版本 | 日期 | 变更 |
 |:----:|:----:|:-----|
+| **v0.3.0** | 2026-08 | 新增诸天修仙小游戏（境界/炼体、突破渡劫、采集炼丹炼器、拍卖行、仙宠、宗门、道侣师徒，猫娘全程陪玩）、runtime/LLM 优化、ruff 检查修复 |
 | **v0.2.0** | 2026-08 | 玻璃拟态面板（开始/停止/状态标签）、schema 驱动中文配置抽屉、海龟汤、猜硬币、渲染桥、品牌页脚、i18n |
 | **v0.1.0** | 2026-07 | 初版：聚合框架（自动发现/注册/分发/存档）+ 钓鱼示例游戏 |
 
