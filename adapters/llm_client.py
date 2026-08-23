@@ -89,16 +89,20 @@ class LLMProvider:
             self._client = LLMClient(provider, model, api_key, base_url)
 
     async def call(self, prompt: str) -> Optional[str]:
-        """限流内调用 LLM，失败返回 None。"""
+        """限流内调用 LLM，失败返回 None。
+
+        优先级：配置自建客户端(新 LLM) → 宿主注入(__call_llm)。
+        符合「配置了所有游戏都走新 LLM, 没配用主的」。
+        """
         if not self._throttle.acquire():
             log.warning("LLM 限流，拒绝调用")
             return None
         try:
+            if self._client:
+                return await self._client.call(prompt)
             if self._host_call:
                 result = self._host_call(prompt)
                 return await result if asyncio.iscoroutine(result) else str(result)
-            if self._client:
-                return await self._client.call(prompt)
         except Exception as exc:
             log.warning("LLM 调用失败: %s", exc)
         return None

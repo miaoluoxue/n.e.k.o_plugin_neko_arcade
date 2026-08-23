@@ -197,26 +197,54 @@ body::before {
   <div class="sidebar-status"><span class="dot" id="sDot"></span><span id="sText">加载中</span></div>
   <nav class="nav-menu">
     <div class="nav-section">游戏管理</div>
-    <a class="nav-item active" onclick="switchNav('games')"><span class="icon">🎮</span> 全部游戏 <span class="badge" id="navBadge">0</span></a>
+    <a class="nav-item active" onclick="switchNav('games',this)"><span class="icon">🎮</span> 全部游戏 <span class="badge" id="navBadge">0</span></a>
+    <a class="nav-item" onclick="switchNav('llmcfg',this)"><span class="icon">⚙️</span> LLM 配置</a>
   </nav>
 </div>
 
 <div class="main">
   <div class="topbar">
-    <h1>📦 全部游戏</h1>
+    <h1 id="mainTitle">📦 全部游戏</h1>
     <div style="display:flex;align-items:center;gap:10px;">
       <button class="theme-btn" onclick="toggleTheme()" id="themeBtn" title="切换主题">🌙</button>
       <span class="pill"><span class="dot" id="statusDot"></span><span id="statusText">加载中</span></span>
     </div>
   </div>
-  <div class="section-title">游戏列表 <span class="line"></span><span id="gameCountBadge" style="font-size:0.72rem;color:var(--text2);font-weight:400;"></span></div>
-  <div class="game-grid" id="gameGrid"></div>
-  <div class="input-area">
-    <div class="cmd-row">
-      <input type="text" id="cmdInput" placeholder="打字玩：钓鱼 / 帮助…" autocomplete="off" onkeydown="if(event.key==='Enter')sendCommand()">
-      <button class="btn btn-accent" onclick="sendCommand()">发送</button>
+  <div id="gamesView">
+    <div class="section-title">游戏列表 <span class="line"></span><span id="gameCountBadge" style="font-size:0.72rem;color:var(--text2);font-weight:400;"></span></div>
+    <div class="game-grid" id="gameGrid"></div>
+    <div class="input-area">
+      <div class="cmd-row">
+        <input type="text" id="cmdInput" placeholder="打字玩：钓鱼 / 帮助…" autocomplete="off" onkeydown="if(event.key==='Enter')sendCommand()">
+        <button class="btn btn-accent" onclick="sendCommand()">发送</button>
+      </div>
+      <div class="cmd-hints" id="cmdHints"></div>
     </div>
-    <div class="cmd-hints" id="cmdHints"></div>
+  </div>
+  <div id="llmSection" style="display:none;">
+    <div class="section-title">⚙️ LLM 配置 <span class="line"></span></div>
+    <div style="background:var(--glass);border:1px solid var(--border);border-radius:var(--radius-md);padding:16px;max-width:600px;margin-bottom:16px;">
+      <div style="color:var(--text2);font-size:0.78rem;margin-bottom:12px;line-height:1.8;">
+        配置猫娘对话用的大模型(学习泰拉瑞亚猫娘方式)。<br>
+        · 留空自动降级：宿主 LLM → 本地模型(openai_compatible 指向本地服务) → 模板台词。<br>
+        · 保存后需重启插件生效。
+      </div>
+      <div class="config-field"><label>Provider</label>
+        <select id="llm-provider">
+          <option value="">(自动/宿主)</option>
+          <option value="openai">OpenAI</option>
+          <option value="anthropic">Anthropic</option>
+          <option value="gemini">Gemini</option>
+          <option value="openai_compatible">本地/兼容 (openai_compatible)</option>
+        </select></div>
+      <div class="config-field"><label>模型 Model</label><input id="llm-model" placeholder="如 deepseek-chat / gpt-4o / qwen2.5"></div>
+      <div class="config-field"><label>API Key</label><input id="llm-api_key" type="password" placeholder="sk-... (本地可留空)"></div>
+      <div class="config-field"><label>Base URL</label><input id="llm-base_url" placeholder="https://api.deepseek.com 或 http://127.0.0.1:11434"></div>
+      <div class="drawer-actions">
+        <button class="btn btn-accent" onclick="saveLlmConfig()">💾 保存</button>
+        <button class="btn btn-ghost" onclick="loadLlmConfig()">🔄 刷新</button>
+      </div>
+    </div>
   </div>
 </div>
 
@@ -321,7 +349,44 @@ function renderHints() {
   el.innerHTML = chips.join('')+'<span class="hint-chip" onclick="quickCmd(\'帮助\')">📖 帮助</span>';
 }
 
-function switchNav() {}
+function switchNav(name, el) {
+  document.querySelectorAll('.nav-item').forEach(function(n){ n.classList.remove('active'); });
+  if (el) el.classList.add('active');
+  var gv = document.getElementById('gamesView'), ls = document.getElementById('llmSection');
+  if (name === 'llmcfg') {
+    if (gv) gv.style.display = 'none';
+    ls.style.display = '';
+    document.getElementById('mainTitle').textContent = '⚙️ LLM 配置';
+    loadLlmConfig();
+  } else {
+    if (gv) gv.style.display = '';
+    ls.style.display = 'none';
+    document.getElementById('mainTitle').textContent = '📦 全部游戏';
+  }
+}
+
+function loadLlmConfig() {
+  callEntry('get_llm_config',{}).then(function(r){
+    var c = (r && r.config) ? r.config : (r || {});
+    var p = document.getElementById('llm-provider');
+    if (p) p.value = c.provider || '';
+    var el = document.getElementById('llm-model'); if (el) el.value = c.model || '';
+    var el2 = document.getElementById('llm-api_key'); if (el2) el2.value = c.api_key || '';
+    var el3 = document.getElementById('llm-base_url'); if (el3) el3.value = c.base_url || '';
+  });
+}
+function saveLlmConfig() {
+  var cfg = {
+    provider: document.getElementById('llm-provider').value,
+    model: document.getElementById('llm-model').value.trim(),
+    api_key: document.getElementById('llm-api_key').value.trim(),
+    base_url: document.getElementById('llm-base_url').value.trim()
+  };
+  callEntry('save_llm_config',{config:cfg}).then(function(r){
+    if (r && r.saved) showToast('💾 LLM 配置已保存喵');
+    else showToast('❌ 保存失败: ' + ((r&&r.error)||''));
+  });
+}
 
 function startGame(id) { callEntry('start_game',{game:id}).then(function(r){ if(r&&r.message) showToast(r.message); setTimeout(refreshState,500); }); }
 function stopGame() { callEntry('stop_game',{}).then(function(r){ if(r&&r.message) showToast(r.message); setTimeout(refreshState,500); }); }

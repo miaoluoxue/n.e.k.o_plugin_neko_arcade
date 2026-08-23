@@ -223,6 +223,52 @@ class NekoArcadePlugin(NekoPluginBase):
         self.rt.cfg_mgr.save(game, merged)
         return Ok({"game": game, "saved": True})
 
+    # ── LLM 配置(UI「全部游戏」下方, 学泰拉瑞亚猫娘方式) ──────
+    # 键名与 runtime._wire_llm 读取的 neko_arcade.llm_main_* 完全一致：
+    # 配置了 → 自建 LLM 客户端; 没配 → 宿主 __call_llm → 模板台词。
+
+    @plugin_entry(id="get_llm_config", name="获取LLM配置",
+                  description="读取插件级 LLM 配置(猫娘对话用)。",
+                  input_schema={"type": "object", "properties": {}},
+                  metadata={"agent_hidden": True})
+    async def entry_get_llm_config(self, **_) -> Any:
+        """点路径读取(不依赖 dump 形状, 自动兼容 neko_arcade 段)。"""
+        return Ok({"config": {
+            "provider": await self.config.get("neko_arcade.llm_main_provider", ""),
+            "model": await self.config.get("neko_arcade.llm_main_model", ""),
+            "api_key": await self.config.get("neko_arcade.llm_main_api_key", ""),
+            "base_url": await self.config.get("neko_arcade.llm_main_base_url", ""),
+            "max_calls_per_minute": await self.config.get(
+                "neko_arcade.llm_max_calls_per_minute", 15),
+        }})
+
+    @plugin_entry(id="save_llm_config", name="保存LLM配置",
+                  description="保存插件级 LLM 配置。留空则降级宿主/本地。",
+                  input_schema={"type": "object", "properties": {
+                      "config": {"type": "object", "description": "{provider,model,api_key,base_url}"},
+                  }, "required": ["config"]},
+                  metadata={"agent_hidden": True})
+    async def entry_save_llm_config(self, config: dict = None, **_) -> Any:
+        """点路径写入(config.set 自动创建嵌套 neko_arcade 段)。"""
+        cfg = config or {}
+        await self.config.set("neko_arcade.llm_main_provider",
+                              str(cfg.get("provider", "") or ""))
+        await self.config.set("neko_arcade.llm_main_model",
+                              str(cfg.get("model", "") or ""))
+        await self.config.set("neko_arcade.llm_main_api_key",
+                              str(cfg.get("api_key", "") or ""))
+        await self.config.set("neko_arcade.llm_main_base_url",
+                              str(cfg.get("base_url", "") or ""))
+        if cfg.get("max_calls_per_minute"):
+            try:
+                await self.config.set("neko_arcade.llm_max_calls_per_minute",
+                                      int(cfg["max_calls_per_minute"]))
+            except (TypeError, ValueError):
+                pass
+        self.logger.info("LLM 配置已保存: provider=%s model=%s",
+                         cfg.get("provider", ""), cfg.get("model", ""))
+        return Ok({"saved": True})
+
     @plugin_entry(id="get_arcade_state", name="获取街机状态", description="供面板轮询。",
                   input_schema={"type": "object", "properties": {}},
                   metadata={"agent_hidden": True})

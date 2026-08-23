@@ -39,7 +39,11 @@ class ArcadeRuntime:
 
     async def start(self) -> int:
         cfg = await self.plugin.config.dump()
-        self.cfg = cfg.get("neko_arcade", {}) if isinstance(cfg, dict) else {}
+        # 兼容两种形状: {"neko_arcade": {...}} 段 或 扁平配置
+        if isinstance(cfg, dict):
+            self.cfg = cfg.get("neko_arcade", cfg)
+        else:
+            self.cfg = {}
         self.llm = LLMProvider(self.cfg.get("llm_max_calls_per_minute", 15))
         self.brain = GameBrain(self.plugin, self.registry, self.cfg,
                                self.llm, self.push, self.img, self.cfg_mgr, self.tts)
@@ -108,12 +112,11 @@ class ArcadeRuntime:
         return None, input
 
     def _wire_llm(self) -> None:
+        """主插件 LLM 接口：配置了 llm_main_* → 所有游戏走新 LLM；没配 → 宿主。
+
+        (用户要求: 配置优先于宿主, 而不是宿主优先。)
+        """
         if not self.brain:
-            return
-        host_call = getattr(self.plugin, "__call_llm", None)
-        if host_call:
-            self.llm.set_host_call(host_call)
-            log.info("已注入宿主 LLM")
             return
         provider = self.cfg.get("llm_main_provider", "")
         model = self.cfg.get("llm_main_model", "")
@@ -121,6 +124,12 @@ class ArcadeRuntime:
             self.llm.set_client(provider, model,
                                 self.cfg.get("llm_main_api_key", ""),
                                 self.cfg.get("llm_main_base_url", ""))
+            log.info("已配置 LLM: %s/%s (所有游戏走此接口)", provider, model)
+            return
+        host_call = getattr(self.plugin, "__call_llm", None)
+        if host_call:
+            self.llm.set_host_call(host_call)
+            log.info("未配置 LLM, 回退宿主 __call_llm")
 
     async def shutdown(self) -> None:
         if self._tick_task:
