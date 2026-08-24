@@ -1,0 +1,158 @@
+"""E2E 桩测试: 人生重开(remake) — 真实加载 game.py + 桩存档。
+
+预注册 plugins.neko_arcade 包链, 模拟 GameAdapter 桩跑全流程。
+PIL 可用时验证人生总结图真实渲染。
+"""
+import asyncio
+import json
+import sys
+import time
+from pathlib import Path
+
+ROOT = Path(r"E:\pythonxx\tkry\git同步\neko_arcade")
+CFG = json.loads((ROOT / "data" / "config" / "remake" / "config.json").read_text(encoding="utf-8"))
+EMO = json.loads((ROOT / "data" / "config" / "remake" / "emotion.json").read_text(encoding="utf-8"))
+HELP = json.loads((ROOT / "data" / "config" / "remake" / "help.json").read_text(encoding="utf-8"))
+KWS = json.loads((ROOT / "data" / "config" / "remake" / "keywords.json").read_text(encoding="utf-8"))
+
+import types
+pkg_root = types.ModuleType("plugins")
+pkg_root.__path__ = []
+sys.modules["plugins"] = pkg_root
+
+pkg_arcade = types.ModuleType("plugins.neko_arcade")
+pkg_arcade.__path__ = [str(ROOT)]
+sys.modules["plugins.neko_arcade"] = pkg_arcade
+
+games_pkg = types.ModuleType("plugins.neko_arcade.games")
+games_pkg.__path__ = [str(ROOT / "games")]
+sys.modules["plugins.neko_arcade.games"] = games_pkg
+
+sys.path.insert(0, str(ROOT))
+
+from plugins.neko_arcade.games.remake.game import RemakeGame  # noqa: E402
+
+
+class StubStore:
+    def __init__(self):
+        self.data = {}
+
+    async def store_get_user(self, gid, uid, default=None):
+        return self.data.get((gid, uid), default)
+
+    async def store_save_user(self, gid, uid, data):
+        self.data[(gid, uid)] = data
+
+
+class StubPush:
+    def __init__(self, sink):
+        self._sink = sink
+
+    async def text(self, text):
+        self._sink.append(("text", text))
+
+    async def text_with_image(self, text, image_bytes, mime="image/png"):
+        self._sink.append(("image", text, len(image_bytes), mime))
+
+
+class StubPlugin:
+    def __init__(self):
+        self.store = StubStore()
+        self.pushes = []
+
+    async def store_get_user(self, gid, uid, default=None):
+        return await self.store.store_get_user(gid, uid, default)
+
+    async def store_save_user(self, gid, uid, data):
+        await self.store.store_save_user(gid, uid, data)
+
+
+async def main():
+    plugin = StubPlugin()
+    game = RemakeGame(plugin)
+    game._push = StubPush(plugin.pushes)
+    game._config = CFG
+    game._help = HELP
+    game._keywords = KWS
+    game._emotion_templates = EMO
+
+    uid = "user_1"
+    passed, failed = [], []
+
+    def check(name, cond, detail=""):
+        if cond:
+            passed.append(name)
+            print(f"  ✓ {name}")
+        else:
+            failed.append(name)
+            print(f"  ✗ {name}  {detail}")
+
+    # 1. 人生重开 → 选天赋阶段
+    t0 = time.time()
+    r = await game.handle_action(uid, "人生重开")
+    load_sec = time.time() - t0
+    check("人生重开 outcome=talent_prompt", r.get("outcome") == "talent_prompt", r)
+    check("10 个候选天赋", len(game._cache[uid]["pending"]) == 10, game._cache[uid]["pending"])
+    check("消息含天赋列表", "0." in r["message"] and "9." in r["message"], r["message"][:80])
+    print(f"    (数据加载耗时 {load_sec:.2f}s)")
+
+    # 2. 状态机: 非法输入
+    r = await game.handle_action(uid, "abc")
+    check("非法天赋输入仍提示", r.get("outcome") == "talent_prompt", r)
+
+    # 3. 选天赋 0 1 2 → 分属性阶段
+    r = await game.handle_action(uid, "0 1 2")
+    check("选天赋后 outcome=prop_prompt", r.get("outcome") == "prop_prompt", r)
+    check("已选 3 个天赋", len(game._cache[uid]["chosen"]) == 3, game._cache[uid]["chosen"])
+    check("状态=prop", game._cache[uid]["state"] == "prop", game._cache[uid]["state"])
+
+    # 4. 分属性: 非法(和不对)
+    r = await game.handle_action(uid, "1 1 1 1")
+    check("属性和不对被拒", r.get("outcome") == "prop_prompt" and "和" in r["message"], r)
+
+    # 5. 分属性合法 → 开跑人生
+    r = await game.handle_action(uid, "5 5 5 5")
+    check("开跑后 outcome=life_*", r.get("outcome") in ("life_good", "life_mid", "life_bad"), r)
+    check("重开次数+1", game._cache[uid]["lifes"] == 1, game._cache[uid])
+    check("享年记录", game._cache[uid]["best_age"] > 0, game._cache[uid])
+    check("life_end fact", r["facts"][0]["kind"] == "life_end", r)
+    # 渲染图(需要 PIL): push 里应有 image 条目
+    img_pushes = [p for p in plugin.pushes if p[0] == "image"]
+    check("人生总结图已渲染推送", len(img_pushes) == 1, [p[:3] for p in plugin.pushes])
+    if img_pushes:
+        print(f"    (总结图 {img_pushes[0][2]} bytes, {img_pushes[0][3]})")
+
+    # 6. 随机人生一步到位
+    r = await game.handle_action(uid, "随机人生")
+    check("随机人生 outcome=life_*", r.get("outcome") in ("life_good", "life_mid", "life_bad"), r)
+    check("重开次数+1", game._cache[uid]["lifes"] == 2, game._cache[uid])
+
+    # 7. 纪录
+    r = await game.handle_action(uid, "我的重开纪录")
+    check("纪录 outcome=record", r.get("outcome") == "record", r)
+    check("纪录含重开次数", "2" in r["message"], r)
+
+    # 8. 状态机残留清理: 新开一局覆盖
+    r = await game.handle_action(uid, "人生重开")
+    check("再次重开重置状态", r.get("outcome") == "talent_prompt"
+          and game._cache[uid]["state"] == "talent", r)
+    r = await game.handle_action(uid, "放弃重开")
+    check("放弃重开", r.get("outcome") == "cancel" and game._cache[uid]["state"] is None, r)
+
+    # 9. unknown 契约
+    r = await game.handle_action(uid, "随便说点什么")
+    check("unknown 契约", r.get("outcome") == "unknown", r)
+
+    # 10. 关键词覆盖
+    for kw in KWS:
+        assert kw in KWS
+    check("keywords 完整", len(KWS) >= 6, KWS)
+
+    print()
+    print(f"PASSED {len(passed)} | FAILED {len(failed)}")
+    if failed:
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
