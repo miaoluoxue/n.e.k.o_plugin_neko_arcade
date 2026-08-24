@@ -1,15 +1,15 @@
 """E2E 桩测试: 俄罗斯轮盘(猫粮版) — 真实加载 game.py + 桩存档。
 
-预注册 plugins.neko_arcade 包链, 模拟 GameAdapter 桩跑全流程。
+以 pytest 运行(本地自动经 tests/conftest.py 建链, CI 里插件已 mount)。
 """
 import asyncio
 import json
-import sys
 import time
+from pathlib import Path
 
-from _bootstrap import ROOT  # 路径引导(本地建链/CI 直连), 必须先于业务导入
-from plugins.neko_arcade.games.russian.game import RussianGame
+from plugin.plugins.neko_arcade.games.russian.game import RussianGame
 
+ROOT = Path(__file__).resolve().parent.parent
 CFG = json.loads((ROOT / "data" / "config" / "russian" / "config.json").read_text(encoding="utf-8"))
 EMO = json.loads((ROOT / "data" / "config" / "russian" / "emotion.json").read_text(encoding="utf-8"))
 HELP = json.loads((ROOT / "data" / "config" / "russian" / "help.json").read_text(encoding="utf-8"))
@@ -179,8 +179,12 @@ async def main():
 
     print()
     print(f"PASSED {len(passed)} | FAILED {len(failed)}")
-    if failed:
-        sys.exit(1)
+    assert not failed, f"{len(failed)} 项失败: {failed}"
+
+
+def test_russian_e2e() -> None:
+    """pytest 入口: 俄罗斯轮盘全流程 E2E。"""
+    asyncio.run(main())
 
 
 if __name__ == "__main__":

@@ -1,16 +1,16 @@
 """E2E 桩测试: 人生重开(remake) — 真实加载 game.py + 桩存档。
 
-预注册 plugins.neko_arcade 包链, 模拟 GameAdapter 桩跑全流程。
+以 pytest 运行(本地自动经 tests/conftest.py 建链, CI 里插件已 mount)。
 PIL 可用时验证人生总结图真实渲染。
 """
 import asyncio
 import json
-import sys
 import time
+from pathlib import Path
 
-from _bootstrap import ROOT  # 路径引导(本地建链/CI 直连), 必须先于业务导入
-from plugins.neko_arcade.games.remake.game import RemakeGame
+from plugin.plugins.neko_arcade.games.remake.game import RemakeGame
 
+ROOT = Path(__file__).resolve().parent.parent
 CFG = json.loads((ROOT / "data" / "config" / "remake" / "config.json").read_text(encoding="utf-8"))
 EMO = json.loads((ROOT / "data" / "config" / "remake" / "emotion.json").read_text(encoding="utf-8"))
 HELP = json.loads((ROOT / "data" / "config" / "remake" / "help.json").read_text(encoding="utf-8"))
@@ -134,9 +134,19 @@ async def main():
 
     print()
     print(f"PASSED {len(passed)} | FAILED {len(failed)}")
-    if failed:
-        sys.exit(1)
+    assert not failed, f"{len(failed)} 项失败: {failed}"
+
+
+async def _run_e2e() -> None:
+    """内部入口(直接跑脚本或 pytest 共用)。"""
+    await main()
+
+
+def test_remake_e2e() -> None:
+    """pytest 入口: 人生重开全流程 E2E。"""
+    asyncio.run(_run_e2e())
 
 
 if __name__ == "__main__":
+    asyncio.run(main())
     asyncio.run(main())
