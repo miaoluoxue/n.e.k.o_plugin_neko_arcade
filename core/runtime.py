@@ -54,10 +54,12 @@ class ArcadeRuntime:
         self.llm = LLMProvider(self.cfg.get("llm_max_calls_per_minute", 15))
         # token 统计落盘: 写插件自身 store(键 game_user_data:llm_stats), 供 UI 查询
         try:
+            store = self.plugin.store
+
             def _persist_stats(s: Dict[str, Any]) -> None:
                 try:
                     asyncio.get_event_loop().create_task(
-                        plugin.store.set("game_user_data:llm_stats", s)
+                        store.set("game_user_data:llm_stats", s)
                     )
                 except Exception:
                     pass

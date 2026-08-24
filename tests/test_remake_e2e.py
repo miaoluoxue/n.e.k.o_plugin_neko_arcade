@@ -7,30 +7,14 @@ import asyncio
 import json
 import sys
 import time
-from pathlib import Path
 
-ROOT = Path(r"E:\pythonxx\tkry\git同步\neko_arcade")
+from _bootstrap import ROOT  # 路径引导(本地建链/CI 直连), 必须先于业务导入
+from plugins.neko_arcade.games.remake.game import RemakeGame
+
 CFG = json.loads((ROOT / "data" / "config" / "remake" / "config.json").read_text(encoding="utf-8"))
 EMO = json.loads((ROOT / "data" / "config" / "remake" / "emotion.json").read_text(encoding="utf-8"))
 HELP = json.loads((ROOT / "data" / "config" / "remake" / "help.json").read_text(encoding="utf-8"))
 KWS = json.loads((ROOT / "data" / "config" / "remake" / "keywords.json").read_text(encoding="utf-8"))
-
-import types
-pkg_root = types.ModuleType("plugins")
-pkg_root.__path__ = []
-sys.modules["plugins"] = pkg_root
-
-pkg_arcade = types.ModuleType("plugins.neko_arcade")
-pkg_arcade.__path__ = [str(ROOT)]
-sys.modules["plugins.neko_arcade"] = pkg_arcade
-
-games_pkg = types.ModuleType("plugins.neko_arcade.games")
-games_pkg.__path__ = [str(ROOT / "games")]
-sys.modules["plugins.neko_arcade.games"] = games_pkg
-
-sys.path.insert(0, str(ROOT))
-
-from plugins.neko_arcade.games.remake.game import RemakeGame  # noqa: E402
 
 
 class StubStore:

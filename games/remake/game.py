@@ -8,11 +8,9 @@
 from __future__ import annotations
 
 import asyncio
-import io
 import itertools
 import random
 import re
-import time
 from typing import Any, Dict, List, Optional, Tuple
 
 from ...core.contracts import GameAdapter, build_fact
@@ -294,8 +292,8 @@ class RemakeGame(GameAdapter):
         save["chosen"] = []
         save["state"] = "talent"
         await self._save(user_id, save)
-        lines = [f"新的人生开始喵!从这 10 个天赋里选 3 个——"
-                 f"发编号(如「0 1 2」),或发「随机」让猫娘帮你挑:"]
+        lines = ["新的人生开始喵!从这 10 个天赋里选 3 个——"
+                 "发编号(如「0 1 2」),或发「随机」让猫娘帮你挑:"]
         lines += [f"{i}. {t}" for i, t in enumerate(talents)]
         return {"outcome": "talent_prompt",
                 "facts": [build_fact("talent_select", count=len(talents))],

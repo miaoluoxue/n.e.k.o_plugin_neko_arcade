@@ -4,36 +4,16 @@
 """
 import asyncio
 import json
-import os
 import sys
 import time
-from pathlib import Path
 
-ROOT = Path(r"E:\pythonxx\tkry\git同步\neko_arcade")
+from _bootstrap import ROOT  # 路径引导(本地建链/CI 直连), 必须先于业务导入
+from plugins.neko_arcade.games.russian.game import RussianGame
+
 CFG = json.loads((ROOT / "data" / "config" / "russian" / "config.json").read_text(encoding="utf-8"))
 EMO = json.loads((ROOT / "data" / "config" / "russian" / "emotion.json").read_text(encoding="utf-8"))
 HELP = json.loads((ROOT / "data" / "config" / "russian" / "help.json").read_text(encoding="utf-8"))
 KWS = json.loads((ROOT / "data" / "config" / "russian" / "keywords.json").read_text(encoding="utf-8"))
-
-# ── 预注册包链: plugins.neko_arcade(.games.russian) ──
-import types
-pkg_root = types.ModuleType("plugins")
-pkg_root.__path__ = []
-sys.modules["plugins"] = pkg_root
-
-pkg_arcade = types.ModuleType("plugins.neko_arcade")
-pkg_arcade.__path__ = [str(ROOT)]
-sys.modules["plugins.neko_arcade"] = pkg_arcade
-
-# games 包: 需要真实 __init__ 的兄弟游戏也加载, 但 russian 只依赖 core.contracts
-games_pkg = types.ModuleType("plugins.neko_arcade.games")
-games_pkg.__path__ = [str(ROOT / "games")]
-sys.modules["plugins.neko_arcade.games"] = games_pkg
-
-# 让 sys.path 直接包含 ROOT, 使 plugins.neko_arcade.core 可被 importlib 找到
-sys.path.insert(0, str(ROOT))
-
-from plugins.neko_arcade.games.russian.game import RussianGame  # noqa: E402
 
 
 class StubStore:
@@ -166,7 +146,6 @@ async def main():
 
     # 10. 认输
     if game._cache[uid]["duel"]:
-        food_before = game._cache[uid]["food"]
         r = await game.handle_action(uid, "逃跑")
         check("逃跑 outcome=surrender", r.get("outcome") == "surrender", r)
         check("逃跑输掉赌注", game._cache[uid]["lose_food"] >= 500, game._cache[uid]["lose_food"])
