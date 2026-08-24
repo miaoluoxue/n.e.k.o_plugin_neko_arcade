@@ -7,7 +7,13 @@ from typing import Any, Dict, List, Optional, Tuple
 
 
 class GameAdapter(abc.ABC):
-    """小游戏适配基类。子类必须实现 id/name/description 和 handle_action。"""
+    """小游戏适配基类。子类必须实现 id/name/description 和 handle_action。
+
+    游戏适配约定:
+    - 基础属性: id/name/description/icon/version(类属性声明)
+    - 关键词/别名: 写在 data/config/{id}/keywords.json(主插件统一读取,
+      用于路由和 LLM 工具描述), 不在代码里声明。
+    """
 
     id: str = ""
     name: str = ""
@@ -37,10 +43,11 @@ class GameAdapter(abc.ABC):
         if self._push:
             await self._push.text(text)
 
-    async def push_text_image(self, text: str, image_bytes: bytes) -> None:
+    async def push_text_image(self, text: str, image_bytes: bytes,
+                              mime: str = "image/png") -> None:
         """推送文本+图片到聊天框。"""
         if self._push:
-            await self._push.text_with_image(text, image_bytes)
+            await self._push.text_with_image(text, image_bytes, mime)
 
     async def push_help(self, title: str, image_bytes: bytes,
                         text: str = "") -> None:
@@ -58,8 +65,8 @@ class GameAdapter(abc.ABC):
 
     async def render_help_img(self, game_name: str,
                               commands: List[Tuple[str, str]],
-                              footer: str = "") -> Optional[bytes]:
-        """渲染帮助文档图片。"""
+                              footer: str = "") -> Optional[List[bytes]]:
+        """渲染帮助文档图片(多页时返回每页 PNG bytes 列表)。"""
         if self._img:
             return await self._img.render_help(game_name, commands, footer)
         return None

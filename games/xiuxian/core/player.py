@@ -151,9 +151,10 @@ class PlayerStore:
             return self._cache[user_id]
         data = await self.game.get_user_data(user_id, None)
         save = PlayerSave.from_dict(data, user_id=user_id)
-        if save.created_at == 0 or not save.name:
-            # 无存档 → 仅占位(未踏入仙途)
-            pass
+        if data is None:
+            # 无存档 → created_at 置 0 标记「未踏入仙途」，
+            # 否则 dataclass 默认 time.time() 会让 _h_start 误判 already。
+            save.created_at = 0
         save.refresh_stats()
         self._cache[user_id] = save
         return save

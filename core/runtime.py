@@ -14,12 +14,19 @@ from .registry import GameRegistry
 log = logging.getLogger("neko_arcade.runtime")
 
 
-def build_games_summary(registry: GameRegistry) -> str:
-    """生成极短的游戏列表摘要，仅用于 LLM 工具 description（不列具体指令）。"""
+def build_games_summary(registry: GameRegistry, with_desc: bool = True) -> str:
+    """生成游戏列表摘要，用于 LLM 工具 description。
+
+    默认带一句话简介(帮助模型识别游戏意图, 历史验证此格式 LLM 会正常调工具);
+    不列具体指令, 避免撑爆上下文。
+    """
     parts = []
     for game in registry.games:
-        parts.append(f"{game.name}（{game.description}）")
-    return "；".join(parts) if parts else "暂无游戏"
+        if with_desc:
+            parts.append(f"{game.name}（{game.description}）")
+        else:
+            parts.append(game.name)
+    return "、".join(parts) if parts else "暂无游戏"
 
 
 class ArcadeRuntime:
@@ -45,6 +52,18 @@ class ArcadeRuntime:
         else:
             self.cfg = {}
         self.llm = LLMProvider(self.cfg.get("llm_max_calls_per_minute", 15))
+        # token 统计落盘: 写插件自身 store(键 game_user_data:llm_stats), 供 UI 查询
+        try:
+            def _persist_stats(s: Dict[str, Any]) -> None:
+                try:
+                    asyncio.get_event_loop().create_task(
+                        plugin.store.set("game_user_data:llm_stats", s)
+                    )
+                except Exception:
+                    pass
+            self.llm.set_persist(_persist_stats)
+        except Exception as exc:
+            log.warning("设置 token 统计落盘失败: %s", exc)
         self.brain = GameBrain(self.plugin, self.registry, self.cfg,
                                self.llm, self.push, self.img, self.cfg_mgr, self.tts)
         self._wire_llm()
@@ -70,8 +89,14 @@ class ArcadeRuntime:
         if not summary:
             return
         description = (
-            "用户想玩小游戏时调用。传入用户说的原话，插件自动判断玩什么游戏。"
-            f"可用游戏：{summary}"
+            "用户想玩小游戏时调用。传入用户说的原话，插件自动判断玩什么游戏并执行。"
+            f"可用游戏：{summary}。\n"
+            "多轮游戏(如人生重开需选天赋/分属性)返回选择提示后, 用户说「可以/好的/帮我/"
+            "随机/继续」等表示继续或让 AI 决定时, 应调用本工具并传「随机」让游戏自动选择,"
+            "或传用户明确给出的编号/数值。\n"
+            "用户没提到任何游戏玩法时不要调用。调用后直接基于工具结果回应, 不要重复调用。\n"
+            "若当前有进行中的游戏(上下文里可能出现 [游戏状态] 提示), 用户说的原话都应传"
+            "给本工具, 不要自己扮演游戏流程。"
         )
         unregister = getattr(plugin, "unregister_llm_tool", None)
         if unregister:
@@ -99,31 +124,73 @@ class ArcadeRuntime:
             log.error("动态注册 play_game 工具失败: %s", exc)
 
     def parse_input(self, input: str) -> tuple[Optional[str], str]:
-        """解析用户输入，返回 (game_id, cmd)。遍历已注册游戏匹配关键词。"""
+        """解析用户输入，返回 (game_id, cmd)。
+
+        规则(按优先级)：
+        1. 当前会话游戏优先：若正在玩某游戏，且输入命中该游戏关键词 → 路由回去。
+           (修复「商店」等词被钓鱼截胡——用户玩修仙时发「商店」应进修仙市场)
+        2. 显式切游戏：输入命中**其他**游戏关键词 → 切过去(如玩修仙时发「钓鱼」应切钓鱼)。
+        3. current_game 兜底：输入不含任何游戏关键词时回当前游戏(多轮续接, 如
+           「随机」「0 1 2」等由游戏自身语义判断)。
+
+        确认/催促词(可以/帮我)不在此硬编码——由 LLM 判断并决定调用 play_game 传什么
+        (工具描述已指导: 多轮选择时用户说「可以/随机」→ 传「随机」)。
+        """
         input = input.strip()
         if not input:
             return None, ""
+        cur = self.brain.current_game if (self.brain and self.brain.current_game) else None
+
+        # 1. 当前游戏优先
+        if cur:
+            cur_game = self.registry.get(cur)
+            if cur_game:
+                for kw in cur_game.get_keywords():
+                    if kw and kw in input:
+                        return cur, input
+
+        # 2. 全局关键词(先到先得, 允许切游戏)
         for game in self.registry.games:
+            if cur and game.id == cur:
+                continue  # 当前游戏已在上面查过
             for kw in game.get_keywords():
                 if kw and kw in input:
                     return game.id, input
-        if self.brain and self.brain.current_game:
-            return self.brain.current_game, input
+
+        # 3. current_game 兜底(多轮续接: 数字/随机等无关键词输入)
+        if cur:
+            return cur, input
         return None, input
 
     def _wire_llm(self) -> None:
-        """主插件 LLM 接口：配置了 llm_main_* → 所有游戏走新 LLM；没配 → 宿主。
+        """主插件 LLM 接口：配置了 → 所有游戏走新 LLM；没配 → 宿主。
 
         (用户要求: 配置优先于宿主, 而不是宿主优先。)
+        配置来源: data/config/main/config.json 的 llm 段
+        (兼容旧键: neko_arcade.llm_main_* 插件配置)。
         """
         if not self.brain:
             return
-        provider = self.cfg.get("llm_main_provider", "")
-        model = self.cfg.get("llm_main_model", "")
+        provider = model = api_key = base_url = ""
+        try:
+            main_cfg = self.cfg_mgr.load_main_config()
+            if isinstance(main_cfg, dict):
+                llm = main_cfg.get("llm") or {}
+                if isinstance(llm, dict):
+                    provider = str(llm.get("provider", "") or "")
+                    model = str(llm.get("model", "") or "")
+                    api_key = str(llm.get("api_key", "") or "")
+                    base_url = str(llm.get("base_url", "") or "")
+        except Exception:
+            pass
+        if not provider or not model:
+            # 兼容旧配置(plugin 配置 neko_arcade.llm_main_*)
+            provider = self.cfg.get("llm_main_provider", "")
+            model = self.cfg.get("llm_main_model", "")
+            api_key = self.cfg.get("llm_main_api_key", "")
+            base_url = self.cfg.get("llm_main_base_url", "")
         if provider and model:
-            self.llm.set_client(provider, model,
-                                self.cfg.get("llm_main_api_key", ""),
-                                self.cfg.get("llm_main_base_url", ""))
+            self.llm.set_client(provider, model, api_key, base_url)
             log.info("已配置 LLM: %s/%s (所有游戏走此接口)", provider, model)
             return
         host_call = getattr(self.plugin, "__call_llm", None)

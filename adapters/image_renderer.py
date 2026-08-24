@@ -169,29 +169,42 @@ class ImageRenderer:
     async def render_card(self, game_name: str, title: str,
                           lines: List[Tuple[str, str]],
                           subtitle: str = "", mood: str = "calm") -> Optional[bytes]:
-        """渲染一张带猫娘表情的结果卡片。"""
+        """渲染一张精美结果卡片(渐变背景, 无猫娘头像)。"""
         if not self._pil_ok:
             return None
         try:
             from PIL import Image, ImageDraw
-            avatar = self._get_avatar(mood, 96)
             font = _load_cjk_font(14)
-            font_title = _load_cjk_font(18)
-            w, h = 460, 74 + len(lines) * 34 + (44 if subtitle else 16)
-            img = Image.new("RGB", (w, h), CARD_BG)
+            font_title = _load_cjk_font(19)
+            font_sub = _load_cjk_font(12)
+            w, h = 460, 64 + len(lines) * 34 + (40 if subtitle else 12)
+            header_top, header_bot = (96, 74, 60), (158, 118, 84)
+            body_top, body_bot = (252, 249, 243), (244, 237, 225)
+
+            img = Image.new("RGB", (w, h), body_top)
+            grad = self._v_gradient(w, h, body_top, body_bot)
+            img.paste(grad, (0, 0))
             draw = ImageDraw.Draw(img)
-            draw.rectangle([2, 2, w - 3, h - 3], outline=CARD_BORDER, width=2)
-            # 猫娘头像
-            if avatar:
-                img.paste(avatar, (14, 12), avatar)
-            draw.text((118, 14), f"{game_name}", fill=INK2, font=font)
-            draw.text((118, 36), title, fill=INK, font=font_title)
-            y = 74
+            # 顶部渐变标题条
+            header = self._v_gradient(w, 52, header_top, header_bot)
+            img.paste(header, (0, 0))
+            draw = ImageDraw.Draw(img)
+            try:
+                tw = draw.textlength(title, font=font_title)
+            except Exception:
+                tw = len(title) * 19
+            draw.text(((w - tw) // 2, 10), title, fill=(255, 250, 240), font=font_title)
+            draw.line([(0, 51), (w, 51)], fill=(120, 88, 62), width=1)
+            # 内容区
+            y = 64
             for text, rarity in lines:
-                draw.text((18, y), text, fill=RARITY_COLORS.get(rarity, INK), font=font)
+                color = RARITY_COLORS.get(rarity, INK)
+                # 稀有度色点 + 文字
+                draw.ellipse([16, y + 6, 24, y + 14], fill=color)
+                draw.text((32, y), text, fill=INK, font=font)
                 y += 34
             if subtitle:
-                draw.text((18, y), subtitle, fill=INK2, font=font)
+                draw.text((18, y), subtitle, fill=INK2, font=font_sub)
             buf = io.BytesIO()
             img.save(buf, format="PNG")
             buf.seek(0)
@@ -201,48 +214,127 @@ class ImageRenderer:
             return None
 
     async def render_help(self, game_name: str, commands: List[Tuple[str, str]],
-                          footer: str = "") -> Optional[bytes]:
-        """渲染带猫娘头像的帮助文档图（底部带统一品牌落款）。"""
+                          footer: str = "") -> Optional[List[bytes]]:
+        """渲染精美帮助文档图(渐变背景 + 圆角指令标签, 无猫娘头像)。
+
+        指令过多时自动分页 + 两列紧凑布局, 单页高度 ≤ ~600px,
+        避免聊天窗口截断。返回每页的 PNG bytes 列表。
+        """
         if not self._pil_ok:
             return None
         try:
             from PIL import Image, ImageDraw
-            avatar = self._get_avatar("curiosity", 88)
-            font = _load_cjk_font(14)
-            font_title = _load_cjk_font(18)
-            font_footer = _load_cjk_font(12)
+            font_title = _load_cjk_font(20)
+            font_cmd = _load_cjk_font(13)
+            font = _load_cjk_font(12)
+            font_footer = _load_cjk_font(11)
             brand = f"{BRAND_FOOTER} × {game_name}"
-            line_h = 30
-            extra = (26 if footer else 0) + 28  # 帮助文本行 + 品牌落款行
-            w, h = 460, 62 + len(commands) * line_h + extra
-            img = Image.new("RGB", (w, h), CARD_BG)
-            draw = ImageDraw.Draw(img)
-            draw.rectangle([2, 2, w - 3, h - 3], outline=CARD_BORDER, width=2)
-            if avatar:
-                img.paste(avatar, (14, 10), avatar)
-            draw.text((110, 16), f"{game_name} · 玩法帮助", fill=INK, font=font_title)
-            y = 52
-            for cmd, desc in commands:
-                draw.text((18, y), f"{cmd}", fill=(217, 168, 90), font=font)
-                draw.text((128, y), desc, fill=INK, font=font)
-                y += line_h
-            if footer:
-                draw.text((18, y), footer, fill=INK2, font=font)
-                y += 26
-            # 底部居中品牌落款
-            try:
-                bbox = draw.textbbox((0, 0), brand, font=font_footer)
-                tw = bbox[2] - bbox[0]
-            except Exception:
-                tw = len(brand) * 12
-            draw.text(((w - tw) // 2, h - 22), brand, fill=INK2, font=font_footer)
-            buf = io.BytesIO()
-            img.save(buf, format="PNG")
-            buf.seek(0)
-            return buf.read()
+            cmds = list(commands or [])
+            n = len(cmds)
+
+            # 分页: 每页最多 40 条(两列 × 20 行), 单页高度可控
+            per_page = 40
+            pages = [cmds[i:i + per_page] for i in range(0, n, per_page)] or [[]]
+
+            W = 720
+            HEADER_H = 64
+            col_gap = 20
+            col_w = (W - 28 * 2 - col_gap) // 2
+            line_h = 26
+
+            # 顶部标题条 + 页脚渐变色
+            header_top, header_bot = (96, 74, 60), (158, 118, 84)
+            body_top, body_bot = (252, 249, 243), (244, 237, 225)
+
+            results: List[bytes] = []
+            for pi, page in enumerate(pages):
+                rows = max(1, (len(page) + 1) // 2)
+                extra = (30 if footer else 0) + 34
+                h = HEADER_H + 16 + rows * line_h + extra
+                img = Image.new("RGB", (W, h), body_top)
+                # 背景纵向渐变
+                grad = self._v_gradient(W, h, body_top, body_bot)
+                img.paste(grad, (0, 0))
+                draw = ImageDraw.Draw(img)
+
+                # 顶部标题条(渐变)
+                header = self._v_gradient(W, HEADER_H, header_top, header_bot)
+                img.paste(header, (0, 0))
+                draw = ImageDraw.Draw(img)
+                title = f"{game_name} · 玩法帮助"
+                if len(pages) > 1:
+                    title += f"  ({pi + 1}/{len(pages)})"
+                try:
+                    tw = draw.textlength(title, font=font_title)
+                except Exception:
+                    tw = len(title) * 20
+                draw.text(((W - tw) // 2, (HEADER_H - 20) // 2), title,
+                          fill=(255, 250, 240), font=font_title)
+                # 标题条下沿细高光线
+                draw.line([(0, HEADER_H - 1), (W, HEADER_H - 1)], fill=(120, 88, 62), width=1)
+
+                # 指令两列: 指令名圆角标签 + 描述
+                y = HEADER_H + 14
+                for i in range(rows):
+                    for col in range(2):
+                        idx = i * 2 + col
+                        if idx >= len(page):
+                            continue
+                        cmd, desc = page[idx]
+                        x = 28 + col * (col_w + col_gap)
+                        # 指令名标签(圆角浅金底)
+                        cmd_s = str(cmd)
+                        try:
+                            cw = draw.textlength(cmd_s, font=font_cmd) + 14
+                        except Exception:
+                            cw = len(cmd_s) * 13 + 14
+                        draw.rounded_rectangle(
+                            [x, y + 2, x + cw, y + line_h - 4],
+                            radius=9, fill=(241, 201, 148), outline=(224, 178, 118), width=1)
+                        draw.text((x + 7, y + 4), cmd_s, fill=(110, 74, 42), font=font_cmd)
+                        # 描述文字(超宽截断)
+                        dx = x + cw + 10
+                        desc_s = str(desc)
+                        try:
+                            maxw = col_w - cw - 16
+                            if draw.textlength(desc_s, font=font) > maxw:
+                                while desc_s and draw.textlength(desc_s + "…", font=font) > maxw:
+                                    desc_s = desc_s[:-1]
+                                desc_s += "…"
+                        except Exception:
+                            pass
+                        draw.text((dx, y + 5), desc_s, fill=(70, 58, 46), font=font)
+                    y += line_h
+                if footer:
+                    draw.text((28, y), footer, fill=(138, 122, 102), font=font)
+                    y += 30
+                # 底部居中品牌落款
+                try:
+                    bbox = draw.textbbox((0, 0), brand, font=font_footer)
+                    tw2 = bbox[2] - bbox[0]
+                except Exception:
+                    tw2 = len(brand) * 11
+                draw.text(((W - tw2) // 2, h - 26), brand, fill=(150, 132, 112), font=font_footer)
+                buf = io.BytesIO()
+                img.save(buf, format="PNG")
+                buf.seek(0)
+                results.append(buf.read())
+            return results
         except Exception as exc:
             log.warning("渲染帮助失败: %s", exc)
             return None
+
+    @staticmethod
+    def _v_gradient(w: int, h: int, top: Tuple[int, int, int],
+                    bottom: Tuple[int, int, int]):
+        """生成 w×h 纵向渐变 RGB 图(top→bottom)。"""
+        from PIL import Image
+        base = Image.new("RGB", (1, h))
+        for y in range(h):
+            t = y / max(1, h - 1)
+            c = tuple(int(top[i] + (bottom[i] - top[i]) * t) for i in range(3))
+            base.putpixel((0, y), c)
+        return base.resize((w, h))
 
     # ══════════════════════════════════════════
     # HTML → PNG（Playwright，复用 N.E.K.O 内置 Chromium）

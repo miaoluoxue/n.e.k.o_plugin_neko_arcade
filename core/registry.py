@@ -35,11 +35,20 @@ class GameRegistry:
         gc = self.cfg_mgr.load(game.id)
         game._config = gc.config
         game._help = gc.help
-        game._keywords = gc.get_keywords()
+        # 关键词 = data/config/{id}/keywords.json + 游戏名(兜底, 保证游戏名一定能路由)
+        kws = list(gc.get_keywords() or [])
+        if game.name and game.name not in kws:
+            kws.append(game.name)
+        game._keywords = kws
         game._emotion_templates = gc.emotion_templates
+        # 恢复启停状态(从 data/config/main/games.json)
+        states = self.cfg_mgr.load_game_states()
+        if isinstance(states, dict) and game.id in states:
+            game.enabled = bool(states.get(game.id, True))
         game.bind_services(self._push, self._img, self._tts, self._llm)
         self._games[game.id] = game
-        log.info("已注册游戏: %s (%s)", game.name, game.id)
+        log.info("已注册游戏: %s (%s)%s", game.name, game.id,
+                 "" if game.enabled else " [停用]")
 
     def unregister(self, gid: str) -> None:
         game = self._games.pop(gid, None)
@@ -80,6 +89,22 @@ class GameRegistry:
                 count += 1
             except Exception as exc:
                 log.error("加载单文件 %s 失败: %s", fname, exc)
+        # 启动时自动把游戏启停状态写入 data/config/main/games.json
+        # (保留已保存的启停, 新游戏默认启用; 之后开关操作也会更新此文件)
+        try:
+            states = self.cfg_mgr.load_game_states()
+            if not isinstance(states, dict):
+                states = {}
+            changed = False
+            for gid, game in self._games.items():
+                if gid not in states:
+                    states[gid] = game.enabled
+                    changed = True
+            if changed or not states:
+                self.cfg_mgr.save_game_states(states)
+            log.info("游戏启停状态已同步到 data/config/main/games.json (%d 个)", len(states))
+        except Exception as exc:
+            log.warning("写入游戏启停状态失败: %s", exc)
         return count
 
     def _find_game_class(self, module) -> Optional[type]:
@@ -106,6 +131,15 @@ class GameRegistry:
         if not game:
             return False
         game.enabled = enabled
+        # 持久化到 data/config/main/games.json
+        try:
+            states = self.cfg_mgr.load_game_states()
+            if not isinstance(states, dict):
+                states = {}
+            states[gid] = enabled
+            self.cfg_mgr.save_game_states(states)
+        except Exception as exc:
+            log.warning("保存游戏启停状态失败: %s", exc)
         log.info("游戏 %s 已%s", gid, "启用" if enabled else "停用")
         return True
 

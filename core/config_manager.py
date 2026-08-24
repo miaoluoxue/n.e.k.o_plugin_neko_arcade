@@ -43,7 +43,16 @@ class GameConfig:
 
 
 class ConfigManager:
-    """管理所有游戏的配置。"""
+    """管理所有游戏的配置 + 主插件配置。
+
+    目录结构:
+    - data/config/{game_id}/    每个游戏一个文件夹(config/help/emotion/keywords.json)
+    - data/main/                主插件配置文件夹(与 data/config 平级)
+      - games.json              游戏启停状态(启动时自动扫描写入, 开关时更新)
+      - config.json             插件其他配置(LLM 配置等)
+    """
+
+    MAIN_DIR_NAME = "main"
 
     def __init__(self, data_dir: str = DATA_DIR) -> None:
         self.data_dir = data_dir
@@ -51,6 +60,33 @@ class ConfigManager:
 
     def _game_dir(self, game_id: str) -> str:
         return os.path.join(CONFIG_DIR, game_id)
+
+    def _main_dir(self) -> str:
+        d = os.path.join(DATA_DIR, self.MAIN_DIR_NAME)
+        os.makedirs(d, exist_ok=True)
+        return d
+
+    # ── 主插件配置(独立文件) ──────────────────
+
+    def load_main_config(self) -> Dict[str, Any]:
+        """读取主插件配置 data/main/config.json。"""
+        return self._read_json(os.path.join(self._main_dir(), "config.json"), {})
+
+    def save_main_config(self, cfg: Dict[str, Any]) -> None:
+        """保存主插件配置 data/main/config.json。"""
+        with open(os.path.join(self._main_dir(), "config.json"), "w", encoding="utf-8") as f:
+            json.dump(cfg, f, ensure_ascii=False, indent=2)
+
+    def load_game_states(self) -> Dict[str, Any]:
+        """读取游戏启停配置 data/main/games.json。"""
+        return self._read_json(os.path.join(self._main_dir(), "games.json"), {})
+
+    def save_game_states(self, states: Dict[str, Any]) -> None:
+        """保存游戏启停配置 data/main/games.json(自动写入)。"""
+        with open(os.path.join(self._main_dir(), "games.json"), "w", encoding="utf-8") as f:
+            json.dump(states, f, ensure_ascii=False, indent=2)
+
+    # ── 游戏配置 ────────────────────────────
 
     def load(self, game_id: str) -> GameConfig:
         """加载（或创建默认）一个游戏的配置。"""

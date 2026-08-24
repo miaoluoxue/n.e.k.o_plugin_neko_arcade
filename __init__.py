@@ -10,7 +10,6 @@ from plugin.sdk.plugin import (
     Ok,
     SdkError,
     lifecycle,
-    llm_tool,
     neko_plugin,
     plugin_entry,
 )
@@ -88,7 +87,7 @@ class NekoArcadePlugin(NekoPluginBase):
         key = f"{STORE_PREFIX}:{game_id}:{user_id}"
         await self.store.set(key, data)
 
-    @plugin_entry(id="list_games", name="游戏列表", description="列出所有可玩的小游戏。",
+    @plugin_entry(id="list_games", name="游戏列表", description="列出所有可玩的小游戏名(按需查询, 一次调用即可, 不要反复调用)。",
                   input_schema={"type": "object", "properties": {}},
                   llm_result_fields=["message"])
     async def entry_list_games(self, **_) -> Any:
@@ -97,8 +96,9 @@ class NekoArcadePlugin(NekoPluginBase):
         games = self.rt.registry.get_meta_list()
         if not games:
             return Ok({"games": [], "message": "暂时没有小游戏喵"})
-        lines = "\n".join(f"  {g['icon']} {g['name']}：{g['description']}" for g in games)
-        return Ok({"games": games, "message": f"猫娘小游戏里有这些游戏喵：\n{lines}"})
+        names = "、".join(f"{g['icon']} {g['name']}" for g in games)
+        return Ok({"games": [{"id": g["id"], "name": g["name"]} for g in games],
+                   "message": f"可玩的小游戏：{names}。想玩哪个说游戏名就行喵"})
 
     @plugin_entry(id="play_game", name="玩游戏",
                   description="执行游戏指令。game填游戏名，cmd填用户原话，插件自动匹配具体指令。可用游戏通过list_games查看。",
@@ -232,14 +232,15 @@ class NekoArcadePlugin(NekoPluginBase):
                   input_schema={"type": "object", "properties": {}},
                   metadata={"agent_hidden": True})
     async def entry_get_llm_config(self, **_) -> Any:
-        """点路径读取(不依赖 dump 形状, 自动兼容 neko_arcade 段)。"""
+        """读取主插件配置 data/config/main/config.json 的 llm 段。"""
+        cfg = self.rt.cfg_mgr.load_main_config() if self.rt else {}
+        llm = cfg.get("llm", {}) if isinstance(cfg, dict) else {}
         return Ok({"config": {
-            "provider": await self.config.get("neko_arcade.llm_main_provider", ""),
-            "model": await self.config.get("neko_arcade.llm_main_model", ""),
-            "api_key": await self.config.get("neko_arcade.llm_main_api_key", ""),
-            "base_url": await self.config.get("neko_arcade.llm_main_base_url", ""),
-            "max_calls_per_minute": await self.config.get(
-                "neko_arcade.llm_max_calls_per_minute", 15),
+            "provider": llm.get("provider", ""),
+            "model": llm.get("model", ""),
+            "api_key": llm.get("api_key", ""),
+            "base_url": llm.get("base_url", ""),
+            "max_calls_per_minute": llm.get("max_calls_per_minute", 15),
         }})
 
     @plugin_entry(id="save_llm_config", name="保存LLM配置",
@@ -249,50 +250,117 @@ class NekoArcadePlugin(NekoPluginBase):
                   }, "required": ["config"]},
                   metadata={"agent_hidden": True})
     async def entry_save_llm_config(self, config: dict = None, **_) -> Any:
-        """点路径写入(config.set 自动创建嵌套 neko_arcade 段)。"""
+        """写入主插件配置 data/config/main/config.json 的 llm 段。"""
+        if not self.rt:
+            return Err(SdkError("猫娘小游戏还没准备好"))
         cfg = config or {}
-        await self.config.set("neko_arcade.llm_main_provider",
-                              str(cfg.get("provider", "") or ""))
-        await self.config.set("neko_arcade.llm_main_model",
-                              str(cfg.get("model", "") or ""))
-        await self.config.set("neko_arcade.llm_main_api_key",
-                              str(cfg.get("api_key", "") or ""))
-        await self.config.set("neko_arcade.llm_main_base_url",
-                              str(cfg.get("base_url", "") or ""))
+        main_cfg = self.rt.cfg_mgr.load_main_config()
+        if not isinstance(main_cfg, dict):
+            main_cfg = {}
+        llm = {
+            "provider": str(cfg.get("provider", "") or ""),
+            "model": str(cfg.get("model", "") or ""),
+            "api_key": str(cfg.get("api_key", "") or ""),
+            "base_url": str(cfg.get("base_url", "") or ""),
+        }
         if cfg.get("max_calls_per_minute"):
             try:
-                await self.config.set("neko_arcade.llm_max_calls_per_minute",
-                                      int(cfg["max_calls_per_minute"]))
+                llm["max_calls_per_minute"] = int(cfg["max_calls_per_minute"])
             except (TypeError, ValueError):
                 pass
-        self.logger.info("LLM 配置已保存: provider=%s model=%s",
-                         cfg.get("provider", ""), cfg.get("model", ""))
+        main_cfg["llm"] = llm
+        self.rt.cfg_mgr.save_main_config(main_cfg)
+        # 热更新 LLM 客户端
+        self.rt._wire_llm()
+        self.logger.info("LLM 配置已保存到 data/config/main/config.json: provider=%s model=%s",
+                         llm.get("provider", ""), llm.get("model", ""))
         return Ok({"saved": True})
+
+    @plugin_entry(id="get_token_stats", name="Token使用统计",
+                  description="统计本插件小游戏的 LLM token 消耗(插件自身 LLMProvider 统计)。",
+                  input_schema={"type": "object", "properties": {}},
+                  metadata={"agent_hidden": True})
+    async def entry_get_token_stats(self, **_) -> Any:
+        """返回 neko_arcade 自己产生的 LLM token 消耗(精确)。
+
+        所有小游戏 LLM 调用都经过 LLMProvider.call(emotion 渲染/海龟汤出题/
+        修仙闲聊等), 在此统一统计并按场景分组。自建客户端取真实 usage,
+        宿主调用按字符估算。统计持久化在插件 store(键 game_user_data:llm_stats)。
+        """
+        stats = {"available": False, "note": "", "own": {}, "today": {}, "total": {}}
+        try:
+            # 插件自身统计(精确)
+            own = {}
+            try:
+                raw = await self.store.get("game_user_data:llm_stats")
+                if isinstance(raw, dict):
+                    own = raw
+            except Exception:
+                own = {}
+            if own.get("calls"):
+                stats["own"] = {
+                    "calls": own.get("calls", 0),
+                    "prompt": own.get("prompt_tokens", 0),
+                    "completion": own.get("completion_tokens", 0),
+                    "total": own.get("total_tokens", 0),
+                    "by_scene": own.get("by_scene", {}),
+                }
+            stats["available"] = True
+            stats["note"] = "own=本插件小游戏实际产生的 LLM token(精确统计)"
+            return Ok(stats)
+        except Exception as exc:
+            stats["note"] = f"统计失败: {exc}"
+            return Ok(stats)
 
     @plugin_entry(id="get_arcade_state", name="获取街机状态", description="供面板轮询。",
                   input_schema={"type": "object", "properties": {}},
                   metadata={"agent_hidden": True})
     async def entry_get_arcade_state(self, **_) -> Any:
         if not self.rt:
-            return Ok({"games": [], "statuses": {}, "brain": {}, "started": False})
+            return Ok({"games": [], "statuses": {}, "brain": {}, "started": False,
+                       "token_stats": {}})
         user_id = getattr(self.ctx, "user_id", "default") or "default"
         games = self.rt.registry.get_meta_list(with_help=True)
         statuses = await self.rt.registry.get_statuses(user_id)
         brain_snap = await self.rt.brain.snapshot() if self.rt.brain else {}
         enabled = self.rt.registry.enabled_ids()
+        # token 统计: LLMProvider 内存快照(最新)优先, 无则读 store 落盘
+        token_stats = {}
+        try:
+            if self.rt.llm:
+                snap = self.rt.llm.snapshot()
+                if snap.get("calls"):
+                    token_stats = snap
+            if not token_stats:
+                raw = await self.store.get("game_user_data:llm_stats")
+                if isinstance(raw, dict) and raw.get("calls"):
+                    token_stats = raw
+        except Exception:
+            token_stats = {}
+        # 主插件配置(前端轮询读取): games.json 启停 + config.json 其他配置
+        main_config = {}
+        try:
+            main_config = {
+                "game_states": self.rt.cfg_mgr.load_game_states(),
+                "config": self.rt.cfg_mgr.load_main_config(),
+            }
+        except Exception:
+            main_config = {}
         return Ok({"games": games, "statuses": statuses, "brain": brain_snap,
-                   "started": True, "enabled_count": len(enabled)})
+                   "started": True, "enabled_count": len(enabled),
+                   "token_stats": token_stats, "main_config": main_config})
 
-    @llm_tool(name="play_game", description="用户想玩小游戏时调用。传入用户说的原话，插件自动判断玩什么游戏。",
-              parameters={"type": "object", "properties": {
-                  "input": {"type": "string", "description": "用户说的原话，插件自动匹配游戏和指令"},
-              }, "required": ["input"]})
     async def tool_play_game(self, input: str) -> Any:
+        """play_game LLM 工具处理器（由 runtime._register_dynamic_llm_tool 注册）。
+
+        auto=True: 多轮状态机游戏(如人生重开)由 AI 代玩时一次调用走完随机流程,
+        避免卡在"选天赋/分属性"等用户输入。
+        """
         if not self.rt:
             return {"error": "猫娘小游戏还没准备好"}
         game_id, cmd = self.rt.parse_input(input)
         if not game_id:
             return {"error": f"没有找到匹配的游戏喵，试试：{self.rt.registry.game_names()}"}
-        result = await self.entry_play_game(game=game_id, cmd=cmd)
+        result = await self.entry_play_game(game=game_id, cmd=cmd, args={"auto": True})
         # 从 Ok/Err 包装中解出数据（SDK v2: Ok.value；旧版: Ok.data）
         return self.unwrap_result(result, default={"error": "游戏执行失败喵"})

@@ -259,6 +259,22 @@ class XiuxianGame(GameAdapter):
                f"灵石 ×{save.lingshi_low}\n"
                f"猫娘 {self.neko.name} 也在你身边喵～\n"
                f"试试「修炼」「突破」「修仙签到」吧!")
+        # 渲染角色卡并推送(static + markdown 通道, 宿主显示真实图片)
+        try:
+            lines = [
+                (f"境界：{save.realm_name()}", "common"),
+                (f"炼体：{save.body_name()}", "common"),
+                (f"气血 {save.hp}/{save.max_hp} | 攻击 {save.attack} | 防御 {save.defense}", "rare"),
+                (f"灵石 ×{save.lingshi_low}", "gold"),
+                (f"猫娘 {self.neko.name} 与你同行", "epic"),
+            ]
+            img = await self.render_card(self.name, "踏入仙途", lines,
+                                         subtitle=f"道友 {save.name}", mood="excitement")
+            if img:
+                await self.push_text_image(msg, img)
+                msg = ""
+        except Exception:
+            pass
         return {"message": msg, "outcome": "start",
                 "facts": [{"kind": "start", "name": save.name, "realm": save.realm_name()}],
                 "summary": f"{save.name}踏入仙途,境界{save.realm_name()}"}
@@ -1779,11 +1795,18 @@ class XiuxianGame(GameAdapter):
     # ── 面板/元数据 ────────────────────────
 
     def classify_event(self, outcome: str, facts: List[Dict[str, Any]]) -> str:
-        """修仙语义的事件分级(供大脑 persona 情绪弧线 + emotion 渲染)。"""
+        """修仙语义的事件分级(供大脑 persona 情绪弧线 + emotion 渲染)。
+
+        highlight = 值得渲染卡片的高光事件(与 wants_card 白名单对齐);
+        start(踏入仙途)由游戏内自绘角色卡推送, 不进 highlight 避免双卡。
+        """
         oc = (outcome or "").lower()
         if any(k in oc for k in (
                 "breakthrough_ok", "daolv", "sect_create", "gift",
-                "secret_lingshi", "secret_exp", "body_breakthrough_ok")):
+                "secret_lingshi", "secret_exp", "body_breakthrough_ok",
+                "boss_win", "tuanben_win", "sectwar_win", "task_claim",
+                "rank_win", "pet_evolve", "zhutian_ok", "xsj_evolve",
+                "sign", "anniversary", "xsj_open")):
             return "highlight"
         if any(k in oc for k in ("breakthrough_fail", "body_breakthrough_fail",
                                  "lose", "lowlight")):

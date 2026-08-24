@@ -245,6 +245,43 @@ body::before {
         <button class="btn btn-ghost" onclick="loadLlmConfig()">🔄 刷新</button>
       </div>
     </div>
+
+    <!-- Token 使用统计 -->
+    <div style="background:var(--glass);border:1px solid var(--border);border-radius:var(--radius-md);padding:16px;max-width:600px;">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
+        <div style="font-weight:600;">📊 LLM Token 使用统计</div>
+        <button class="btn btn-ghost" style="padding:4px 10px;font-size:0.75rem;" onclick="loadTokenStats()">🔄 刷新</button>
+      </div>
+      <div style="display:flex;align-items:center;gap:18px;">
+        <!-- 环形进度(预算百分比) -->
+        <div style="position:relative;width:110px;height:110px;flex-shrink:0;">
+          <svg width="110" height="110" viewBox="0 0 120 120">
+            <circle cx="60" cy="60" r="52" fill="none" stroke="var(--border)" stroke-width="12"/>
+            <circle id="tokenRing" cx="60" cy="60" r="52" fill="none"
+              stroke="url(#tokenGrad)" stroke-width="12" stroke-linecap="round"
+              stroke-dasharray="326.7" stroke-dashoffset="326.7"
+              transform="rotate(-90 60 60)"
+              style="transition:stroke-dashoffset 0.8s ease;"/>
+            <defs>
+              <linearGradient id="tokenGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+                <stop offset="0%" stop-color="#53d8fb"/>
+                <stop offset="100%" stop-color="#9b59b6"/>
+              </linearGradient>
+            </defs>
+          </svg>
+          <div style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);text-align:center;">
+            <div id="tokenPct" style="font-size:1.05rem;font-weight:700;color:var(--text);">0%</div>
+            <div style="font-size:0.62rem;color:var(--text2);">预算</div>
+          </div>
+        </div>
+        <div id="tokenStats" style="color:var(--text2);font-size:0.78rem;line-height:1.9;flex:1;min-width:0;">
+          加载中喵…
+        </div>
+      </div>
+      <div style="color:var(--text3,var(--text2));font-size:0.7rem;margin-top:10px;opacity:0.7;">
+        环形=本插件小游戏 LLM 消耗占预算百分比(预算 100 万 tokens, 轮询自动刷新)。未配置独立 LLM 时, 情感走模板、游戏走宿主, 不计入此项。
+      </div>
+    </div>
   </div>
 </div>
 
@@ -305,6 +342,9 @@ function render() {
   document.getElementById('navBadge').textContent = gs.length;
   document.getElementById('gameCountBadge').textContent = '· '+(state.enabled_count||0)+'/'+gs.length+' 启用';
   renderGames(); renderHints();
+  // LLM 页可见时, 顺带刷新 token 统计环(轮询驱动增长动画)
+  var ls = document.getElementById('llmSection');
+  if (ls && ls.style.display !== 'none') loadTokenStats();
 }
 
 function renderGames() {
@@ -358,6 +398,7 @@ function switchNav(name, el) {
     ls.style.display = '';
     document.getElementById('mainTitle').textContent = '⚙️ LLM 配置';
     loadLlmConfig();
+    loadTokenStats();
   } else {
     if (gv) gv.style.display = '';
     ls.style.display = 'none';
@@ -366,13 +407,21 @@ function switchNav(name, el) {
 }
 
 function loadLlmConfig() {
-  callEntry('get_llm_config',{}).then(function(r){
-    var c = (r && r.config) ? r.config : (r || {});
+  // 优先用轮询的 state.main_config.config.llm
+  var mc = (state.main_config||{}).config||{};
+  var llm = mc.llm||{};
+  var apply = function(c) {
     var p = document.getElementById('llm-provider');
     if (p) p.value = c.provider || '';
     var el = document.getElementById('llm-model'); if (el) el.value = c.model || '';
     var el2 = document.getElementById('llm-api_key'); if (el2) el2.value = c.api_key || '';
     var el3 = document.getElementById('llm-base_url'); if (el3) el3.value = c.base_url || '';
+  };
+  if (llm && (llm.provider || llm.model)) { apply(llm); return; }
+  // 兜底: 显式查询
+  callEntry('get_llm_config',{}).then(function(r){
+    var c = (r && r.config) ? r.config : (r || {});
+    apply(c);
   });
 }
 function saveLlmConfig() {
@@ -386,6 +435,63 @@ function saveLlmConfig() {
     if (r && r.saved) showToast('💾 LLM 配置已保存喵');
     else showToast('❌ 保存失败: ' + ((r&&r.error)||''));
   });
+}
+
+function fmtTok(n) {
+  if (n == null) return '0';
+  if (n >= 1000000) return (n/1000000).toFixed(2) + 'M';
+  if (n >= 1000) return Math.round(n/1000) + 'k';
+  return String(n);
+}
+
+// 预算(可改): 环形 100% 对应的 tokens
+var TOKEN_BUDGET = 1000000;
+
+// 估算费用: 每 1M tokens 的价格(按主流 API 参考价, 人民币)
+// 输入便宜, 输出贵; 这里按"混合均价"粗算。可后续按 provider 细化。
+function estimateCost(totalTokens) {
+  var n = totalTokens || 0;
+  // 粗略: 输入 2 元/1M, 输出 8 元/1M, 假设输入:输出 ≈ 10:1
+  var input = n * 10 / 11, output = n / 11;
+  return (input/1e6 * 2 + output/1e6 * 8).toFixed(2);
+}
+
+function renderTokenRing(stats) {
+  var own = stats || {};
+  var total = own.total || 0;
+  var pct = Math.min(100, (total / TOKEN_BUDGET) * 100);
+  var ring = document.getElementById('tokenRing');
+  var pctEl = document.getElementById('tokenPct');
+  if (ring) ring.style.strokeDashoffset = 326.7 * (1 - pct/100);
+  if (pctEl) pctEl.textContent = Math.round(pct) + '%';
+}
+
+function loadTokenStats() {
+  var box = document.getElementById('tokenStats');
+  if (!box) return;
+  // 优先用轮询带来的 state.token_stats
+  var own = (state && state.token_stats) || {};
+  if (own && own.calls) {
+    renderTokenRing(own);
+    var lines = [];
+    lines.push('调用 <b style="color:var(--text);">' + own.calls + '</b> 次 · <b style="color:var(--text);">合计 ' + fmtTok(own.total) + '</b> tokens');
+    lines.push('输入 ' + fmtTok(own.prompt) + ' · 输出 ' + fmtTok(own.completion));
+    lines.push('💰 约 <b style="color:var(--accent,#53d8fb);">¥' + estimateCost(own.total) + '</b> (按输入¥2/输出¥8 每 1M 粗估)');
+    var bs = own.by_scene || {};
+    var scenes = Object.keys(bs);
+    if (scenes.length) {
+      lines.push('<div style="font-weight:600;color:var(--text);margin-top:6px;">🧩 按场景</div>');
+      scenes.forEach(function(k){
+        var v = bs[k];
+        lines.push('· ' + escHtml(k) + ': ' + v.calls + ' 次 / ' + fmtTok(v.tokens) + ' tokens');
+      });
+    }
+    box.innerHTML = lines.join('<br>');
+    return;
+  }
+  // 无记录: 显示空状态(圆环归零)
+  renderTokenRing({});
+  box.innerHTML = '还没有小游戏 LLM 调用记录喵。<br><span style="opacity:0.7;">在「LLM 配置」填上模型后, 游戏的情感/出题/闲聊会走插件统计, 这里会实时增长。</span>';
 }
 
 function startGame(id) { callEntry('start_game',{game:id}).then(function(r){ if(r&&r.message) showToast(r.message); setTimeout(refreshState,500); }); }

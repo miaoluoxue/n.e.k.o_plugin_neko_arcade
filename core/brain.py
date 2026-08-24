@@ -39,6 +39,11 @@ class GameBrain:
         self._session_start = 0.0
         # 每个游戏最近一次推送完整邀请的时间戳（秒），用于抑制重复刷屏
         self._last_invite: Dict[str, float] = {}
+        # 游戏状态锚节流：游戏进行中且 LLM 长时间未调工具时，向 LLM 上下文
+        # 注入「当前游戏 + 可用指令」（只含当前游戏，绝不含全部游戏，防炸上下文）。
+        # 每次工具调用(handle_action)都会刷新，所以锚只在 LLM 脱节时出现。
+        self._last_anchor_ts = 0.0
+        self._anchor_interval = float(cfg.get("game_anchor_interval", 60.0))
 
     def _load_host_persona(self) -> Optional[Dict[str, Any]]:
         try:
@@ -141,6 +146,12 @@ class GameBrain:
     async def _end_session(self) -> None:
         self._current_game = None
         self._session_start = 0.0
+        self._last_anchor_ts = 0.0
+
+    @property
+    def last_game(self) -> Optional[str]:
+        """最近玩过的游戏(会话结束后仍保留, 供确认词路由)。"""
+        return getattr(self, "_last_game", None)
 
     async def handle_action(self, game_id: str, cmd: str, args: Optional[Dict] = None,
                             user_id: str = "default") -> Dict[str, Any]:
@@ -157,8 +168,18 @@ class GameBrain:
             await self._start_session(game_id, user_id)
         if "帮助" in (cmd or "") or (cmd or "").strip() in ("?", "help"):
             return await self.show_help(game_id)
+
+        # 交互语义(确认词/催促词)由 LLM 判断并决定调用什么, 主插件不硬编码词表。
+        # 游戏自身可通过 outcome 语义返回待选择提示, LLM 收到后决定下一步输入。
         result = await game.handle_action(user_id, cmd, args or {})
         outcome = result.get("outcome", "done")
+
+        # 工具被调用 = LLM 还连着游戏, 刷新状态锚节流(脱节时才注入锚)。
+        self._last_anchor_ts = time.time()
+
+        # 记录最近玩过的游戏(供「继续」类输入路由回当前游戏)
+        if outcome not in ("unknown", "idle", "error"):
+            self._last_game = game_id
 
         # 游戏不认识指令 → 短提示（不再甩一长串玩法说明，避免刷屏）
         if outcome == "unknown":
@@ -296,23 +317,42 @@ class GameBrain:
         return await self.img.render_card(game.name, "游戏结果", lines, outcome, mood)
 
     async def show_help(self, game_id: str) -> Dict[str, Any]:
-        """渲染并推送游戏帮助文档图。"""
+        """渲染并推送游戏帮助文档图。任何失败都兜底推纯文本帮助。"""
         game = self.registry.get(game_id)
         if not game:
             msg = f"没有找到游戏「{game_id}」喵"
             return {"message": msg, "summary": msg}
-        help_data = await self.registry.get_help(game_id)
-        commands = (help_data or {}).get("commands", []) or []
-        text = (help_data or {}).get("text", "") or ""
-        if commands:
-            img = await self.img.render_help(game.name, commands, text)
-            if img:
-                await self.push.help_doc(f"{game.name} 帮助", img, text)
-                msg = f"已发送 {game.name} 的帮助文档喵"
-                return {"message": msg, "summary": msg, "image": True}
-        msg = text or f"{game.name} 暂时没有帮助喵"
-        await self.push.text(msg)
-        return {"message": msg, "summary": msg}
+        try:
+            help_data = await self.registry.get_help(game_id)
+            commands = (help_data or {}).get("commands", []) or []
+            text = (help_data or {}).get("text", "") or ""
+            if commands:
+                try:
+                    pages = await self.img.render_help(game.name, commands, text)
+                    if pages:
+                        # 多页帮助依次推送, 每页高度 ≤ ~600px 避免截断
+                        for i, page_bytes in enumerate(pages):
+                            title = f"{game.name} 帮助"
+                            if len(pages) > 1:
+                                title += f" ({i + 1}/{len(pages)})"
+                            # 只有第一页带文字说明, 避免重复
+                            await self.push.help_doc(title, page_bytes,
+                                                     text if i == 0 else None)
+                        msg = f"已发送 {game.name} 的帮助文档喵"
+                        return {"message": msg, "summary": msg, "image": True}
+                except Exception as exc:
+                    log.warning("帮助图渲染/推送失败, 降级纯文本: %s", exc)
+            # 降级：纯文本帮助（保证用户至少拿到可读的指令清单）
+            lines = [text or f"{game.name} 玩法帮助："]
+            lines += [f"{c[0]}：{c[1]}" for c in commands
+                      if isinstance(c, (list, tuple)) and len(c) >= 2 and c[0]]
+            msg = "\n".join(lines)
+            await self.push.text(msg)
+            return {"message": msg, "summary": msg}
+        except Exception as exc:
+            log.warning("show_help 异常: %s", exc)
+            msg = f"{game.name} 的帮助暂时打不开喵(稍后再试)"
+            return {"message": msg, "summary": msg}
 
     async def on_owner_speak(self) -> None:
         self.proactive.on_owner_speak()
@@ -328,6 +368,11 @@ class GameBrain:
                     await game.on_tick(self._current_user or "default")
                 except Exception as exc:
                     log.warning("游戏 %s on_tick 异常: %s", self._current_game, exc)
+            # 状态锚：游戏进行中且 LLM 长时间没调工具(脱节) → 注入只含当前游戏的
+            # 状态文本(read, 不触发 AI 发言、用户不可见)。借鉴 MC 插件 keep-going
+            # nudge 的思路, 但只取当前游戏的指令, 绝不含全部游戏(防炸 LLM)。
+            if time.time() - self._last_anchor_ts >= self._anchor_interval:
+                await self._inject_game_anchor()
         if self.proactive.ready_to_speak:
             text = await self._proactive_text()
             if text:
@@ -336,6 +381,51 @@ class GameBrain:
                 await self.push.text(text)
                 return text
         return None
+
+    async def _inject_game_anchor(self) -> None:
+        """向 LLM 上下文注入「当前游戏状态锚」: 只含当前游戏的少量指令。
+
+        场景: LLM 忘了调 play_game(如 22:33 轮盘全程自己扮演)时, 注入一条
+        read 文本让 LLM 知道游戏引擎还在等输入, 并给出当前游戏的可选指令。
+        只取当前游戏 help 前 6 条指令名, 不拼接全部游戏的指令。
+        """
+        game_id = self._current_game
+        if not game_id:
+            return
+        game = self.registry.get(game_id)
+        if game is None:
+            return
+        try:
+            help_data = await self.registry.get_help(game_id)
+            commands = (help_data or {}).get("commands", []) or []
+        except Exception as exc:
+            log.warning("取 %s 帮助失败, 状态锚用关键词兜底: %s", game_id, exc)
+            commands = []
+        names = []
+        for entry in commands:
+            if isinstance(entry, (list, tuple)) and entry and entry[0]:
+                names.append(str(entry[0]))
+            if len(names) >= 6:
+                break
+        if not names:
+            # help 缺失时兜底用当前游戏关键词(同样截断)
+            for kw in game.get_keywords():
+                if kw and kw not in names:
+                    names.append(kw)
+                if len(names) >= 6:
+                    break
+        cmd_text = "、".join(f"「{n}」" for n in names) if names else "任意指令"
+        anchor = (
+            f"[游戏状态] 正在玩{game.name}, 游戏引擎在等主人的输入喵。"
+            f"可用指令: {cmd_text}。用户接下来说的原话请通过 play_game 工具传进来, "
+            "不要自己扮演游戏流程。"
+        )
+        self._last_anchor_ts = time.time()
+        try:
+            await self.push.text(anchor, visibility=[], ai_behavior="read")
+            log.info("已注入游戏状态锚(%s): %s", game_id, anchor)
+        except Exception as exc:
+            log.warning("注入游戏状态锚失败: %s", exc)
 
     async def _proactive_text(self) -> Optional[str]:
         if self._current_game:

@@ -131,8 +131,18 @@ class FishingGame(GameAdapter):
         if "钓鱼" in c:
             n = self._parse_int(c, args.get("amount", 1))
             return await self._do_fishing(user_id, min(n, int(self._cfg("max_cast_per_command", 10))))
-        if "售鱼" in c or "鱼市" in c:
-            return await self._do_sell(user_id, self._strip_kw(c, "售鱼", "鱼市"))
+        # 买/卖分流：含「买」→ 购买；「售鱼/卖鱼」→ 卖；裸「鱼市」→ 市场商品列表。
+        # 之前「鱼市」被一律当卖鱼，导致「鱼市买鱼饵」无法购买、裸「鱼市」也看不到商品。
+        if any(k in c for k in ("买", "购买", "购")):
+            # 先剥「买」再剥地点词，避免「鱼市买鱼饵」被「鱼市」截成「买鱼饵」
+            name = self._strip_kw(c, "购买", "买", "购")
+            name = self._strip_kw(name, "鱼市", "商店")
+            return await self._buy(user_id, name)
+        if "售鱼" in c or "卖鱼" in c:
+            return await self._do_sell(user_id, self._strip_kw(c, "售鱼", "卖鱼"))
+        if "鱼市" in c:
+            # 裸「鱼市」→ 商品列表；「鱼市 卖X」已在上面拦截
+            return await self._buy(user_id, self._strip_kw(c, "鱼市", "商店"))
         if "鱼缸" in c and "升级" in c:
             return await self._upgrade_tank(user_id)
         if "鱼缸" in c:
@@ -141,8 +151,8 @@ class FishingGame(GameAdapter):
             return await self._switch_rod(user_id, self._strip_kw(c, "换竿", "鱼竿"))
         if "换饵" in c or "鱼饵" in c:
             return await self._switch_bait(user_id, self._strip_kw(c, "换饵", "鱼饵"))
-        if "购买" in c or "商店" in c:
-            return await self._buy(user_id, self._strip_kw(c, "购买", "商店"))
+        if "商店" in c:
+            return await self._buy(user_id, self._strip_kw(c, "商店"))
         # 不认识的指令 → 让插件发提示
         return {"message": "", "outcome": "unknown", "facts": []}
 
@@ -403,10 +413,28 @@ class FishingGame(GameAdapter):
 
         item = next((i for i in [*RODS.values(), *BAITS.values()] if name in i["name"] or name in i["id"]), None)
         if item is None:
-            return {"message": f"鱼市没有「{name}」喵"}
+            # 清洗量词/语气词后重试(如「买个猎珍长竿」→「个猎珍长竿」→「猎珍长竿」)
+            clean = name
+            for w in ("一根", "一个", "一支", "一把", "一条", "个", "根", "支", "把"):
+                clean = clean.replace(w, "")
+            clean = clean.strip()
+            if clean and clean != name:
+                item = next((i for i in [*RODS.values(), *BAITS.values()]
+                             if clean in i["name"] or clean in i["id"]), None)
+                if item is not None:
+                    name = clean
+            if item is None:
+                return {"message": f"鱼市没有「{name}」喵"}
         price = item["price"]
         if price <= 0:
             return {"message": f"「{item['name']}」不卖喵"}
+        # 幂等: 已拥有的鱼竿/鱼饵不再扣费(宿主可能重复执行同一指令)
+        if item["id"] in RODS and item["id"] in data["rods"]:
+            return {"message": f"「{item['name']}」你已经有了喵,不用重复买~",
+                    "outcome": "buy_idle", "facts": [{"kind": "buy_idle", "item": item["id"]}]}
+        if item["id"] not in RODS and item["id"] != "plain" and data["baits"].get(item["id"], 0) > 0:
+            return {"message": f"「{item['name']}」你已经有了喵,不用重复买~",
+                    "outcome": "buy_idle", "facts": [{"kind": "buy_idle", "item": item["id"]}]}
         if data["coins"] < price:
             return {"message": f"需要 {price} 鱼蛋，你还差 {price - data['coins']} 喵……多钓几条鱼来卖吧"}
 
