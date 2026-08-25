@@ -101,20 +101,30 @@ return {
 | brain | 统一生成 summary（用情感模板 neko_text，与用户已见内容不同），宿主 LLM 自然演绎不复述 |
 | brain | 统一处理高光卡片、状态锚、防打断、发图桥接 |
 
-**游戏可用的桥接（通过 GameAdapter）：**
+**游戏可用的桥接（通过 GameAdapter，全部由主插件实现，游戏只调接口）：**
 
 | 能力 | 用法 |
 |------|------|
 | 取图(不推) | `await self.pick_photo_for_delivery(category=...)` → 返回 images 数据交 brain 推 |
 | 发图(后台/工具) | `await self.send_photo(...)`（仅 on_tick/LLM 工具等非 handle_action 路径） |
+| 后台自动发图 | `await self.send_auto_photo(user_id)` → 只发本地图库, 配文随机 |
+| 图库分类 | `self.photo_categories()` → 分类名列表 |
+| 上传图片 | `await self.upload_photo(user_id, name, data_b64=..., category=...)` → 存图库 |
 | 渲染卡片 | `await self.render_card(...)` → 生成 bytes 放进 images |
-| 构造图片数据 | `self.build_image(text, bytes, mime)` |
+| 渲染帮助图 | `await self.render_help_img(...)` → 多页 PNG bytes 列表 |
+| 渲染 HTML 图 | `await self.render_html(html, css=...)` → 用 Chromium 渲染自定义 HTML 为 PNG |
+| 渲染猫娘头像 | `await self.render_avatar(mood, size)` → 表情头像 bytes |
+| 构造图片数据 | `self.build_image(text, bytes, mime)` → 生成 images 元素 |
+| 语音标记 | `self.tts_note(text)` → 标记短句, 宿主自动 TTS 播放 |
+| 调用 LLM | `await self.call_llm(prompt)` → 主插件统一限流/统计 |
 
 **禁止：**
 
 - ❌ `handle_action` 内调用 `push_text`/`push_text_image`/`push_text_image_url`/`push_help`
   （这些方法仅保留给 on_tick 后台提醒/历史兼容，新游戏 handle_action 不得使用）
+- ❌ 直接调用 `plugin.push_message` / 读宿主 ctx 私有属性（如 `ctx.user_id`）
 - ❌ 返回 `pushed` / `summary` 字段（已废除，brain 统一处理）
+- ❌ 自己推 audio part（宿主不支持, 见 [pitfalls.md §2.5](pitfalls.md)）
 
 **判断口诀：** 一条游戏动作，用户最多看到「游戏输出 + 猫娘自然回应」两条。
 游戏自身不推送任何内容——所有用户可见输出都经 brain 一条通道发出。

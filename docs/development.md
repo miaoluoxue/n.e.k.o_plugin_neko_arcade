@@ -80,10 +80,10 @@ def format_fact_for_card(self, fact) -> tuple  # 卡片格式化
 def wants_card(self, outcome, facts) -> bool  # 是否生成卡片
 ```
 
-### 游戏内可用的服务（由插件注入）
+### 游戏内可用的服务（由插件注入，游戏只调接口，主插件负责桥接）
 
 ```python
-# 推送
+# 推送（仅 on_tick 后台提醒/历史兼容；handle_action 用返回 message/images）
 await self.push_text("文字")                          # 推送文字到聊天框
 await self.push_text_image("文字", image_bytes)        # 推送文字+图片
 await self.push_help("标题", image_bytes, "文字")       # 推送帮助文档
@@ -91,11 +91,20 @@ await self.push_help("标题", image_bytes, "文字")       # 推送帮助文档
 # 渲染
 await self.render_card("游戏名", "标题", lines, mood)  # 渲染结果卡片
 await self.render_help_img("游戏名", commands)          # 渲染帮助图
+await self.render_html("html", css=...)                # 渲染自定义 HTML 为 PNG
 await self.render_avatar("excitement", 128)             # 渲染猫娘头像
 
+# 发图桥接（PhotoBridge，主插件统一实现）
+await self.pick_photo_for_delivery(category=...)       # 取图(不推), 返回 images
+await self.send_photo(user_id, category=...)            # 自主发图(非 handle_action)
+await self.send_auto_photo(user_id)                     # 后台自动发图
+await self.upload_photo(user_id, name, data_b64=...)    # 上传图片到图库
+self.photo_categories()                                 # 图库分类列表
+self.build_image("配文", img_bytes, "image/png")        # 构造 images 元素
+
 # 交互
-self.tts_note("文字")                                   # 标记 TTS 语音
-await self.call_llm("prompt")                           # 调用 LLM
+self.tts_note("文字")                                   # 标记 TTS 短句(宿主自动播)
+await self.call_llm("prompt")                           # 调用 LLM(主插件限流统计)
 ```
 
 ### 情绪自动映射

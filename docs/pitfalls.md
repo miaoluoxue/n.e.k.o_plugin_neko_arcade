@@ -272,6 +272,8 @@ self.plugin.push_message(..., target_lanlan=target or None)
 - [ ] 实现 `GameAdapter`，id/name/description/icon 齐全
 - [ ] `handle_action` 返回 facts + outcome + message（+ images?），不认识指令返回 `outcome="unknown"`
 - [ ] **不调用任何 push 方法**（`push_text`/`push_text_image`/`push_help` 仅 on_tick 保留）
+- [ ] **不直接调 `plugin.push_message`、不读宿主 ctx 私有属性**（如 ctx.user_id，见 §6.6）
+- [ ] **不推 audio/video part**（宿主丢弃，语音靠宿主自动 TTS，见 §2.5）
 - [ ] summary 用情感模板 neko_text，与用户已见内容不同（无双重回复）
 - [ ] 需要展示图片 → 返回 `images`（bytes 或 url）交 brain 统一推
 - [ ] 配置/帮助/情感/关键词放 `data/config/{id}/`，图片资源放 `games/{id}/data/`
@@ -279,3 +281,4 @@ self.plugin.push_message(..., target_lanlan=target or None)
 - [ ] 需要感知主人说话 → 依赖 brain.on_owner_speak()，不自建监听
 - [ ] 随机数据的测试/提示动态取值，不写死固定数字
 - [ ] 注释/文档不出现任何参考项目名
+- [ ] 需要的插件能力先查 [rules.md §2.5 桥接表](rules.md)，**主插件能做的不要游戏自己做**
