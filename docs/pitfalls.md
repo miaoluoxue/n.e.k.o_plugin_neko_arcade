@@ -167,6 +167,40 @@ LLM 复述一遍 → 用户看到两条几乎一样的话（双重回复）。
 - 交互语义（确认词/催促词）由 LLM 判断，主插件不硬编码词表；
   游戏自身通过 outcome 语义返回待选择提示。
 
+**5.1 ⚠️ 明确指令被「先问要不要玩」——@plugin_entry 暴露给了 LLM（坑）**
+
+**坑**：用户发「重启人生」等明确指令，LLM 猫娘还是先问「要玩人生重开吗？」
+而不是直接调用 `play_game` 工具。
+
+**根因**：宿主 `task_executor` 会把插件所有**非 `agent_hidden`** 的
+`@plugin_entry` 暴露给 LLM 自动路由。之前 `entry_play_game` 没加
+`agent_hidden`，schema 是 **game/cmd 必填**——LLM 看到必填的 game 参数
+（"填游戏名"），觉得要先确认用户玩哪个游戏 → 先问，而不是直接开玩。
+动态注册的 `play_game` 工具（input only）与这个 entry **同名并存**，LLM
+倾向用带必填参数的 entry。
+
+**解法**：
+
+- `entry_play_game` 加 `metadata={"agent_hidden": True}`——从 LLM 自动
+  路由隐藏，只保留给面板 `callEntry`（显式调用不受 agent_hidden 影响）。
+- 入口 schema 统一为 `input`（用户原话），内部走 `parse_input` 自动匹配
+  （含弱指令兜底）；兼容旧面板的 `game+cmd` 参数。
+- LLM 侧只有动态注册的 `play_game` 工具（input only + 强化描述：
+  "必须立即调用, 不要先问「要玩吗?」"）。
+- **适配规则**：任何不想让 LLM 自动路由看到的 entry，都要加
+  `metadata={"agent_hidden": True}`（面板/内部调用不受影响）。
+
+**5.2 ⚠️ 无会话弱指令（「再来一局/继续玩」）——last_game 兜底（坑）**
+
+**坑**：用户没点名游戏，只说「再来一局」「继续玩」「玩点什么」，`parse_input`
+匹配不到任何关键词 → `tool_play_game` 报「没有找到匹配的游戏」，LLM 无法启动。
+
+**解法**：`parse_input` 新增规则 4——无会话 + 命中 14 个明确的「接着玩」
+意图词（再来/继续/接着/再开/来一把/随便玩…）→ 路由到 `brain.last_game`
+（最近玩过），并把 cmd 换成该游戏启动指令（keywords[0]，如「钓鱼」），
+LLM 拿到可直接执行的指令。误伤防护：只收明确意图词，不收「又/想玩/换个」
+等宽泛词；显式游戏名（规则 2）和当前会话（规则 3）永远优先。
+
 ---
 
 ## 6. 消息监听：@message 真实存在

@@ -113,22 +113,37 @@ class NekoArcadePlugin(NekoPluginBase):
                    "message": f"可玩的小游戏：{names}。想玩哪个说游戏名就行喵"})
 
     @plugin_entry(id="play_game", name="玩游戏",
-                  description="执行游戏指令。game填游戏名，cmd填用户原话，插件自动匹配具体指令。可用游戏通过list_games查看。",
+                  description="执行游戏指令。传用户原话，插件自动匹配具体游戏和指令。可用游戏通过list_games查看。",
                   input_schema={"type": "object", "properties": {
-                      "game": {"type": "string", "description": "游戏名"},
-                      "cmd": {"type": "string", "description": "用户原话，插件自动匹配指令"},
-                      "args": {"type": "object", "description": "可选参数"},
-                  }, "required": ["game", "cmd"]},
-                  # 宿主用 summary 字段拼装任务结果喂给对话 LLM，猫娘才能对游戏结果有反馈
+                      "input": {"type": "string", "description": "用户说的原话，如「钓鱼」「人生重开」「重启人生」"},
+                  }, "required": ["input"]},
+                  # 宿主按 summary 字段拼装任务结果喂给对话 LLM，猫娘才能对游戏结果有反馈。
+                  # ⚠️ agent_hidden: 隐藏于 LLM 自动路由(宿主 task_executor 会把非 hidden
+                  # 的 plugin_entry 暴露给 LLM)——LLM 只应看到动态注册的 play_game 工具
+                  # (input only + 强化描述), 而不是这个带 game/cmd 参数的 entry, 否则
+                  # LLM 看到 game 必填会先问"玩哪个游戏"而不是直接开玩。面板 callEntry
+                  # 仍可调用本 entry(agent_hidden 只影响 LLM 自动路由)。
+                  metadata={"agent_hidden": True},
                   llm_result_fields=["summary"])
-    async def entry_play_game(self, game: str = "", cmd: str = "", args: dict = None, **_) -> Any:
+    async def entry_play_game(self, input: str = "", game: str = "", cmd: str = "",
+                              args: dict = None, **_) -> Any:
         if not self.rt or not self.rt.brain:
             return Err(SdkError("猫娘小游戏还没准备好"))
-        game_obj = self.rt.registry.get(game) or self.rt.registry.get_by_name(game)
-        if not game_obj:
-            return Err(SdkError(f"没有找到游戏「{game}」喵"))
+        # 兼容两种调用: 新面板/内部传 input(原话) → parse_input 自动匹配;
+        # 旧面板传 game+cmd → 直接定位。LLM 走动态 play_game 工具 → tool_play_game
+        # → entry_play_game(input=...) → 这里 parse_input 路由(含弱指令兜底)。
+        if game or cmd:
+            game_obj = self.rt.registry.get(game) or self.rt.registry.get_by_name(game)
+            if not game_obj:
+                return Err(SdkError(f"没有找到游戏「{game}」喵"))
+            game_id, cmd = game_obj.id, (cmd or "")
+        else:
+            game_id, cmd = self.rt.parse_input(input or "")
+            if not game_id:
+                return Err(SdkError(
+                    f"没有找到匹配的游戏喵，试试：{self.rt.registry.game_names()}"))
         user_id = getattr(self.ctx, "user_id", "default") or "default"
-        result = await self.rt.brain.handle_action(game_obj.id, cmd, args or {}, user_id)
+        result = await self.rt.brain.handle_action(game_id, cmd, args or {}, user_id)
         # 兜底：确保返回给宿主的 dict 一定带可读 summary（宿主按 llm_result_fields 提取）
         if isinstance(result, dict):
             result.setdefault("summary",
@@ -370,10 +385,7 @@ class NekoArcadePlugin(NekoPluginBase):
         """
         if not self.rt:
             return {"error": "猫娘小游戏还没准备好"}
-        game_id, cmd = self.rt.parse_input(input)
-        if not game_id:
-            return {"error": f"没有找到匹配的游戏喵，试试：{self.rt.registry.game_names()}"}
-        result = await self.entry_play_game(game=game_id, cmd=cmd, args={"auto": True})
+        result = await self.entry_play_game(input=input, args={"auto": True})
         # 从 Ok/Err 包装中解出数据（SDK v2: Ok.value；旧版: Ok.data）
         return self.unwrap_result(result, default={"error": "游戏执行失败喵"})
 
