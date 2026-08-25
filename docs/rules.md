@@ -65,6 +65,50 @@ async def handle_action(self, user_id: str, cmd: str, args: dict | None = None) 
 - ✅ 用 `self._config`（大脑注入的配置）、`get_user_data`/`save_user_data`（存档）
 - ✅ 可用 `self.push_text()` / `self.render_card()` 等服务接口
 
+### 2.5 ⚠️ 输出契约：禁止「双重回复」（最重要，必须读懂）
+
+**先理解宿主机制（插件无法关闭）：**
+
+`@plugin_entry` 返回的 `Ok({...})` 中带 `summary` 字段时，宿主会把它作为
+`task_result` 事件喂给主 LLM，**LLM 一定会生成一条自然语言回复**。这是宿主
+行为，插件侧无法关闭——所以 `summary` 是「给 LLM 看的提示」，不是「给用户
+看的原文」。
+
+**双重回复是怎么发生的（真实事故）：**
+
+```python
+# ❌ 错误示范（history 早期版本的 bug）
+async def _h_today(self, user_id, save):
+    neko = "哇,15 条呢!主人想听哪个年代的故事?"   # 情感模板
+    await self.push_text_image(neko, card)        # ① 游戏自己推送 → 用户看到
+    return {"outcome": "today", "message": neko,  # ② message 也带同一文本
+            "summary": neko, ...}                 # ③ summary 也带同一文本
+```
+
+结果用户看到 **两条几乎一样的话**：
+1. 游戏自己 `push_text_image` 推送的 `neko`（聊天窗直接渲染）
+2. LLM 收到 `summary=neko` 后**复述了一遍**（宿主 task_result → 主 LLM 回复）
+
+**正确做法（二选一）：**
+
+| 方案 | 适用 | 写法 |
+|------|------|------|
+| **A. 只返回 message，不自推**（老游戏模式） | 纯文本结果 | `handle_action` 返回 `{"message": "钓到一条鲲!"}`，不自推；brain 统一推送一次，LLM 收到 summary 后自然回应（不会复述，因为 LLM 会把结果当成事实来演绎） |
+| **B. 自推图文，summary 给 LLM 提示**（带卡片/图片） | 需要图片卡片的游戏 | 自己 `push_text_image(text, img)` 推送用户可见内容，**返回的 `message` 置空或只给"给 LLM 的指令性提示"**，让 LLM 知道发生了什么、该怎么说，而不是复述用户已看到的原文 |
+
+**具体规则：**
+
+1. **不要**在 `handle_action` 里 `push_text` 之后又把**同一文本**放进 `message`/`summary` 返回。
+2. 如果游戏**自推了用户可见内容**（文字/图片），返回的 `message` 应为：
+   - 空字符串 `""`（最安全，brain 不重复推，LLM 从 facts 推断）
+   - 或**给 LLM 的第三人称描述**，如 `"已展示今天的15条历史大事卡片，等待主人选年份"`——这是给 LLM 的上下文，不是给用户的重复文本
+3. 如果游戏**不自推**（纯文本结果），只返回 `message`，让 brain 统一推一次，LLM 自然回应——这是最不容易出错的默认方案。
+4. **`pushed` 标记**：仅在游戏确实自行推送过用户可见内容时才返回 `"pushed": True`，告诉 brain「我已推送过，别再推 message」。返回 `pushed` 时 `message` 仍要遵守规则 2（不能是用户已见原文），否则 LLM 仍会复述。
+
+**判断口诀：** 一条游戏动作，用户最多看到「游戏输出 + 猫娘自然回应」两条。
+如果看到两条**内容几乎一样**的话，就是双重回复——检查是不是自推后又把同一
+文本放进了 message/summary。
+
 ## 3. 配置统一管理
 
 配置文件在 `data/config/{game_id}/`：
@@ -194,6 +238,7 @@ async def get_status(self, uid): ... # 面板状态
 - [ ] 可选：`emotion.json` 放情感模板，`keywords.json` 放触发关键词
 - [ ] `games/{id}/__init__.py` 声明 `game_class = "ClassName"`
 - [ ] 不在 `games/__init__.py` 中手动导入
+- [ ] **双重回复检查**（见 2.5）：若在 `handle_action` 里 `push_text`/`push_text_image` 自推了用户可见内容，确认返回的 `message`/`summary` **不是同一文本**；不自推时只返回 `message` 即可
 
 ## 8. 与主项目通信
 
@@ -257,7 +302,29 @@ class MyGame(GameAdapter):
 
     async def handle_action(self, user_id, cmd, args=None):
         if cmd == "开始":
+            # ✅ 方案A(默认, 最简单): 只返回 message, 不自推。
+            # brain 统一推送一次, LLM 收到 summary 后自然回应, 不会双重回复。
             return {"facts": [build_fact("win")], "outcome": "win",
                     "message": "你赢了！"}
         return {"facts": [], "outcome": "unknown", "message": ""}
 ```
+
+**需要推送图片/卡片的游戏（方案B，避免双重回复）：**
+
+```python
+async def handle_action(self, user_id, cmd, args=None):
+    if cmd == "开始":
+        img = await self.render_card("我的游戏", "开局", [("赢啦", "win")])
+        if img:
+            # ① 自推用户可见内容(图文)
+            await self.push_text_image("你赢了!", img)
+            # ② message 给 LLM 指令性提示(不是用户已见原文!)
+            return {"facts": [build_fact("win")], "outcome": "win",
+                    "message": "已展示胜利卡片, 恭喜主人", "pushed": True}
+        return {"facts": [build_fact("win")], "outcome": "win",
+                "message": "你赢了！"}  # 无图时退回方案A
+    return {"facts": [], "outcome": "unknown", "message": ""}
+```
+
+> 关键：`pushed=True` 只告诉 brain「别重复推 message」；`message` 仍必须是
+> 给 LLM 的提示而非用户已见原文，否则 LLM 复述 summary 造成双重回复。

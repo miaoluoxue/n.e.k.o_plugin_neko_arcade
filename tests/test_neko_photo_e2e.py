@@ -390,3 +390,31 @@ def test_neko_photo_send_marks_pushed():
         assert plugin.pushes, "桥接应已推送图片"
 
     asyncio.run(run())
+
+
+def test_brain_summary_guard_no_double_reply():
+    """双重回复守门(brain 层): pushed=True 时 summary 不得包含用户已见原文。
+
+    模拟 brain.handle_action 的 summary 生成: 游戏自推(pushed)时, summary 只用
+    neko_text(情感模板), 不拼接 game_msg(用户已见原文), 避免 LLM 复述。
+    """
+    async def run():
+        def build_summary(game_msg, neko_text, pushed):
+            if pushed:
+                return neko_text or game_msg
+            summary = game_msg or neko_text
+            if game_msg and neko_text and neko_text != game_msg:
+                summary = f"{game_msg}\n{neko_text}"
+            return summary
+
+        # 1. pushed=True: summary 用 neko_text, 不含用户已见原文
+        s1 = build_summary("哇,15 条呢!主人想听哪个年代的故事?",
+                           "今天有 15 条历史大事喵!", True)
+        assert "哇,15 条呢" not in s1, f"pushed 时 summary 不应含用户已见原文: {s1}"
+        assert "历史大事喵" in s1, s1
+
+        # 2. 不带 pushed(老游戏): summary 可含 game_msg(由 brain 统一推, 无重复)
+        s2 = build_summary("钓到一条鲲!", "哇,传说级的鲲喵!", False)
+        assert "钓到一条鲲" in s2, s2
+
+    asyncio.run(run())

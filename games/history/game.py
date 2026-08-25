@@ -184,8 +184,9 @@ class HistoryGame(GameAdapter):
         if not entries:
             msg = "呜……今天的历史数据拉取失败了喵，百度百科那边好像不太配合。稍后再试试吧~"
             await self.push_text(msg)
-            return {"outcome": "error", "facts": [], "message": msg,
-                    "summary": msg, "game": self.id, "pushed": True}
+            return {"outcome": "error", "facts": [], "message": "今天的历史数据拉取失败, 已告知主人。",
+                    "summary": "今天的历史数据拉取失败, 已告知主人。",
+                    "game": self.id, "pushed": True}
 
         save["last_date"] = today.isoformat()
         save["view_count"] = (save.get("view_count") or 0) + 1
@@ -206,7 +207,9 @@ class HistoryGame(GameAdapter):
             for e in entries[:6]:
                 text.append(f"  {e['year']} {e['title']}")
             await self.push_text("\n".join(text))
-        summary = f"{neko} 今天共 {len(entries)} 条历史大事"
+        # 双重回复守门: 用户已看到图文(neko/卡片), message/summary 只给 LLM
+        # 指令性提示(第三人称描述), 不能让 LLM 复述用户已见的 neko 文本。
+        summary = f"已展示今天({today.month}月{today.day}日)共 {len(entries)} 条历史大事卡片给主人, 等主人选年份或类型。"
         return {"outcome": "today", "facts": [build_fact("history", count=len(entries))],
                 "message": summary, "summary": summary, "game": self.id,
                 "game_name": self.name, "entries": len(entries), "pushed": True}
@@ -219,7 +222,8 @@ class HistoryGame(GameAdapter):
         if not entries:
             msg = "呜……历史数据拉取失败了喵，稍后再试吧~"
             await self.push_text(msg)
-            return {"outcome": "error", "facts": [], "message": msg, "summary": msg, "pushed": True}
+            return {"outcome": "error", "facts": [], "message": "历史数据拉取失败, 已告知主人。",
+                    "summary": "历史数据拉取失败, 已告知主人。", "pushed": True}
         filtered = []
         for e in entries:
             if year and e.get("year") == year:
@@ -230,7 +234,9 @@ class HistoryGame(GameAdapter):
             label = year or TYPE_LABELS.get(ftype or "", "")
             msg = f"喵……今天没有 {label} 的记录呢。换一个年份或类型试试?"
             await self.push_text(msg)
-            return {"outcome": "empty_filter", "facts": [], "message": msg, "summary": msg, "pushed": True}
+            return {"outcome": "empty_filter", "facts": [],
+                    "message": f"今天没有{label}的记录, 已提示主人换条件。",
+                    "summary": f"今天没有{label}的记录, 已提示主人换条件。", "pushed": True}
         lines = [(f"{e['year']} · {TYPE_LABELS.get(e.get('type',''),'大事')}", self._rarity(e))
                  for e in filtered[:8]]
         card = await self.render_card(self.name, f"筛选结果 {year or TYPE_LABELS.get(ftype or '', '')}",
@@ -241,19 +247,25 @@ class HistoryGame(GameAdapter):
             await self.push_text_image(neko, card)
         else:
             await self.push_text("\n".join([neko] + [f"  {e['year']} {e['title']}" for e in filtered[:6]]))
+        # 双重回复守门: 用户已看到图文(neko/卡片), message 给 LLM 提示而非原文
+        hint = f"已展示{'年份'+year if year else '类型'+TYPE_LABELS.get(ftype or '', '')}筛选结果({len(filtered)}条)给主人。"
         return {"outcome": "filter", "facts": [build_fact("history_filter", count=len(filtered))],
-                "message": neko, "summary": neko, "game": self.id, "pushed": True}
+                "message": hint, "summary": hint, "game": self.id, "pushed": True}
 
     async def _h_stop(self, user_id: str, save: Dict[str, Any]) -> Dict[str, Any]:
         msg = self._pick_emotion("stop")
         await self.push_text(msg)
-        return {"outcome": "stop", "facts": [], "message": msg, "summary": msg, "game": self.id, "pushed": True}
+        # 用户已看到告别语, summary 给 LLM 提示(结束会话)
+        return {"outcome": "stop", "facts": [], "message": "主人结束了历史漫游。",
+                "summary": "主人结束了历史漫游。", "game": self.id, "pushed": True}
 
     async def _h_help(self, user_id: str, save: Dict[str, Any]) -> Dict[str, Any]:
         msg = ("喵~可以发「历史上的今天」看今天的大事; "
                "或加年份/类型过滤, 比如「历史上的今天 1999」「历史上的今天 出生」")
         await self.push_text(msg)
-        return {"outcome": "help", "facts": [], "message": msg, "summary": msg, "game": self.id, "pushed": True}
+        # 用户已看到玩法说明, summary 给 LLM 提示
+        return {"outcome": "help", "facts": [], "message": "已展示「历史上的今天」玩法说明。",
+                "summary": "已展示「历史上的今天」玩法说明。", "game": self.id, "pushed": True}
 
     # ── 工具 ─────────────────────────
 

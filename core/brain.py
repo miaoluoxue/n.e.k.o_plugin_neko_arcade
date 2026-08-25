@@ -220,9 +220,16 @@ class GameBrain:
         cmds = (help_data.get("commands", []) or [])[:5]
         mood = self.persona.mood.snapshot()
         # summary：宿主按入口的 llm_result_fields=["summary"] 提取，喂给对话 LLM
-        summary = game_msg or neko_text
-        if game_msg and neko_text and neko_text != game_msg:
-            summary = f"{game_msg}\n{neko_text}"
+        # ⚠️ 双重回复守门：游戏已自推用户可见内容(pushed=True)时，summary 只用
+        # neko_text(情感模板, 与用户已见内容不同)；不能拼接 game_msg(用户已见
+        # 原文)——否则 LLM 收到原文会复述一遍, 造成双重回复。
+        pushed = bool(result.get("pushed"))
+        if pushed:
+            summary = neko_text or game_msg
+        else:
+            summary = game_msg or neko_text
+            if game_msg and neko_text and neko_text != game_msg:
+                summary = f"{game_msg}\n{neko_text}"
         return {
             "game": game_id,
             "game_name": game.name,

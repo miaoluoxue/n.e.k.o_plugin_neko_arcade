@@ -354,6 +354,44 @@ start_game("fishing") → 猫娘："来玩钓鱼了喵！"（兴奋+0.5）
 | 语音（TTS） | 主项目自动播放 | 所有聊天消息 |
 | 面板 | 心情/会话/统计 | 3s 轮询 |
 
+### 7.6 ⚠️ 消息双通道与双重回复（架构级，必须理解）
+
+**插件向用户展示内容有两条独立通道：**
+
+```
+通道1: 游戏主动推送
+    games/xxx → self.push_text() / push_text_image()
+    → adapters/PushSender → push_message(ai_behavior="blind")
+    → 宿主直接渲染到聊天窗(不进 LLM)     ← 用户看到原文
+
+通道2: 宿主 task_result → LLM 回复
+    games/xxx → handle_action 返回 {summary}
+    → brain 返回 → 插件 @plugin_entry 返回 Ok({summary})
+    → 宿主 _emit_task_result → task_result 事件
+    → character_runtime → 主 LLM 收到 summary → 生成自然语言回复  ← 用户看到猫娘说话
+```
+
+**双重回复事故**：游戏在 `handle_action` 里自推了文本(通道1)，**同时又把
+同一文本放进 `message`/`summary` 返回** → 宿主把 summary 喂给 LLM(通道2)，
+LLM 复述一遍 → 用户看到两条几乎一样的话。
+
+**架构约束：**
+
+- `summary` 是「给 LLM 的提示」，不是「给用户的原文」——宿主必把它喂给主
+  LLM，LLM 会基于它生成回复。这是宿主行为，插件无法关闭。
+- 一条游戏动作，用户最多看到「游戏输出 + 猫娘自然回应」两条。若两条内容
+  几乎一样 = 双重回复 = 游戏把同一文本同时走了两条通道。
+- `pushed` 标记只能拦 channel-1 的重复推送(brain 不再推 message)，**拦不住
+  channel-2 的 LLM 复述**——所以 `message`/`summary` 必须遵守「给 LLM 的
+  提示」语义，不能是用户已见原文。
+
+**正确输出模式（详见 [rules.md §2.5](rules.md)）：**
+
+| 场景 | 做法 |
+|------|------|
+| 纯文本结果 | 只返回 `message` 不自推(方案A)——brain 推一次 + LLM 自然回应 |
+| 带图片卡片 | 自推图文(通道1)，`message` 给 LLM 指令性提示 + `pushed: True`(方案B) |
+
 ---
 
 ## 八、小游戏接入标准
