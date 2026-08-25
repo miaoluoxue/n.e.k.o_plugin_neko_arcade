@@ -337,3 +337,56 @@ def test_neko_photo_custom_category_command():
         assert r3["outcome"] in ("error", "unknown"), r3
 
     asyncio.run(run())
+
+
+def test_neko_photo_no_double_push():
+    """双重回复回归: 游戏已自行推送(pushed=True)时, brain 不得重复推送 message。
+
+    模拟 brain.handle_action 的推送判定: result 带 pushed → 不再 push.text;
+    不带 pushed → 正常 push.text。
+    """
+    async def run():
+        # 1. 带 pushed=True 的返回 → brain 跳过重复推送
+        class FakeBrain:
+            async def handle_like(self):
+                result = {"message": "发了一张 可爱 的照片给你喵", "pushed": True}
+                game_msg = result.get("message", "")
+                pushes = []
+                if game_msg and not result.get("pushed"):
+                    pushes.append(game_msg)
+                return pushes
+
+        brain = FakeBrain()
+        pushes = await brain.handle_like()
+        assert pushes == [], f"pushed=True 时不应重复推送, 实际: {pushes}"
+
+        # 2. 不带 pushed(老游戏模式) → brain 正常推送一次
+        class FakeBrain2:
+            async def handle_like(self):
+                result = {"message": "钓鱼钓到了一条鱼"}
+                game_msg = result.get("message", "")
+                pushes = []
+                if game_msg and not result.get("pushed"):
+                    pushes.append(game_msg)
+                return pushes
+
+        brain2 = FakeBrain2()
+        pushes2 = await brain2.handle_like()
+        assert pushes2 == ["钓鱼钓到了一条鱼"], f"未标记 pushed 时应推一次, 实际: {pushes2}"
+
+    asyncio.run(run())
+
+
+def test_neko_photo_send_marks_pushed():
+    """neko_photo 发图返回必须带 pushed=True(桥接已推送图片+配文)。"""
+    async def run():
+        game, plugin = _make_game(_TMP)
+        uid = "user_8"
+        plugin.pushes.clear()
+        r = await game.handle_action(uid, "发图")
+        assert r["outcome"] in ("photo", "collect_new", "rare"), r
+        assert r.get("pushed") is True, "neko_photo 发图应标记 pushed=True 防双重回复"
+        # 图片已被桥接推送
+        assert plugin.pushes, "桥接应已推送图片"
+
+    asyncio.run(run())

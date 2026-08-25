@@ -152,8 +152,9 @@ class NekoPhotoGame(GameAdapter):
         extra = ""
         if is_new:
             extra = f"(新图鉴: {label})"
+        # 图片+配文已由桥接推送, 标记 pushed 防止 brain 重复推送 message
         return {"facts": facts, "outcome": outcome,
-                "message": f"发了一张 {label} 的照片给你喵{extra}"}
+                "message": f"发了一张 {label} 的照片给你喵{extra}", "pushed": True}
 
     async def send_random_photo(self, user_id: str,
                                 caption: str = "") -> Dict[str, Any]:

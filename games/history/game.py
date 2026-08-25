@@ -185,7 +185,7 @@ class HistoryGame(GameAdapter):
             msg = "呜……今天的历史数据拉取失败了喵，百度百科那边好像不太配合。稍后再试试吧~"
             await self.push_text(msg)
             return {"outcome": "error", "facts": [], "message": msg,
-                    "summary": msg, "game": self.id}
+                    "summary": msg, "game": self.id, "pushed": True}
 
         save["last_date"] = today.isoformat()
         save["view_count"] = (save.get("view_count") or 0) + 1
@@ -209,7 +209,7 @@ class HistoryGame(GameAdapter):
         summary = f"{neko} 今天共 {len(entries)} 条历史大事"
         return {"outcome": "today", "facts": [build_fact("history", count=len(entries))],
                 "message": summary, "summary": summary, "game": self.id,
-                "game_name": self.name, "entries": len(entries)}
+                "game_name": self.name, "entries": len(entries), "pushed": True}
 
     async def _h_filter(self, user_id: str, save: Dict[str, Any], c: str,
                         year: Optional[str], ftype: Optional[str]) -> Dict[str, Any]:
@@ -219,7 +219,7 @@ class HistoryGame(GameAdapter):
         if not entries:
             msg = "呜……历史数据拉取失败了喵，稍后再试吧~"
             await self.push_text(msg)
-            return {"outcome": "error", "facts": [], "message": msg, "summary": msg}
+            return {"outcome": "error", "facts": [], "message": msg, "summary": msg, "pushed": True}
         filtered = []
         for e in entries:
             if year and e.get("year") == year:
@@ -230,7 +230,7 @@ class HistoryGame(GameAdapter):
             label = year or TYPE_LABELS.get(ftype or "", "")
             msg = f"喵……今天没有 {label} 的记录呢。换一个年份或类型试试?"
             await self.push_text(msg)
-            return {"outcome": "empty_filter", "facts": [], "message": msg, "summary": msg}
+            return {"outcome": "empty_filter", "facts": [], "message": msg, "summary": msg, "pushed": True}
         lines = [(f"{e['year']} · {TYPE_LABELS.get(e.get('type',''),'大事')}", self._rarity(e))
                  for e in filtered[:8]]
         card = await self.render_card(self.name, f"筛选结果 {year or TYPE_LABELS.get(ftype or '', '')}",
@@ -242,18 +242,18 @@ class HistoryGame(GameAdapter):
         else:
             await self.push_text("\n".join([neko] + [f"  {e['year']} {e['title']}" for e in filtered[:6]]))
         return {"outcome": "filter", "facts": [build_fact("history_filter", count=len(filtered))],
-                "message": neko, "summary": neko, "game": self.id}
+                "message": neko, "summary": neko, "game": self.id, "pushed": True}
 
     async def _h_stop(self, user_id: str, save: Dict[str, Any]) -> Dict[str, Any]:
         msg = self._pick_emotion("stop")
         await self.push_text(msg)
-        return {"outcome": "stop", "facts": [], "message": msg, "summary": msg, "game": self.id}
+        return {"outcome": "stop", "facts": [], "message": msg, "summary": msg, "game": self.id, "pushed": True}
 
     async def _h_help(self, user_id: str, save: Dict[str, Any]) -> Dict[str, Any]:
         msg = ("喵~可以发「历史上的今天」看今天的大事; "
                "或加年份/类型过滤, 比如「历史上的今天 1999」「历史上的今天 出生」")
         await self.push_text(msg)
-        return {"outcome": "help", "facts": [], "message": msg, "summary": msg, "game": self.id}
+        return {"outcome": "help", "facts": [], "message": msg, "summary": msg, "game": self.id, "pushed": True}
 
     # ── 工具 ─────────────────────────
 

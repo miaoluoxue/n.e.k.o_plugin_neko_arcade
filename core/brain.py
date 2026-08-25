@@ -203,7 +203,9 @@ class GameBrain:
 
         # 主动把游戏结算文本推到聊天框（ai_behavior="blind"：只原样显示，不
         # 额外触发 AI 轮次；结果内容随 summary 由宿主喂给 LLM，猫娘自然会回应）。
-        if game_msg:
+        # 若游戏已在 handle_action 内自行推送过(返回带 pushed=True, 如 history/
+        # cat_evolution 的 push_text/push_text_image), 则跳过, 避免双重回复。
+        if game_msg and not result.get("pushed"):
             await self.push.text(game_msg, ai_behavior="blind")
 
         # 高光事件推送图片卡片（LLM 无法生成图片）
