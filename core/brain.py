@@ -189,6 +189,7 @@ class GameBrain:
 
         facts = result.get("facts", [])
         game_msg = result.get("message", "")
+        images = result.get("images") or []   # 游戏返回的可选图片数据(主插件统一推)
         kind = game.classify_event(outcome, facts)
         self.persona.on_event(kind)
         self.memory.record(game_id, outcome, facts, game_msg)
@@ -203,18 +204,33 @@ class GameBrain:
         if self.tts:
             self.tts.note_tts_line(neko_text)
 
-        # 主动把游戏结算文本推到聊天框（ai_behavior="blind"：只原样显示，不
-        # 额外触发 AI 轮次；结果内容随 summary 由宿主喂给 LLM，猫娘自然会回应）。
-        # 若游戏已在 handle_action 内自行推送过(返回带 pushed=True, 如 history/
-        # cat_evolution 的 push_text/push_text_image), 则跳过, 避免双重回复。
-        if game_msg and not result.get("pushed"):
+        # ── 输出编排(主插件统一负责, 游戏不参与推送) ──
+        # 1. 游戏返回了图片数据 → 推「情感文本/结算文本 + 图片」一次(盲显, 不触发 AI)
+        # 2. 无图片但 message 非空 → 推 message 一次
+        # 3. summary 一律用 neko_text(与用户已见内容不同), 避免宿主 LLM 复述造成双重回复
+        pushed_any = False
+        if images:
+            for img in images[:3]:
+                text = img.get("text") or neko_text or game_msg
+                img_bytes = img.get("bytes")
+                img_url = img.get("url")
+                if img_url:
+                    await self.push.text_with_image_url(text, img_url)
+                    pushed_any = True
+                elif img_bytes:
+                    await self.push.text_with_image(
+                        text, img_bytes, img.get("mime", "image/png"))
+                    pushed_any = True
+            if not pushed_any and game_msg:
+                await self.push.text(game_msg, ai_behavior="blind")
+        elif game_msg:
             await self.push.text(game_msg, ai_behavior="blind")
 
         # 高光事件推送图片卡片（LLM 无法生成图片）
         card_img = None
         if level == "highlight" and game.wants_card(outcome, facts):
             card_img = await self._render_card(game, outcome, facts)
-            if card_img:
+            if card_img and not pushed_any:
                 await self.push.text_with_image(neko_text, card_img)
 
         # 构建完整上下文返回给 LLM，让 LLM 自然生成猫娘情感陪伴回应
@@ -222,16 +238,10 @@ class GameBrain:
         cmds = (help_data.get("commands", []) or [])[:5]
         mood = self.persona.mood.snapshot()
         # summary：宿主按入口的 llm_result_fields=["summary"] 提取，喂给对话 LLM
-        # ⚠️ 双重回复守门：游戏已自推用户可见内容(pushed=True)时，summary 只用
-        # neko_text(情感模板, 与用户已见内容不同)；不能拼接 game_msg(用户已见
-        # 原文)——否则 LLM 收到原文会复述一遍, 造成双重回复。
-        pushed = bool(result.get("pushed"))
-        if pushed:
-            summary = neko_text or game_msg
-        else:
-            summary = game_msg or neko_text
-            if game_msg and neko_text and neko_text != game_msg:
-                summary = f"{game_msg}\n{neko_text}"
+        # ⚠️ 双重回复守门(架构): 游戏不参与推送, 用户已见内容由 brain 统一输出;
+        # summary 一律用 neko_text(情感模板, 与用户已见内容不同)——宿主 LLM 收到
+        # summary 后自然演绎, 不会复述用户已见的原文。
+        summary = neko_text or game_msg
         return {
             "game": game_id,
             "game_name": game.name,

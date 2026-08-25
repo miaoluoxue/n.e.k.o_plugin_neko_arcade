@@ -57,6 +57,17 @@ class GameAdapter(abc.ABC):
         return await self._photo.send_photo(user_id, category=category,
                                             caption=caption, auto=auto)
 
+    async def pick_photo_for_delivery(self, category: Optional[str] = None,
+                                      caption: str = "") -> Dict[str, Any]:
+        """通过桥接取一张图(不推送), 供 handle_action 返回 images 交 brain 推送。
+
+        「游戏适配插件」输出契约: 游戏不直接 push, 只取图数据返回 images,
+        brain 统一编排推送。返回 {ok, image: {text, bytes, mime, url}, ...}。
+        """
+        if not self._photo:
+            return {"ok": False, "summary": "发图桥接未就绪喵", "error": "no_bridge"}
+        return await self._photo.pick_for_delivery(category=category, caption=caption)
+
     async def send_auto_photo(self, user_id: str) -> Dict[str, Any]:
         """后台自动发图(桥接): 只发本地图库, 配文随机。"""
         if not self._photo:
@@ -78,27 +89,47 @@ class GameAdapter(abc.ABC):
                                               data_bytes=data_bytes,
                                               category=category)
 
-    # ── 游戏交互服务 ──────────────────────────
+    # ── 输出契约(游戏适配插件) ─────────────
+    #
+    # 游戏 handle_action 只返回结构化结果, 不参与任何推送:
+    #   return {"facts": [...], "outcome": "win", "message": "结算文本",
+    #           "images": [{"text": "配文", "bytes": img_bytes, "mime": "image/png"}]}
+    # brain 统一负责: 推 message、推 images、渲染高光卡片、生成 summary。
+    #
+    # 以下 push_* 方法已废弃(仅兼容历史游戏/on_tick 后台提醒使用):
+    # 新游戏 handle_action 内不得调用, 应返回 images 数据交给 brain 推送。
+
+    @staticmethod
+    def build_image(text: str = "", image_bytes: bytes = b"",
+                    mime: str = "image/png", url: str = "") -> Dict[str, Any]:
+        """构造 handle_action 返回的 images 元素(由 brain 统一推送)。"""
+        img: Dict[str, Any] = {"text": text}
+        if url:
+            img["url"] = url
+        else:
+            img["bytes"] = image_bytes
+            img["mime"] = mime
+        return img
 
     async def push_text(self, text: str) -> None:
-        """推送文本到聊天框。"""
+        """推送文本到聊天框(已废弃: 仅 on_tick 后台提醒/历史兼容使用)。"""
         if self._push:
             await self._push.text(text)
 
     async def push_text_image(self, text: str, image_bytes: bytes,
                               mime: str = "image/png") -> None:
-        """推送文本+图片到聊天框。"""
+        """推送文本+图片到聊天框(已废弃: 仅历史兼容, 新游戏用 images 返回)。"""
         if self._push:
             await self._push.text_with_image(text, image_bytes, mime)
 
     async def push_text_image_url(self, text: str, url: str) -> None:
-        """推送文本 + 图片 URL（图片已存在于 static, 直接 markdown 引用）。"""
+        """推送文本 + 图片 URL(已废弃: 仅历史兼容, 新游戏用 images 返回)。"""
         if self._push:
             await self._push.text_with_image_url(text, url)
 
     async def push_help(self, title: str, image_bytes: bytes,
                         text: str = "") -> None:
-        """推送帮助文档。"""
+        """推送帮助文档(已废弃: 帮助由 brain.show_help 统一处理)。"""
         if self._push:
             await self._push.help_doc(title, image_bytes, text)
 

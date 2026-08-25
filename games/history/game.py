@@ -183,36 +183,27 @@ class HistoryGame(GameAdapter):
         entries = await asyncio.to_thread(_get_day_entries, month, day)
         if not entries:
             msg = "呜……今天的历史数据拉取失败了喵，百度百科那边好像不太配合。稍后再试试吧~"
-            await self.push_text(msg)
-            return {"outcome": "error", "facts": [], "message": "今天的历史数据拉取失败, 已告知主人。",
-                    "summary": "今天的历史数据拉取失败, 已告知主人。",
-                    "game": self.id, "pushed": True}
+            # 「游戏适配插件」: 不自己 push, 返回 message 由 brain 统一推送
+            return {"outcome": "error", "facts": [], "message": msg}
 
         save["last_date"] = today.isoformat()
         save["view_count"] = (save.get("view_count") or 0) + 1
         await self._save(user_id, save)
 
-        # 渲染图片: 用 render_card 风格, 但条目多 → 用 render_html 或直接拼文本
-        # 先用 PIL 卡片渲染前 8 条高亮 + 文本补充
+        # 渲染图片卡片(游戏负责生成数据, brain 负责推送)
         lines = [(f"{e['year']} · {TYPE_LABELS.get(e.get('type',''),'大事')}",
                   self._rarity(e)) for e in entries[:8]]
         card = await self.render_card(self.name, f"历史上的今天 {today.month}月{today.day}日",
                                       lines, f"共 {len(entries)} 条大事", "curiosity")
         neko = self._pick_emotion("start", name=str(len(entries)), year="")
+        images = []
         if card:
-            await self.push_text_image(neko, card)
-        else:
-            # 降级: 纯文本
-            text = [f"📜 历史上的今天 {today.month}月{today.day}日,共 {len(entries)} 条喵"]
-            for e in entries[:6]:
-                text.append(f"  {e['year']} {e['title']}")
-            await self.push_text("\n".join(text))
-        # 双重回复守门: 用户已看到图文(neko/卡片), message/summary 只给 LLM
-        # 指令性提示(第三人称描述), 不能让 LLM 复述用户已见的 neko 文本。
-        summary = f"已展示今天({today.month}月{today.day}日)共 {len(entries)} 条历史大事卡片给主人, 等主人选年份或类型。"
+            images.append(self.build_image(neko, card, "image/png"))
+        # 返回 images 数据交 brain 统一推送; message 是给用户的简短结算文本
+        text = f"📜 历史上的今天 {today.month}月{today.day}日 · 共 {len(entries)} 条大事喵"
         return {"outcome": "today", "facts": [build_fact("history", count=len(entries))],
-                "message": summary, "summary": summary, "game": self.id,
-                "game_name": self.name, "entries": len(entries), "pushed": True}
+                "message": text, "images": images, "game": self.id,
+                "game_name": self.name, "entries": len(entries)}
 
     async def _h_filter(self, user_id: str, save: Dict[str, Any], c: str,
                         year: Optional[str], ftype: Optional[str]) -> Dict[str, Any]:
@@ -221,9 +212,7 @@ class HistoryGame(GameAdapter):
                                           today.strftime("%m"), today.strftime("%d"))
         if not entries:
             msg = "呜……历史数据拉取失败了喵，稍后再试吧~"
-            await self.push_text(msg)
-            return {"outcome": "error", "facts": [], "message": "历史数据拉取失败, 已告知主人。",
-                    "summary": "历史数据拉取失败, 已告知主人。", "pushed": True}
+            return {"outcome": "error", "facts": [], "message": msg}
         filtered = []
         for e in entries:
             if year and e.get("year") == year:
@@ -233,39 +222,29 @@ class HistoryGame(GameAdapter):
         if not filtered:
             label = year or TYPE_LABELS.get(ftype or "", "")
             msg = f"喵……今天没有 {label} 的记录呢。换一个年份或类型试试?"
-            await self.push_text(msg)
-            return {"outcome": "empty_filter", "facts": [],
-                    "message": f"今天没有{label}的记录, 已提示主人换条件。",
-                    "summary": f"今天没有{label}的记录, 已提示主人换条件。", "pushed": True}
+            return {"outcome": "empty_filter", "facts": [], "message": msg}
         lines = [(f"{e['year']} · {TYPE_LABELS.get(e.get('type',''),'大事')}", self._rarity(e))
                  for e in filtered[:8]]
         card = await self.render_card(self.name, f"筛选结果 {year or TYPE_LABELS.get(ftype or '', '')}",
                                       lines, f"共 {len(filtered)} 条", "curiosity")
         neko = self._pick_emotion("year_result", year=year or TYPE_LABELS.get(ftype or "", ""),
                                   count=str(len(filtered)))
+        images = []
         if card:
-            await self.push_text_image(neko, card)
-        else:
-            await self.push_text("\n".join([neko] + [f"  {e['year']} {e['title']}" for e in filtered[:6]]))
-        # 双重回复守门: 用户已看到图文(neko/卡片), message 给 LLM 提示而非原文
-        hint = f"已展示{'年份'+year if year else '类型'+TYPE_LABELS.get(ftype or '', '')}筛选结果({len(filtered)}条)给主人。"
+            images.append(self.build_image(neko, card, "image/png"))
+        label = year or TYPE_LABELS.get(ftype or "", "")
+        msg = f"筛选结果: {label} 共 {len(filtered)} 条大事喵"
         return {"outcome": "filter", "facts": [build_fact("history_filter", count=len(filtered))],
-                "message": hint, "summary": hint, "game": self.id, "pushed": True}
+                "message": msg, "images": images, "game": self.id}
 
     async def _h_stop(self, user_id: str, save: Dict[str, Any]) -> Dict[str, Any]:
         msg = self._pick_emotion("stop")
-        await self.push_text(msg)
-        # 用户已看到告别语, summary 给 LLM 提示(结束会话)
-        return {"outcome": "stop", "facts": [], "message": "主人结束了历史漫游。",
-                "summary": "主人结束了历史漫游。", "game": self.id, "pushed": True}
+        return {"outcome": "stop", "facts": [], "message": msg, "game": self.id}
 
     async def _h_help(self, user_id: str, save: Dict[str, Any]) -> Dict[str, Any]:
         msg = ("喵~可以发「历史上的今天」看今天的大事; "
                "或加年份/类型过滤, 比如「历史上的今天 1999」「历史上的今天 出生」")
-        await self.push_text(msg)
-        # 用户已看到玩法说明, summary 给 LLM 提示
-        return {"outcome": "help", "facts": [], "message": "已展示「历史上的今天」玩法说明。",
-                "summary": "已展示「历史上的今天」玩法说明。", "game": self.id, "pushed": True}
+        return {"outcome": "help", "facts": [], "message": msg, "game": self.id}
 
     # ── 工具 ─────────────────────────
 

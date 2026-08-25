@@ -354,43 +354,47 @@ start_game("fishing") → 猫娘："来玩钓鱼了喵！"（兴奋+0.5）
 | 语音（TTS） | 主项目自动播放 | 所有聊天消息 |
 | 面板 | 心情/会话/统计 | 3s 轮询 |
 
-### 7.6 ⚠️ 消息双通道与双重回复（架构级，必须理解）
+### 7.6 ⚠️ 输出架构：游戏返回数据，主插件统一编排（游戏适配插件）
 
-**插件向用户展示内容有两条独立通道：**
+**架构原则：游戏不参与任何推送，只返回结构化结果，brain 统一输出。**
 
 ```
-通道1: 游戏主动推送
-    games/xxx → self.push_text() / push_text_image()
-    → adapters/PushSender → push_message(ai_behavior="blind")
-    → 宿主直接渲染到聊天窗(不进 LLM)     ← 用户看到原文
-
-通道2: 宿主 task_result → LLM 回复
-    games/xxx → handle_action 返回 {summary}
-    → brain 返回 → 插件 @plugin_entry 返回 Ok({summary})
-    → 宿主 _emit_task_result → task_result 事件
-    → character_runtime → 主 LLM 收到 summary → 生成自然语言回复  ← 用户看到猫娘说话
+游戏 handle_action 返回 {facts, outcome, message, images?}
+    │
+    ▼
+brain.handle_action (core/brain.py)
+    ├─ 统一推送: 有 images → 推「配文/文本 + 图片」一次; 无 images → 推 message 一次
+    ├─ 统一渲染: 高光卡片(wants_card)
+    ├─ 统一生成 summary(用情感模板 neko_text, 与用户已见内容不同)
+    ├─ 统一状态锚: 游戏进行中定期注入"还在玩X, 用户话传给 play_game"(防打断)
+    ├─ 统一禁止 proactive 抢话: 游戏中猫娘不主动插话
+    └─ 统一发图桥接: PhotoBridge(取图/上传/后台发图)
 ```
 
-**双重回复事故**：游戏在 `handle_action` 里自推了文本(通道1)，**同时又把
-同一文本放进 `message`/`summary` 返回** → 宿主把 summary 喂给 LLM(通道2)，
-LLM 复述一遍 → 用户看到两条几乎一样的话。
+**为什么(双重回复的根因与根治)：**
 
-**架构约束：**
+旧架构里游戏自己 `push_text_image` 推送后又把同一文本放进 summary 返回，
+宿主把 summary 喂给主 LLM，LLM 复述 → 双重回复。新架构让游戏**完全不推送**，
+用户可见输出只经 brain 一条通道发出，从结构上杜绝。
 
-- `summary` 是「给 LLM 的提示」，不是「给用户的原文」——宿主必把它喂给主
-  LLM，LLM 会基于它生成回复。这是宿主行为，插件无法关闭。
-- 一条游戏动作，用户最多看到「游戏输出 + 猫娘自然回应」两条。若两条内容
-  几乎一样 = 双重回复 = 游戏把同一文本同时走了两条通道。
-- `pushed` 标记只能拦 channel-1 的重复推送(brain 不再推 message)，**拦不住
-  channel-2 的 LLM 复述**——所以 `message`/`summary` 必须遵守「给 LLM 的
-  提示」语义，不能是用户已见原文。
+**两条宿主通道(插件无法关闭, 但 brain 统一管理):**
 
-**正确输出模式（详见 [rules.md §2.5](rules.md)）：**
+```
+通道1: brain push_message(ai_behavior="blind") → 宿主直接渲染到聊天窗(不进 LLM)
+通道2: @plugin_entry 返回 Ok({summary}) → 宿主 task_result → 主 LLM 生成自然回复
+```
 
-| 场景 | 做法 |
-|------|------|
-| 纯文本结果 | 只返回 `message` 不自推(方案A)——brain 推一次 + LLM 自然回应 |
-| 带图片卡片 | 自推图文(通道1)，`message` 给 LLM 指令性提示 + `pushed: True`(方案B) |
+- summary 一律用 `neko_text`(情感模板, 与用户已见内容不同)——LLM 自然演绎不复述
+- 游戏返回的 `message`/`images` 由 brain 编排进通道1
+- 游戏自身绝不调用 push_text/push_text_image(仅 on_tick 后台提醒保留桥接)
+
+**正确输出模式(详见 [rules.md §2.5](rules.md))：**
+
+| 场景 | 游戏返回 | brain 推送 |
+|------|----------|-----------|
+| 纯文本结果 | `{"message": "钓到一条鲲!"}` | 推 message 一次 |
+| 带图片卡片 | `{"message": "...", "images": [{text, bytes, mime}]}` | 推图文一次 |
+| 发图(neko_photo) | `pick_photo_for_delivery` 取图 → 返回 images | 推图文一次 |
 
 ---
 
@@ -405,12 +409,12 @@ LLM 复述一遍 → 用户看到两条几乎一样的话。
 
 ```
 游戏方（games/xxx/）
-    ├── 只做：handle_action() 返回 facts + outcome
+    ├── 只做：handle_action() 返回 facts + outcome + message + images?
     ├── 只做：get_user_data() / save_user_data() 存档
     ├── 只读：self._config（大脑注入的配置）
-    ├── 可用：self.push_text() / push_text_image() / render_card() 等服务接口
+    ├── 可用：self.render_card() / pick_photo_for_delivery() 生成图片数据(交 brain 推)
     ├── 可用：self.call_llm() / tts_note() 等交互接口
-    └── 禁止：直接调用 push_message、自行管理情感话术
+    └── 禁止：直接调用 push_text/push_text_image/push_message、自行管理情感话术
 
 大脑方（core/brain.py + adapters/）
     ├── 负责：LLM 调用、情感渲染、拟人化

@@ -259,7 +259,9 @@ class XiuxianGame(GameAdapter):
                f"灵石 ×{save.lingshi_low}\n"
                f"猫娘 {self.neko.name} 也在你身边喵～\n"
                f"试试「修炼」「突破」「修仙签到」吧!")
-        # 渲染角色卡并推送(static + markdown 通道, 宿主显示真实图片)
+        # 渲染角色卡(游戏负责生成数据, brain 负责推送)
+        # 「游戏适配插件」: 返回 images 数据, 不直接 push
+        images = []
         try:
             lines = [
                 (f"境界：{save.realm_name()}", "common"),
@@ -271,13 +273,13 @@ class XiuxianGame(GameAdapter):
             img = await self.render_card(self.name, "踏入仙途", lines,
                                          subtitle=f"道友 {save.name}", mood="excitement")
             if img:
-                await self.push_text_image(msg, img)
+                images.append(self.build_image(msg, img, "image/png"))
                 msg = ""
         except Exception:
             pass
         return {"message": msg, "outcome": "start",
                 "facts": [{"kind": "start", "name": save.name, "realm": save.realm_name()}],
-                "summary": f"{save.name}踏入仙途,境界{save.realm_name()}"}
+                "images": images}
 
     async def _h_rename(self, user_id: str, cmd: str) -> Dict[str, Any]:
         save = await self._load(user_id)

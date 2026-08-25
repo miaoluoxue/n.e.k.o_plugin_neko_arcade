@@ -78,7 +78,8 @@ def _make_game(tmp_path):
     """构造游戏实例 + 真实 PhotoBridge(图片目录注入 tmp_path/static/img/neko/)。"""
     plugin = StubPlugin()
     push = StubPush(plugin.pushes)
-    img = StubImg(plugin.pushes)
+    avatar_sink = []   # 头像渲染独立记录, 与推送区分
+    img = StubImg(avatar_sink)
     bridge = PhotoBridge(plugin, push=push, img=img)
 
     # 注入临时图片目录: static/img/neko/可爱/ + static/img/neko/日常/
@@ -109,8 +110,9 @@ def test_neko_photo_send_and_album():
         r = await game.handle_action(uid, "发图")
         assert r["outcome"] in ("photo", "collect_new", "rare"), r
         assert r["facts"][0]["kind"] == "photo"
-        # 应推送了图片(URL 或 bytes 通道)
-        assert plugin.pushes, "应推送内容"
+        # 游戏返回 images 数据(brain 统一推), 不直接 push
+        assert r.get("images") and (r["images"][0].get("bytes") or r["images"][0].get("url")), \
+            "应返回 images 数据(bytes 或 url)"
 
         # 图鉴
         r2 = await game.handle_action(uid, "图鉴")
@@ -340,81 +342,66 @@ def test_neko_photo_custom_category_command():
 
 
 def test_neko_photo_no_double_push():
-    """双重回复回归: 游戏已自行推送(pushed=True)时, brain 不得重复推送 message。
+    """双重回复回归(新架构): 游戏返回 images 时 brain 只推一次(图文合一)。
 
-    模拟 brain.handle_action 的推送判定: result 带 pushed → 不再 push.text;
-    不带 pushed → 正常 push.text。
+    模拟 brain.handle_action 的输出编排: 有 images → 推图文(不重复推 message);
+    无 images → 推 message 一次。
     """
     async def run():
-        # 1. 带 pushed=True 的返回 → brain 跳过重复推送
-        class FakeBrain:
-            async def handle_like(self):
-                result = {"message": "发了一张 可爱 的照片给你喵", "pushed": True}
-                game_msg = result.get("message", "")
-                pushes = []
-                if game_msg and not result.get("pushed"):
-                    pushes.append(game_msg)
-                return pushes
+        def build_push(images, game_msg):
+            pushes = []
+            if images:
+                for img in images[:3]:
+                    text = img.get("text") or game_msg
+                    if img.get("bytes"):
+                        pushes.append((text, "image/png"))
+            elif game_msg:
+                pushes.append(game_msg)
+            return pushes
 
-        brain = FakeBrain()
-        pushes = await brain.handle_like()
-        assert pushes == [], f"pushed=True 时不应重复推送, 实际: {pushes}"
+        # 1. 有 images → 只推图文, 不重复推 message
+        pushes1 = build_push([{"text": "看~这张照片", "bytes": b"fake"}], "发了一张照片")
+        assert len(pushes1) == 1, f"有 images 时应只推一次图文, 实际: {pushes1}"
 
-        # 2. 不带 pushed(老游戏模式) → brain 正常推送一次
-        class FakeBrain2:
-            async def handle_like(self):
-                result = {"message": "钓鱼钓到了一条鱼"}
-                game_msg = result.get("message", "")
-                pushes = []
-                if game_msg and not result.get("pushed"):
-                    pushes.append(game_msg)
-                return pushes
-
-        brain2 = FakeBrain2()
-        pushes2 = await brain2.handle_like()
-        assert pushes2 == ["钓鱼钓到了一条鱼"], f"未标记 pushed 时应推一次, 实际: {pushes2}"
+        # 2. 无 images → 推 message 一次
+        pushes2 = build_push([], "钓到了一条鱼")
+        assert pushes2 == ["钓到了一条鱼"], f"无 images 时应推 message 一次, 实际: {pushes2}"
 
     asyncio.run(run())
 
 
 def test_neko_photo_send_marks_pushed():
-    """neko_photo 发图返回必须带 pushed=True(桥接已推送图片+配文)。"""
+    """neko_photo 发图返回 images 数据(游戏适配插件: 不 push, 交 brain 统一推)。"""
     async def run():
         game, plugin = _make_game(_TMP)
         uid = "user_8"
         plugin.pushes.clear()
         r = await game.handle_action(uid, "发图")
         assert r["outcome"] in ("photo", "collect_new", "rare"), r
-        assert r.get("pushed") is True, "neko_photo 发图应标记 pushed=True 防双重回复"
-        # 图片已被桥接推送
-        assert plugin.pushes, "桥接应已推送图片"
+        # 游戏不 push, 返回 images 数据(由 brain 统一推送)
+        assert r.get("images"), "neko_photo 发图应返回 images 数据(brain 统一推)"
+        assert isinstance(r["images"], list) and \
+            (r["images"][0].get("bytes") or r["images"][0].get("url")), r["images"]
+        # 游戏不应直接推送
+        assert not plugin.pushes, f"游戏不应直接 push, 实际: {plugin.pushes}"
 
     asyncio.run(run())
 
 
 def test_brain_summary_guard_no_double_reply():
-    """双重回复守门(brain 层): pushed=True 时 summary 不得包含用户已见原文。
+    """双重回复守门(brain 层, 新架构): summary 一律用 neko_text, 不含用户已见原文。
 
-    模拟 brain.handle_action 的 summary 生成: 游戏自推(pushed)时, summary 只用
-    neko_text(情感模板), 不拼接 game_msg(用户已见原文), 避免 LLM 复述。
+    游戏不参与推送, 用户已见内容由 brain 统一输出; summary 用 neko_text
+    (情感模板)喂给宿主 LLM, 与用户已见内容不同, 避免 LLM 复述。
     """
     async def run():
-        def build_summary(game_msg, neko_text, pushed):
-            if pushed:
-                return neko_text or game_msg
-            summary = game_msg or neko_text
-            if game_msg and neko_text and neko_text != game_msg:
-                summary = f"{game_msg}\n{neko_text}"
-            return summary
+        def build_summary(game_msg, neko_text):
+            return neko_text or game_msg
 
-        # 1. pushed=True: summary 用 neko_text, 不含用户已见原文
-        s1 = build_summary("哇,15 条呢!主人想听哪个年代的故事?",
-                           "今天有 15 条历史大事喵!", True)
-        assert "哇,15 条呢" not in s1, f"pushed 时 summary 不应含用户已见原文: {s1}"
-        assert "历史大事喵" in s1, s1
-
-        # 2. 不带 pushed(老游戏): summary 可含 game_msg(由 brain 统一推, 无重复)
-        s2 = build_summary("钓到一条鲲!", "哇,传说级的鲲喵!", False)
-        assert "钓到一条鲲" in s2, s2
+        # summary 用 neko_text, 不含用户已见原文
+        s = build_summary("哇,15 条呢!主人想听哪个年代的故事?",
+                          "今天有 15 条历史大事喵!")
+        assert "哇,15 条呢" not in s, f"summary 不应含用户已见原文: {s}"
+        assert "历史大事喵" in s, s
 
     asyncio.run(run())

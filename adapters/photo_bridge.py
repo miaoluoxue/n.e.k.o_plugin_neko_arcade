@@ -221,6 +221,44 @@ class PhotoBridge:
         return await self.send_photo(user_id, auto=True,
                                      caption=random.choice(AUTO_LINES))
 
+    async def pick_for_delivery(self, category: Optional[str] = None,
+                                caption: str = "") -> Dict[str, Any]:
+        """取一张图(不推送), 供游戏 handle_action 返回 images 数据交 brain 推送。
+
+        这是"游戏适配插件"的输出契约: 游戏不直接 push, 只通过桥接取图,
+        brain 统一编排推送。返回 {ok, image: {text, bytes, mime, url}, style, ...}。
+        """
+        photo = await self.pick_photo(category=category)
+        if not photo:
+            if category:
+                return {"ok": False, "error": "category_empty",
+                        "summary": f"分类「{category}」里还没有图喵"}
+            return {"ok": False, "error": "no_photo",
+                    "summary": "呜……图片都跑丢了, 稍后再试试喵"}
+        text = caption or self._caption_for(photo)
+        image: Dict[str, Any] = {"text": text}
+        if photo.get("url"):
+            image["url"] = photo["url"]
+        else:
+            image["bytes"] = photo["bytes"]
+            image["mime"] = photo.get("mime", "image/png")
+        return {"ok": True, "image": image,
+                "style": photo.get("style", ""),
+                "category": photo.get("category", ""),
+                "rarity": photo.get("rarity", "common"),
+                "summary": self._delivery_summary(photo)}
+
+    def _delivery_summary(self, photo: Dict[str, Any]) -> str:
+        """取图后给 LLM 的简短描述(与用户已见配文不同, 避免复述)。"""
+        label = MOOD_LABELS.get(photo.get("style", ""), photo.get("style", "照片"))
+        cat = photo.get("category", "")
+        rarity = photo.get("rarity", "common")
+        if rarity == "rare":
+            return f"给主人发了一张珍藏照片({label})喵~"
+        if cat:
+            return f"给主人发了张「{cat}」分类的照片喵~"
+        return f"给主人发了张{label}的照片喵~"
+
     def _caption_for(self, photo: Dict[str, Any]) -> str:
         """生成发图配文。"""
         style = photo.get("style", "")

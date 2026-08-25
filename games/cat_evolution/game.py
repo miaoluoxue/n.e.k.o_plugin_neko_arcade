@@ -139,8 +139,7 @@ class CatEvolutionGame(GameAdapter):
         # 未注册保护(除领养外都需要先有猫)
         if not save["name"] and not (c in self._RULES[0][0] or any(c.startswith(kw + " ") for kw in self._RULES[0][0])):
             msg = "还没有小猫喵~ 发「领养小猫」开始进化之路!"
-            await self.push_text(msg)
-            return {"outcome": "need_register", "facts": [], "message": msg, "summary": msg, "pushed": True}
+            return {"outcome": "need_register", "facts": [], "message": msg}
 
         # 显式指令: 完全匹配优先, 其次指令名+空格开头(如「探索 1」「领养小猫 咪咪」)
         for kws, _, handler in self._RULES:
@@ -162,8 +161,7 @@ class CatEvolutionGame(GameAdapter):
     async def _h_register(self, user_id: str, save: Dict[str, Any], c: str) -> Dict[str, Any]:
         if save["name"]:
             msg = f"{save['name']}已经是你的小猫了喵~ 发「探索」出发吧!"
-            await self.push_text(msg)
-            return {"outcome": "already", "facts": [], "message": msg, "summary": msg, "pushed": True}
+            return {"outcome": "already", "facts": [], "message": msg}
         name = c.replace("领养小猫", "").replace("注册", "").replace("开始进化", "").strip()
         if not name:
             name = f"小猫{random.randint(100, 999)}"
@@ -174,9 +172,8 @@ class CatEvolutionGame(GameAdapter):
                f"初始属性: 攻{save['stats']['atk']} 防{save['stats']['def']} "
                f"命{save['stats']['hp']} 速{save['stats']['spd']}\n"
                f"发「探索」去猫猫森林冒险吧! | 初始小鱼干×20")
-        await self.push_text(msg)
         return {"outcome": "register", "facts": [build_fact("register", name=name)],
-                "message": msg, "summary": msg, "pushed": True, "game": self.id}
+                "message": msg, "game": self.id}
 
     async def _h_explore(self, user_id: str, save: Dict[str, Any], c: str) -> Dict[str, Any]:
         data = self._load_data()
@@ -185,8 +182,7 @@ class CatEvolutionGame(GameAdapter):
         accessible = {k: v for k, v in maps.items() if v.get("public") and v.get("require_level", 1) <= save["stats"]["lv"]}
         if not accessible:
             msg = "暂时没有可去的地方喵~ 练练级再来!"
-            await self.push_text(msg)
-            return {"outcome": "no_map", "facts": [], "message": msg, "summary": msg, "pushed": True}
+            return {"outcome": "no_map", "facts": [], "message": msg}
         if len(accessible) == 1:
             return await self._h_enter_map(user_id, save, list(accessible.keys())[0])
         # 多地图: 列出选择
@@ -195,8 +191,7 @@ class CatEvolutionGame(GameAdapter):
             desc = maps[name].get("description", "")[:30]
             lines.append(f"  {i}. {name} {desc}")
         msg = "\n".join(lines)
-        await self.push_text(msg)
-        return {"outcome": "map_select", "facts": [], "message": msg, "summary": msg, "pushed": True,
+        return {"outcome": "map_select", "facts": [], "message": msg,
                 "maps": list(accessible.keys())}
 
     async def _h_pick_map(self, user_id: str, save: Dict[str, Any], c: str) -> Dict[str, Any]:
@@ -206,8 +201,7 @@ class CatEvolutionGame(GameAdapter):
         idx = int(c) - 1
         if idx < 0 or idx >= len(accessible):
             msg = "数字不对喵~ 重新选一个吧"
-            await self.push_text(msg)
-            return {"outcome": "bad_map", "facts": [], "message": msg, "summary": msg, "pushed": True}
+            return {"outcome": "bad_map", "facts": [], "message": msg}
         return await self._h_enter_map(user_id, save, accessible[idx])
 
     async def _h_enter_map(self, user_id: str, save: Dict[str, Any], map_name: str) -> Dict[str, Any]:
@@ -230,8 +224,7 @@ class CatEvolutionGame(GameAdapter):
         candidates = collect(map_name)
         if not candidates:
             msg = f"「{map_name}」里空荡荡的, 什么都没有喵…"
-            await self.push_text(msg)
-            return {"outcome": "empty_map", "facts": [], "message": msg, "summary": msg, "pushed": True}
+            return {"outcome": "empty_map", "facts": [], "message": msg}
         # 加权随机遇敌
         total = sum(e.get("weight", 1) for e in candidates)
         roll = random.uniform(0, total)
@@ -246,18 +239,19 @@ class CatEvolutionGame(GameAdapter):
         enemy = enemies_by_name.get(picked["name"])
         if not enemy:
             msg = "遇到神秘的生物喵…但它消失了"
-            await self.push_text(msg)
-            return {"outcome": "no_enemy", "facts": [], "message": msg, "summary": msg, "pushed": True}
+            return {"outcome": "no_enemy", "facts": [], "message": msg}
 
         save["explores"] += 1
         await self._save(user_id, save)
         neko = self._pick_emotion("encounter", enemy=enemy["name"], map=map_name)
-        await self.push_text(f"{neko}\n⚔️ 遭遇 {enemy['name']} (Lv.{picked.get('lv', 1)})!")
-        # 开战
-        return await self._do_battle(user_id, save, enemy, map_name)
+        # 遭遇提示传给 _do_battle, 由战斗结果一起返回 message(brain 统一推)
+        # 「游戏适配插件」: 游戏不直接 push, 只返回结构化结果
+        return await self._do_battle(user_id, save, enemy, map_name,
+                                     intro=f"{neko}\n⚔️ 遭遇 {enemy['name']} (Lv.{picked.get('lv', 1)})!")
 
     async def _do_battle(self, user_id: str, save: Dict[str, Any],
-                         enemy: Dict[str, Any], map_name: str) -> Dict[str, Any]:
+                         enemy: Dict[str, Any], map_name: str,
+                         intro: str = "") -> Dict[str, Any]:
         container = self._get_battle()
         board = container[GameBoard]
         logger = container[Logger]
@@ -329,47 +323,44 @@ class CatEvolutionGame(GameAdapter):
             if evolved:
                 lines.append(f"  ✨✨ 进化了! 现在是「{save['stage']}」!! ✨✨")
             neko = self._pick_emotion("win", enemy=enemy["name"], stage=save["stage"])
-            await self.push_text(neko + "\n" + "\n".join(lines))
+            # 「游戏适配插件」: 不 push, 返回合并 message(brain 统一推)
+            full = "\n".join([intro, neko] + lines) if intro else "\n".join([neko] + lines)
             return {"outcome": "win", "facts": [build_fact("battle", result="win", enemy=enemy["name"])],
-                    "message": "\n".join(lines), "summary": neko, "game": self.id, "log": log, "pushed": True}
+                    "message": full, "game": self.id, "log": log}
         else:
             # 战败: 不扣属性, 鼓励重试
             msg = (f"💔 打不过 {enemy['name']}喵… 回去练练再来!\n"
                    f"试试「我的状态」看属性, 或去更低级的地图练级")
             neko = self._pick_emotion("lose", enemy=enemy["name"])
-            await self.push_text(neko + "\n" + msg)
+            full = "\n".join([intro, neko, msg]) if intro else "\n".join([neko, msg])
             return {"outcome": "lose", "facts": [build_fact("battle", result="lose", enemy=enemy["name"])],
-                    "message": msg, "summary": neko, "game": self.id, "log": log, "pushed": True}
+                    "message": full, "game": self.id, "log": log}
 
     async def _h_bag(self, user_id: str, save: Dict[str, Any], c: str) -> Dict[str, Any]:
         bag = save.get("bag", {})
         items = "、".join(f"{k}×{v}" for k, v in bag.items() if v > 0) or "空空如也"
         msg = f"🎒 {save['name']}的背包: {items}"
-        await self.push_text(msg)
-        return {"outcome": "bag", "facts": [], "message": msg, "summary": msg, "pushed": True}
+        return {"outcome": "bag", "facts": [], "message": msg}
 
     async def _h_skills(self, user_id: str, save: Dict[str, Any], c: str) -> Dict[str, Any]:
         skills = save.get("skill", {})
         if not skills:
             msg = "还没有学到技能喵~ 打败敌人有概率吞食技能!"
-            await self.push_text(msg)
-            return {"outcome": "no_skill", "facts": [], "message": msg, "summary": msg, "pushed": True}
+            return {"outcome": "no_skill", "facts": [], "message": msg}
         lines = ["📖 已学技能:"]
         for name, lv in skills.items():
             equipped = " [装备]" if name in (save.get("equip_skill") or {}) else ""
             lines.append(f"  {name} Lv.{lv}{equipped}")
         lines.append("发「装备技能 技能名」来装备(最多3个)")
         msg = "\n".join(lines)
-        await self.push_text(msg)
-        return {"outcome": "skills", "facts": [], "message": msg, "summary": msg, "pushed": True}
+        return {"outcome": "skills", "facts": [], "message": msg}
 
     async def _h_status(self, user_id: str, save: Dict[str, Any], c: str) -> Dict[str, Any]:
         s = save["stats"]
         msg = (f"🐱 {save['name']} ({save['stage']}) Lv.{s['lv']}\n"
                f"攻击 {s['atk']} | 防御 {s['def']} | 生命 {s['hp']} | 速度 {s['spd']}\n"
                f"击杀 {save['kills']} | 探索 {save['explores']}")
-        await self.push_text(msg)
-        return {"outcome": "status", "facts": [], "message": msg, "summary": msg, "pushed": True}
+        return {"outcome": "status", "facts": [], "message": msg}
 
     async def _h_shop(self, user_id: str, save: Dict[str, Any], c: str) -> Dict[str, Any]:
         data = self._load_data()
@@ -381,8 +372,7 @@ class CatEvolutionGame(GameAdapter):
                 continue
             lines.append(f"  {name} - {cost}小鱼干: {it.get('des', '')[:30]}")
         msg = "\n".join(lines)
-        await self.push_text(msg)
-        return {"outcome": "shop", "facts": [], "message": msg, "summary": msg, "pushed": True}
+        return {"outcome": "shop", "facts": [], "message": msg}
 
     async def _h_mission(self, user_id: str, save: Dict[str, Any], c: str) -> Dict[str, Any]:
         data = self._load_data()
@@ -394,26 +384,22 @@ class CatEvolutionGame(GameAdapter):
             mark = "✅" if done else "⬜"
             lines.append(f"  {mark} {name}: {m.get('des', '')[:40]}")
         msg = "\n".join(lines) if len(lines) > 1 else "暂无任务喵~"
-        await self.push_text(msg)
-        return {"outcome": "mission", "facts": [], "message": msg, "summary": msg, "pushed": True}
+        return {"outcome": "mission", "facts": [], "message": msg}
 
     async def _h_achievement(self, user_id: str, save: Dict[str, Any], c: str) -> Dict[str, Any]:
         got = save.get("achievements", [])
         msg = "🏆 成就: " + ("、".join(got) if got else "还没有成就喵~ 多战斗吧!")
-        await self.push_text(msg)
-        return {"outcome": "achievement", "facts": [], "message": msg, "summary": msg, "pushed": True}
+        return {"outcome": "achievement", "facts": [], "message": msg}
 
     async def _h_home(self, user_id: str, save: Dict[str, Any], c: str) -> Dict[str, Any]:
         msg = "🏠 回家了喵~ 休息一下, 随时可以再出发!"
-        await self.push_text(msg)
-        return {"outcome": "home", "facts": [], "message": msg, "summary": msg, "pushed": True}
+        return {"outcome": "home", "facts": [], "message": msg}
 
     async def _h_help(self, user_id: str, save: Dict[str, Any], c: str) -> Dict[str, Any]:
         msg = ("🐱 猫猫进化路玩法:\n"
                "  领养小猫 → 探索 → 战斗 → 吞食进化 → 猫娘!\n"
                "指令: 领养小猫 / 探索 / 我的状态 / 我的背包 / 我的技能 / 猫猫商店 / 我的任务 / 我的成就")
-        await self.push_text(msg)
-        return {"outcome": "help", "facts": [], "message": msg, "summary": msg, "pushed": True}
+        return {"outcome": "help", "facts": [], "message": msg}
 
     # ── 工具 ─────────────────────────
 

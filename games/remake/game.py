@@ -368,18 +368,17 @@ class RemakeGame(GameAdapter):
         text = (f"这一世结束了喵~ 享年 {age} 岁, 总评 {sum_val}({summary.SUM.judge})\n"
                 + str(summary))
 
-        # 渲染人生总结图并推送(PIL 同步绘制, 放线程池避免卡事件循环)
+        # 渲染人生总结图(游戏负责生成数据, brain 负责推送)
+        # 「游戏适配插件」: 返回 images 数据, 不直接 push
         img_bytes = await self._render_life(talents, init_prop, results, summary)
+        images = []
         if img_bytes:
-            await self.push_text_image(text, img_bytes, mime="image/jpeg")
-        else:
-            await self.push_text(text)
-
+            images.append(self.build_image(text, img_bytes, "image/jpeg"))
         return {"outcome": outcome,
                 "facts": [build_fact("life_end", age=age, sum=sum_val,
                                      grade=summary.SUM.judge,
                                      lifes=save["lifes"])],
-                "message": ""}
+                "message": text, "images": images}
 
     async def _render_life(self, talents: List[Talent], init_prop, results,
                            summary) -> Optional[bytes]:

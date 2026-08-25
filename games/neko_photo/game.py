@@ -114,8 +114,8 @@ class NekoPhotoGame(GameAdapter):
             return {"facts": [build_fact("limit")], "outcome": "limit",
                     "message": f"今天已经发过 {max_photos} 张图啦, 明天再来看喵~"}
 
-        # 走插件主体 PhotoBridge: 挑图 + 推送统一由桥接完成
-        result = await self.send_photo(user_id, category=category)
+        # 走插件主体 PhotoBridge 取图(不推送), 返回 images 数据交 brain 统一推
+        result = await self.pick_photo_for_delivery(category=category)
         if not result.get("ok"):
             if category:
                 return {"facts": [build_fact("error")], "outcome": "error",
@@ -152,15 +152,17 @@ class NekoPhotoGame(GameAdapter):
         extra = ""
         if is_new:
             extra = f"(新图鉴: {label})"
-        # 图片+配文已由桥接推送, 标记 pushed 防止 brain 重复推送 message
+        # 「游戏适配插件」: 图片数据返回给 brain, 由 brain 统一推送, 游戏不 push
         return {"facts": facts, "outcome": outcome,
-                "message": f"发了一张 {label} 的照片给你喵{extra}", "pushed": True}
+                "message": f"发了一张 {label} 的照片给你喵{extra}",
+                "images": [result.get("image", {})]}
 
     async def send_random_photo(self, user_id: str,
                                 caption: str = "") -> Dict[str, Any]:
         """LLM 工具入口: 猫娘聊天中自主随机发一张图(走桥接)。
 
-        不检查每日上限(工具调用频率天然低), 返回给 LLM 的简短描述。
+        工具/后台场景由主插件桥接直接推送(游戏通过 send_photo 桥接请求发图,
+        符合「游戏适配插件」——推送通道在主插件, 游戏不自己实现)。
         """
         result = await self.send_photo(user_id, caption=caption)
         if not result.get("ok"):
