@@ -86,6 +86,25 @@ LLM 复述一遍 → 用户看到两条几乎一样的话（双重回复）。
 - 若确需用户可见图片：走 markdown 外链（`chat + blind` + `![alt](url)`），
   且图片必须托管在可访问的 URL（不传 bytes）。
 - 不要试图用 push 通道塞 bytes 让用户可见——做不到，且会刷屏。
+- **图片中转**：PushSender.save_image 会把 bytes 中转落盘到
+  `static/cards/` 并返回可访问 URL——游戏资源目录下的图（如
+  `games/tarot/data/`）推送时经此中转，无需自己拼 URL。
+
+## 2.5 音频/视频 parts 宿主不支持（坑）
+
+**坑**：想推语音/音乐/视频给用户——但宿主**丢弃** audio/video parts。
+
+**现实（源码核实）**：`character_runtime.py` 对 `type != "image"` 的 part
+直接 warning 后 drop（`stream_audio` 是实时麦克风 PCM 管线，非通用文件
+注入器；无 video API）。SDK schema 虽定义 `audio`/`video` part，消费端
+未实现。
+
+**适配规则**：
+
+- **不要**推 audio part（`text_with_audio` 已从 PushSender 移除）。
+- 语音播报正确姿势：宿主自动把 chat 通道文字 TTS 播放（官方
+  short_tts_line 契约）——插件只需保证文本是 TTS-friendly 短句
+  （`self.tts_note()` 标记），无需推音频数据。
 
 ---
 

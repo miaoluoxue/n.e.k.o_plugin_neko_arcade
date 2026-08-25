@@ -102,13 +102,11 @@ class PushSender:
         """
         return f"{self._base_url()}{relative_path.lstrip('/')}"
 
-    async def text_with_audio(self, text: str, audio_bytes: bytes,
-                              mime: str = "audio/wav") -> None:
-        """推文本 + 音频（语音播报）。"""
-        await self._push([
-            {"type": "text", "text": text},
-            {"type": "audio", "data": audio_bytes, "mime": mime},
-        ])
+    # 注意: 宿主不支持 audio/video parts —— character_runtime 对 type != "image"
+    # 的 part 直接 warning 后 drop(stream_audio 是实时麦克风 PCM 管线, 非通用
+    # 文件注入器)。因此不要尝试 push audio part 给用户。
+    # 语音播报的正确姿势: 宿主会自动把 chat 通道文字 TTS 播放(官方 short_tts_line
+    # 契约), 插件只需保证文本是 TTS-friendly 短句(见 TTSClient), 无需推音频数据。
 
     async def help_doc(self, title: str, image_bytes: bytes,
                        text: Optional[str] = None) -> None:

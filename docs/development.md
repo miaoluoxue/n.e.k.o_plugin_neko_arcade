@@ -171,7 +171,7 @@ games/
 |------|--------|------|
 | 文字推送 | `PushSender.text()` | 推送到聊天和面板 |
 | 图片推送 | `PushSender.text_with_image()` | 结果卡片、帮助图 |
-| 语音推送 | `PushSender.text_with_audio()` | TTS 合成语音 |
+| 语音（TTS） | 宿主自动播放 chat 通道文字（无需推音频数据） |
 | LLM 渲染 | `LLMProvider.call()` | 宿主注入或配置自建 |
 | 图片渲染 | `ImageRenderer` | 游戏结果卡片、帮助文档图 |
 

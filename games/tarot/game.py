@@ -7,8 +7,8 @@
 - 「塔罗主题」: 切换主题(BilibiliTarot / TouhouTarot)
 
 数据: games/tarot/tarot.json(完整韦特塔罗 78 张 + 9 牌阵)。
-图片在 static/img/tarot/<主题>/<Type>/<pic>.png|jpg,
-宿主静态服务直接可访问, 游戏返回 images(URL)由 brain 统一推送。
+牌面图在 games/tarot/data/<主题>/<Type>/<pic>.png|jpg(与代码同包, 自包含),
+游戏读取 bytes 返回 images 交 brain 统一推送(不自己 push)。
 
 「游戏适配插件」: handle_action 只返回结构化结果(facts/outcome/message/images),
 不直接 push; 猫娘交互由 brain 情感渲染 + 宿主 LLM 自然回应。

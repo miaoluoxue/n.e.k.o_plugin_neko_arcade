@@ -8,9 +8,10 @@
     await self.send_photo(user_id, auto=True)          # 后台自动发图(纯本地图库)
 
 图片存储约定(与 neko_photo 一致):
-    static/img/neko/<分类>/xxx.png|jpg|jpeg|webp|gif
-每个子文件夹 = 一个分类。图片在 static 下, 宿主静态服务可直接 URL 访问,
-推送走 static + markdown URL 通道(当前宿主唯一可靠的游戏图片显示通道)。
+    games/neko_photo/data/<分类>/xxx.png|jpg|jpeg|webp|gif
+每个子文件夹 = 一个分类。图库在游戏资源目录下(数据与代码同包)；
+推送时图片经 PushSender.save_image 中转落盘到 static/cards/ 并以
+markdown URL 通道显示(当前宿主唯一可靠的游戏图片显示通道)。
 """
 
 from __future__ import annotations

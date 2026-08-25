@@ -222,7 +222,7 @@ async def get_status(self, uid): ... # 面板状态
 | 渲染头像 | `await self.render_avatar("excitement", 128)` |
 | 取图(交brain推) | `await self.pick_photo_for_delivery("可爱")` → 返回 images 数据 |
 | 构造图片数据 | `self.build_image("配文", img_bytes, "image/png")` |
-| TTS 标记 | `self.tts_note("文字")` |
+| 语音（TTS） | `self.tts_note("文字")` 标记短句, 宿主自动播放 chat 文字 |
 | 调用 LLM | `await self.call_llm("prompt")` |
 | ~~推送文字~~ | ~~`push_text`~~（已废弃，仅 on_tick 后台提醒/历史兼容；handle_action 用 message 返回） |
 | ~~推送图片~~ | ~~`push_text_image`~~（已废弃，handle_action 用 images 返回） |
@@ -259,7 +259,7 @@ async def get_status(self, uid): ... # 面板状态
 |------|--------|
 | 文字推送 | PushSender.text |
 | 图片推送（卡片/帮助图） | PushSender.text_with_image |
-| 语音推送 | PushSender.text_with_audio（TTS 预留） |
+| 语音（TTS） | 主项目自动播放 chat 文字（插件只保证短句） |
 | LLM 渲染 | LLMProvider（宿主注入优先） |
 | 猫娘表情图 | ImageRenderer.render_neko_avatar |
 
