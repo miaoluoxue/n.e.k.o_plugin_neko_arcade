@@ -221,7 +221,7 @@ def test_neko_photo_brain_background_tick():
 
 
 def test_neko_photo_bridge_scan_categories():
-    """PhotoBridge 桥接: 分类扫描 + URL。"""
+    """PhotoBridge 桥接: 分类扫描 + bytes(资源在 games/<game>/data/ 下)。"""
     async def run():
         game, plugin = _make_game(_TMP)
         bridge = game._photo
@@ -230,7 +230,8 @@ def test_neko_photo_bridge_scan_categories():
         assert any(i["style"] == "daily_photo" and i["category"] == "日常" for i in imgs), imgs
         cats = bridge.get_categories()
         assert "可爱" in cats and "日常" in cats, cats
-        assert any(i.get("url", "").startswith("http") for i in imgs), imgs
+        # 图片返回 bytes(交 brain 统一推送)
+        assert any(i.get("bytes") for i in imgs), imgs
 
     asyncio.run(run())
 

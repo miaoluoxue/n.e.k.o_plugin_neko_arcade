@@ -22,7 +22,6 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 IMG_EXTS = (".png", ".jpg", ".jpeg", ".webp", ".gif")
-IMG_REL_ROOT = "img/neko"
 
 # 动态渲染兜底: 与 ImageRenderer.render_neko_avatar 支持的心情一致
 MOODS: List[str] = ["excitement", "curiosity", "proud", "upset", "sleepy", "calm"]
@@ -62,10 +61,12 @@ class PhotoBridge:
     注入到每个游戏, 游戏用 self.send_photo(...) 走桥接自主发图。
     """
 
-    def __init__(self, plugin: Any, push: Any = None, img: Any = None) -> None:
+    def __init__(self, plugin: Any, push: Any = None, img: Any = None,
+                 img_root: Optional[str] = None) -> None:
         self.plugin = plugin
         self._push = push
         self._img = img
+        self._img_root_override = img_root  # 自定义图库根目录(默认 games/neko_photo/data)
         self._img_cache: List[Dict[str, Any]] = []
         self._img_scan_ts = 0.0
 
@@ -76,18 +77,24 @@ class PhotoBridge:
         if img is not None:
             self._img = img
 
+    def set_img_root(self, path) -> None:
+        """设置图库根目录(游戏资源在 games/<game>/data/ 下时调用)。"""
+        self._img_root_override = str(path)
+        self._img_cache = []
+        self._img_scan_ts = 0.0
+
     # ── 图库根目录 ─────────────────────────
 
     def _img_root(self) -> Path:
-        """图库根目录: static/img/neko/ (测试可注入 _local_scan_dir)。"""
+        """图库根目录: 默认 games/neko_photo/data/ (测试可注入 _local_scan_dir)。"""
         override = getattr(self, "_local_scan_dir", None)
         if override:
             return Path(override)
-        return Path(self.plugin.config_dir) / "static" / "img" / "neko"
-
-    def _static_rel(self, cat: str, fname: str) -> str:
-        """构造 static 相对路径: img/neko/<分类>/<文件>。"""
-        return f"{IMG_REL_ROOT}/{cat}/{fname}"
+        if self._img_root_override:
+            return Path(self._img_root_override)
+        # 默认: 游戏资源目录 games/neko_photo/data/
+        game_dir = Path(self.plugin.config_dir) / "games" / "neko_photo" / "data"
+        return game_dir
 
     # ── 图库扫描 / 分类 ─────────────────────
 
@@ -99,9 +106,9 @@ class PhotoBridge:
         return sorted(d.name for d in root.iterdir() if d.is_dir())
 
     def scan_images(self) -> List[Dict[str, Any]]:
-        """递归扫描 static/img/neko/ 下所有分类的图片(带 10s 缓存)。
+        """递归扫描图库目录下所有分类的图片(带 10s 缓存)。
 
-        每张图带 category(分类) + url(可直接 markdown 引用的静态 URL)。
+        每张图带 category(分类) + bytes(交 brain 统一推送)。
         """
         now = time.time()
         if self._img_cache and now - self._img_scan_ts < 10.0:
@@ -121,8 +128,6 @@ class PhotoBridge:
                     continue
                 path = cat_dir / fname
                 try:
-                    rel = self._static_rel(cat, fname)
-                    url = self._push.static_url(rel) if self._push else ""
                     self._img_cache.append({
                         "bytes": path.read_bytes(),
                         "mime": _img_ext(str(path)),
@@ -130,7 +135,6 @@ class PhotoBridge:
                         "rarity": "rare",
                         "source": "local",
                         "category": cat,
-                        "url": url,
                     })
                 except OSError:
                     continue
@@ -195,10 +199,7 @@ class PhotoBridge:
                     "error": "no_photo"}
 
         text = caption or self._caption_for(photo)
-        url = photo.get("url", "")
-        if url and self._push:
-            await self._push.text_with_image_url(text, url)
-        elif self._push:
+        if self._push:
             await self._push.text_with_image(text, photo["bytes"],
                                              photo.get("mime", "image/png"))
 
@@ -226,7 +227,7 @@ class PhotoBridge:
         """取一张图(不推送), 供游戏 handle_action 返回 images 数据交 brain 推送。
 
         这是"游戏适配插件"的输出契约: 游戏不直接 push, 只通过桥接取图,
-        brain 统一编排推送。返回 {ok, image: {text, bytes, mime, url}, style, ...}。
+        brain 统一编排推送。返回 {ok, image: {text, bytes, mime}, style, ...}。
         """
         photo = await self.pick_photo(category=category)
         if not photo:
@@ -236,12 +237,9 @@ class PhotoBridge:
             return {"ok": False, "error": "no_photo",
                     "summary": "呜……图片都跑丢了, 稍后再试试喵"}
         text = caption or self._caption_for(photo)
-        image: Dict[str, Any] = {"text": text}
-        if photo.get("url"):
-            image["url"] = photo["url"]
-        else:
-            image["bytes"] = photo["bytes"]
-            image["mime"] = photo.get("mime", "image/png")
+        image: Dict[str, Any] = {"text": text,
+                                 "bytes": photo["bytes"],
+                                 "mime": photo.get("mime", "image/png")}
         return {"ok": True, "image": image,
                 "style": photo.get("style", ""),
                 "category": photo.get("category", ""),
