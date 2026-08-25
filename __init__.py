@@ -364,3 +364,100 @@ class NekoArcadePlugin(NekoPluginBase):
         result = await self.entry_play_game(game=game_id, cmd=cmd, args={"auto": True})
         # 从 Ok/Err 包装中解出数据（SDK v2: Ok.value；旧版: Ok.data）
         return self.unwrap_result(result, default={"error": "游戏执行失败喵"})
+
+    # ── 喵图相册: LLM 工具 + 用户上传 ─────────────────
+
+    async def tool_send_photo(self, input: str = "") -> Any:
+        """send_photo LLM 工具处理器（由 runtime._register_dynamic_llm_tool 注册）。
+
+        猫娘在聊天中自主决定何时调用: 想分享心情/活跃气氛/给主人惊喜时,
+        随机发一张图(动态猫娘表情或用户上传的图库照片)。
+        """
+        if not self.rt:
+            return {"error": "猫娘小游戏还没准备好"}
+        game = self.rt.registry.get("neko_photo")
+        if not game:
+            return {"error": "喵图相册还没加载喵"}
+        user_id = getattr(self.ctx, "user_id", "default") or "default"
+        caption = (input or "").strip()
+        try:
+            return await game.send_random_photo(user_id, caption=caption)
+        except Exception as exc:
+            self.logger.warning("send_photo 工具调用失败: %s", exc)
+            return {"error": f"发图失败喵: {exc}"}
+
+    @plugin_entry(id="upload_photo", name="上传图片",
+                  description="用户上传一张图片到猫娘图库指定分类(面板用)。",
+                  input_schema={"type": "object", "properties": {
+                      "name": {"type": "string", "description": "文件名(带扩展名)"},
+                      "data_b64": {"type": "string", "description": "图片 base64"},
+                      "category": {"type": "string", "description": "分类名(子文件夹), 默认「默认」"},
+                  }, "required": ["name", "data_b64"]},
+                  metadata={"agent_hidden": True})
+    async def entry_upload_photo(self, name: str = "", data_b64: str = "",
+                                 category: str = "默认", **_) -> Any:
+        if not self.rt:
+            return Err(SdkError("猫娘小游戏还没准备好"))
+        game = self.rt.registry.get("neko_photo")
+        if not game:
+            return Err(SdkError("喵图相册还没加载喵"))
+        user_id = getattr(self.ctx, "user_id", "default") or "default"
+        result = await game.upload_photo(user_id, name=name, data_b64=data_b64,
+                                         category=category)
+        return Ok(result)
+
+    @plugin_entry(id="upload_photos", name="批量上传图片",
+                  description="用户批量上传多张图片到猫娘图库指定分类(面板用)。",
+                  input_schema={"type": "object", "properties": {
+                      "files": {"type": "array", "description": "图片列表, 每项 {name, data_b64}"},
+                      "category": {"type": "string", "description": "分类名(子文件夹), 默认「默认」"},
+                  }, "required": ["files", "category"]},
+                  metadata={"agent_hidden": True})
+    async def entry_upload_photos(self, files: list = None,
+                                  category: str = "默认", **_) -> Any:
+        if not self.rt:
+            return Err(SdkError("猫娘小游戏还没准备好"))
+        game = self.rt.registry.get("neko_photo")
+        if not game:
+            return Err(SdkError("喵图相册还没加载喵"))
+        user_id = getattr(self.ctx, "user_id", "default") or "default"
+        results = []
+        ok_count = 0
+        for item in (files or [])[:20]:  # 单次最多 20 张
+            if not isinstance(item, dict):
+                continue
+            r = await game.upload_photo(user_id, name=str(item.get("name", "")),
+                                        data_b64=str(item.get("data_b64", "")),
+                                        category=category)
+            r["name"] = item.get("name", "")
+            results.append(r)
+            if r.get("ok"):
+                ok_count += 1
+        return Ok({"ok": ok_count > 0, "count": len(results),
+                   "succeeded": ok_count, "failed": len(results) - ok_count,
+                   "results": results})
+
+    @plugin_entry(id="photo_library", name="图库状态",
+                  description="查看猫娘图库分类和图片数量。",
+                  input_schema={"type": "object", "properties": {}},
+                  metadata={"agent_hidden": True})
+    async def entry_photo_library(self, **_) -> Any:
+        if not self.rt:
+            return Ok({"ok": False, "count": 0, "categories": [], "uploaded": []})
+        bridge = getattr(self.rt, "photo", None)
+        if not bridge:
+            return Ok({"ok": False, "count": 0, "categories": [], "uploaded": []})
+        try:
+            imgs = bridge.scan_images()
+            cats = bridge.get_categories()
+            by_cat = {}
+            for cat in cats:
+                n = len([i for i in imgs if i.get("category") == cat])
+                by_cat[cat] = n
+            uploaded = [i["style"] for i in imgs if i.get("source") == "local"]
+            return Ok({"ok": True, "count": len(uploaded),
+                       "categories": cats, "by_category": by_cat,
+                       "uploaded": uploaded})
+        except Exception as exc:
+            return Ok({"ok": False, "count": 0, "categories": [], "uploaded": [],
+                       "error": str(exc)})

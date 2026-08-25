@@ -1,6 +1,7 @@
 __pycache__/
 *.py[cod]
 .pytest_cache/
+pytest-cache-files-*/
 .mypy_cache/
 .ruff_cache/
 .venv/
@@ -12,3 +13,5 @@ build/
 store.db
 .env
 .DS_Store
+*.neko-plugin
+*.neko-bundle

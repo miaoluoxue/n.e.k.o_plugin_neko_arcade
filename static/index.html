@@ -368,6 +368,7 @@ function renderGames() {
       '<div class="g-info">'+stxt+'</div>'+
       '<div class="g-actions">'+
         '<button class="btn btn-ghost btn-icon" onclick="showHelp(\''+g.id+'\')" title="帮助">📖</button>'+
+        (g.id==='neko_photo' ? '<button class="btn btn-ghost btn-icon" onclick="uploadPhoto()" title="上传图片到图库">📤</button>' : '')+
         '<button class="btn btn-ghost btn-icon" onclick="openDrawer(\''+g.id+'\')" title="配置">⚙️</button>'+
         (running
           ? '<button class="btn btn-danger btn-sm" onclick="stopGame()" title="停止">⏹ 停止</button>'
@@ -591,6 +592,96 @@ function saveConfig(id) {
 
 function closeDrawer() { document.getElementById('drawer').classList.remove('show'); document.getElementById('overlay').classList.remove('show'); }
 function showToast(t) { var el=document.getElementById('toast'); el.textContent=t; el.classList.add('show'); setTimeout(function(){el.classList.remove('show');},2200); }
+
+// ── 喵图相册: 用户上传图片(选文件夹 / 新建文件夹 / 多文件) ─────
+var _photoUploadCat = '';
+var _photoUploadFiles = [];
+
+function uploadPhoto() {
+  // 先拉取已有分类, 渲染上传抽屉
+  callEntry('photo_library',{}).then(function(r){
+    var cats = (r && r.categories) || [];
+    _photoUploadCat = cats.length ? cats[0] : '';
+    _photoUploadFiles = [];
+    var opts = cats.map(function(c){
+      return '<option value="'+escAttr(c)+'">'+escHtml(c)+'</option>';
+    }).join('') || '<option value="">(还没有分类)</option>';
+    document.getElementById('drawerTitle').textContent = '📤 上传图片到图库';
+    var body =
+      '<div class="config-field"><label>选择已有文件夹</label>'+
+      '<select id="photoCatSelect" onchange="onPhotoCatChange(this.value)">'+
+      '<option value="__new__">➕ 新建文件夹…</option>'+opts+'</select>'+
+      '<div style="color:var(--text2);font-size:0.7rem;margin-top:4px;">图片存放在 static/img/neko/&lt;文件夹&gt;/ 下</div></div>'+
+      '<div class="config-field" id="photoNewCatWrap" style="display:none"><label>新文件夹名</label>'+
+      '<input id="photoNewCat" placeholder="如: 可爱 / 日常 / 泳装…" oninput="onPhotoCatChange(\'__new__\')"></div>'+
+      '<div class="config-field"><label>选择图片(可多选)</label>'+
+      '<input type="file" id="photoFiles" multiple accept="image/png,image/jpeg,image/webp,image/gif" style="padding:8px;border:1px solid var(--border);border-radius:var(--radius-sm);width:100%;background:rgba(255,255,255,0.04);color:var(--text);">'+
+      '<div style="color:var(--text2);font-size:0.7rem;margin-top:4px;">支持 png/jpg/webp/gif, 单张 ≤ 8MB</div></div>'+
+      '<div id="photoUploadStatus" style="font-size:0.76rem;color:var(--text2);min-height:1.2em;margin-top:8px;"></div>'+
+      '<div class="drawer-actions"><button class="btn btn-accent" onclick="doPhotoUpload()">📤 开始上传</button>'+
+      '<button class="btn btn-ghost" onclick="closeDrawer()">关闭</button></div>';
+    document.getElementById('drawerBody').innerHTML = body;
+    document.getElementById('drawer').classList.add('show');
+    document.getElementById('overlay').classList.add('show');
+  });
+}
+
+function onPhotoCatChange(v) {
+  var wrap = document.getElementById('photoNewCatWrap');
+  if (v === '__new__') {
+    wrap.style.display = '';
+    _photoUploadCat = '__new__';
+  } else {
+    wrap.style.display = 'none';
+    _photoUploadCat = v;
+  }
+}
+
+function doPhotoUpload() {
+  var files = document.getElementById('photoFiles').files;
+  if (!files || !files.length) { showToast('❌ 请先选择图片喵'); return; }
+  // 确定目标文件夹
+  var cat = _photoUploadCat;
+  if (cat === '__new__' || cat === '') {
+    cat = (document.getElementById('photoNewCat').value || '').trim() || '默认';
+  }
+  var status = document.getElementById('photoUploadStatus');
+  status.textContent = '⏳ 读取文件 ' + files.length + ' 张…';
+
+  // 串行读文件为 base64(FileReader 并发上限)
+  var items = [];
+  function readNext(i) {
+    if (i >= files.length) {
+      status.textContent = '⏳ 上传 ' + items.length + ' 张到「' + cat + '」…';
+      callEntry('upload_photos', {files: items, category: cat}).then(function(r){
+        if (r && r.count !== undefined) {
+          status.textContent = '✅ 完成: 成功 ' + (r.succeeded||0) + ' / 失败 ' + (r.failed||0);
+          if (r.succeeded) { showToast('✅ 已上传 ' + r.succeeded + ' 张到「' + cat + '」'); setTimeout(refreshState,600); }
+          else showToast('❌ 上传失败, 看看是不是格式/大小问题喵');
+        } else {
+          status.textContent = '❌ 上传失败';
+          showToast('❌ 上传失败: ' + ((r&&r.error)||(r&&r.message)||''));
+        }
+      });
+      return;
+    }
+    var file = files[i];
+    if (file.size > 8*1024*1024) {
+      status.textContent = '⏳ 跳过超8MB: ' + file.name;
+      readNext(i+1);
+      return;
+    }
+    var rd = new FileReader();
+    rd.onload = function() {
+      var b64 = String(rd.result).split(',')[1] || '';
+      items.push({name: file.name, data_b64: b64});
+      readNext(i+1);
+    };
+    rd.onerror = function() { readNext(i+1); };
+    rd.readAsDataURL(file);
+  }
+  readNext(0);
+}
 
 function sendCommand() {
   var inp = document.getElementById('cmdInput'), text = inp.value.trim();

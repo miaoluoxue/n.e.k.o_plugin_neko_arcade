@@ -6,7 +6,7 @@ import asyncio
 import logging
 from typing import Any, Dict, Optional
 
-from ..adapters import ImageRenderer, LLMProvider, PushSender, TTSClient
+from ..adapters import ImageRenderer, LLMProvider, PhotoBridge, PushSender, TTSClient
 from .brain import GameBrain
 from .config_manager import ConfigManager
 from .registry import GameRegistry
@@ -41,6 +41,8 @@ class ArcadeRuntime:
         self.push = PushSender(plugin)
         self.img = ImageRenderer()
         self.tts = TTSClient(plugin)
+        # 发图桥接: 插件主体通用发图能力, 注入所有游戏(游戏 self.send_photo 走桥接)
+        self.photo = PhotoBridge(plugin, push=self.push, img=self.img)
         self.brain: Optional[GameBrain] = None
         self._tick_task: Optional[asyncio.Task] = None
 
@@ -74,6 +76,7 @@ class ArcadeRuntime:
         self.registry._img = self.img
         self.registry._tts = self.tts
         self.registry._llm = self.llm
+        self.registry._photo = self.photo
         count = await self.registry.discover()
         self._register_dynamic_llm_tool()
         self._tick_task = asyncio.create_task(self._tick_loop())
@@ -124,6 +127,45 @@ class ArcadeRuntime:
                      len(self.registry.game_ids))
         except Exception as exc:
             log.error("动态注册 play_game 工具失败: %s", exc)
+        self._register_send_photo_tool(plugin, register, unregister)
+
+    def _register_send_photo_tool(self, plugin, register, unregister) -> None:
+        """注册 send_photo 工具: 猫娘聊天中自主随机发图。
+
+        不依赖用户关键词 —— 猫娘想分享心情/活跃气氛/给主人惊喜时自行调用。
+        工具描述刻意写得不强制: 让 LLM 自然决定频率。
+        """
+        photo = self.registry.get("neko_photo")
+        if not photo:
+            return
+        if unregister:
+            try:
+                unregister("send_photo")
+            except Exception as exc:
+                log.warning("注销静态 send_photo 工具失败: %s", exc)
+        description = (
+            "聊天过程中想给主人发一张照片时调用。适合这些时刻: 聊到开心想分享心情、"
+            "气氛有点安静想活跃一下、想给主人一个惊喜、或者主人提到想看你的照片/图片时。"
+            "调用后你会随机发一张照片给主人(可能是你的表情自拍, 也可能是主人上传的图库照片), "
+            "不要连续多次调用, 一次聊天里发一两张就够了。"
+        )
+        try:
+            register(
+                name="send_photo",
+                description=description,
+                parameters={
+                    "type": "object",
+                    "properties": {
+                        "input": {"type": "string",
+                                  "description": "可选的配文/发图理由, 不填则猫娘自动配文"},
+                    },
+                    "required": [],
+                },
+                handler=plugin.tool_send_photo,
+            )
+            log.info("已动态注册 send_photo 工具(猫娘聊天中自主发图)")
+        except Exception as exc:
+            log.error("动态注册 send_photo 工具失败: %s", exc)
 
     def parse_input(self, input: str) -> tuple[Optional[str], str]:
         """解析用户输入，返回 (game_id, cmd)。

@@ -25,6 +25,7 @@ class GameRegistry:
         self._img: Any = None
         self._tts: Any = None
         self._llm: Any = None
+        self._photo: Any = None
 
     # ── 注册与发现 ────────────────────────────
 
@@ -45,7 +46,7 @@ class GameRegistry:
         states = self.cfg_mgr.load_game_states()
         if isinstance(states, dict) and game.id in states:
             game.enabled = bool(states.get(game.id, True))
-        game.bind_services(self._push, self._img, self._tts, self._llm)
+        game.bind_services(self._push, self._img, self._tts, self._llm, self._photo)
         self._games[game.id] = game
         log.info("已注册游戏: %s (%s)%s", game.name, game.id,
                  "" if game.enabled else " [停用]")

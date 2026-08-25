@@ -360,6 +360,9 @@ class GameBrain:
     async def tick(self) -> Optional[str]:
         self.persona.mood.decay_all()
         self.proactive.tick()
+        # 后台自动发图: 不依赖游戏会话, 聊天过程中猫娘也会随机发图。
+        # neko_photo 开启 auto_send 时, 无论当前在不在玩它都定期触发。
+        await self._tick_background_games()
         # 当前游戏的每秒钩子（海龟汤用于不活跃提醒 / 超时揭晓）
         if self._current_game:
             game = self.registry.get(self._current_game)
@@ -381,6 +384,25 @@ class GameBrain:
                 await self.push.text(text)
                 return text
         return None
+
+    async def _tick_background_games(self) -> None:
+        """后台游戏每秒钩子: 无会话时也运行, 用于「猫娘聊天中自动发图」。
+
+        只对标记了 background_tick=True 且未在会话中的游戏调用 on_tick。
+        调用间隔由游戏自身的冷却逻辑(如 neko_photo._next_auto_ts)控制,
+        默认 60~180 秒一张, 低打扰(blind 推送, 不触发 AI 轮次)。
+        """
+        if self._current_game:
+            return  # 有会话时, 当前游戏的 on_tick 已由主 tick 调用
+        for game in self.registry.games:
+            if not getattr(game, "background_tick", False):
+                continue
+            if not game.enabled:
+                continue
+            try:
+                await game.on_tick(self._current_user or "default")
+            except Exception as exc:
+                log.warning("后台游戏 %s on_tick 异常: %s", game.id, exc)
 
     async def _inject_game_anchor(self) -> None:
         """向 LLM 上下文注入「当前游戏状态锚」: 只含当前游戏的少量指令。

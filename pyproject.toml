@@ -20,4 +20,6 @@ exclude_files = [
     "ruff.toml",
     "LICENSE",
     "data/store.db",
+    "*.neko-plugin",
+    "*.neko-bundle",
 ]

@@ -90,6 +90,18 @@ class PushSender:
             content = text
         await self._push([{"type": "text", "text": content}])
 
+    async def text_with_image_url(self, text: str, url: str) -> None:
+        """推文本 + 图片 URL（图片已存在于 static 下, 直接 markdown 引用）。"""
+        content = f"{text}\n\n![游戏图片]({url})" if url else text
+        await self._push([{"type": "text", "text": content}])
+
+    def static_url(self, relative_path: str) -> str:
+        """把 static 下的相对路径转成可访问的 http URL。
+
+        relative_path 形如 "img/neko/可爱/xx.png"(相对 static 目录)。
+        """
+        return f"{self._base_url()}{relative_path.lstrip('/')}"
+
     async def text_with_audio(self, text: str, audio_bytes: bytes,
                               mime: str = "audio/wav") -> None:
         """推文本 + 音频（语音播报）。"""

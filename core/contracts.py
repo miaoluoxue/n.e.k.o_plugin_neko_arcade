@@ -28,13 +28,55 @@ class GameAdapter(abc.ABC):
         self._img: Any = None
         self._tts: Any = None
         self._llm: Any = None
+        self._photo: Any = None
 
-    def bind_services(self, push=None, img=None, tts=None, llm=None) -> None:
-        """绑定插件服务（由注册表在注册时调用），游戏可通过 self 调用。"""
+    def bind_services(self, push=None, img=None, tts=None, llm=None,
+                      photo=None) -> None:
+        """绑定插件服务（由注册表在注册时调用），游戏可通过 self 调用。
+
+        photo: PhotoBridge 实例(插件主体通用发图桥接), 游戏可用 self.send_photo
+        自主发图, 无需自己实现图库扫描/分类/推送。
+        """
         self._push = push
         self._img = img
         self._tts = tts
         self._llm = llm
+        self._photo = photo
+
+    # ── 发图桥接(插件主体通用能力) ─────────
+
+    async def send_photo(self, user_id: str, category: Optional[str] = None,
+                         caption: str = "", auto: bool = False) -> Dict[str, Any]:
+        """通过插件主体 PhotoBridge 自主发一张图到聊天框。
+
+        任何游戏适配后都可直接调用: 图库扫描/分类/推送/上传由桥接统一处理。
+        返回 {ok, style, category, rarity, summary, caption, photo}。
+        """
+        if not self._photo:
+            return {"ok": False, "summary": "发图桥接未就绪喵", "error": "no_bridge"}
+        return await self._photo.send_photo(user_id, category=category,
+                                            caption=caption, auto=auto)
+
+    async def send_auto_photo(self, user_id: str) -> Dict[str, Any]:
+        """后台自动发图(桥接): 只发本地图库, 配文随机。"""
+        if not self._photo:
+            return {"ok": False, "summary": "发图桥接未就绪喵", "error": "no_bridge"}
+        return await self._photo.send_auto(user_id)
+
+    def photo_categories(self) -> List[str]:
+        """图库分类列表(桥接)。"""
+        return self._photo.get_categories() if self._photo else []
+
+    async def upload_photo(self, user_id: str, name: str,
+                           data_b64: str = "", data_bytes: bytes = b"",
+                           category: str = "默认") -> Dict[str, Any]:
+        """用户上传图片到图库(桥接)。"""
+        if not self._photo:
+            return {"ok": False, "message": "发图桥接未就绪喵"}
+        return await self._photo.upload_photo(user_id, name=name,
+                                              data_b64=data_b64,
+                                              data_bytes=data_bytes,
+                                              category=category)
 
     # ── 游戏交互服务 ──────────────────────────
 
@@ -48,6 +90,11 @@ class GameAdapter(abc.ABC):
         """推送文本+图片到聊天框。"""
         if self._push:
             await self._push.text_with_image(text, image_bytes, mime)
+
+    async def push_text_image_url(self, text: str, url: str) -> None:
+        """推送文本 + 图片 URL（图片已存在于 static, 直接 markdown 引用）。"""
+        if self._push:
+            await self._push.text_with_image_url(text, url)
 
     async def push_help(self, title: str, image_bytes: bytes,
                         text: str = "") -> None:
