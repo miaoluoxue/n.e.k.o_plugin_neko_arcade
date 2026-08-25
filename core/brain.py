@@ -42,8 +42,10 @@ class GameBrain:
         # 游戏状态锚节流：游戏进行中且 LLM 长时间未调工具时，向 LLM 上下文
         # 注入「当前游戏 + 可用指令」（只含当前游戏，绝不含全部游戏，防炸上下文）。
         # 每次工具调用(handle_action)都会刷新，所以锚只在 LLM 脱节时出现。
+        # 间隔默认 20s(曾被调到 60s 导致宿主插入互动消息后 LLM 长时间脱节,
+        # 用户"继续"被当普通聊天打断)——缩短后 LLM 上下文里更频繁有游戏提醒。
         self._last_anchor_ts = 0.0
-        self._anchor_interval = float(cfg.get("game_anchor_interval", 60.0))
+        self._anchor_interval = float(cfg.get("game_anchor_interval", 20.0))
 
     def _load_host_persona(self) -> Optional[Dict[str, Any]]:
         try:
@@ -365,6 +367,10 @@ class GameBrain:
 
     async def on_owner_speak(self) -> None:
         self.proactive.on_owner_speak()
+        # 主人说话 = 可能给游戏下一步指令: 立即刷新锚节流, 让下一次 tick
+        # 尽快注入状态锚(提醒 LLM 还在游戏中, 把用户的话传给 play_game)。
+        # 防止宿主插入互动消息后 LLM 脱节, 用户"继续"被当普通聊天打断。
+        self._last_anchor_ts = 0.0
 
     async def tick(self) -> Optional[str]:
         self.persona.mood.decay_all()
@@ -385,6 +391,9 @@ class GameBrain:
             # nudge 的思路, 但只取当前游戏的指令, 绝不含全部游戏(防炸 LLM)。
             if time.time() - self._last_anchor_ts >= self._anchor_interval:
                 await self._inject_game_anchor()
+            # 游戏进行中禁止 proactive 抢话: 猫娘插话会把用户注意力从游戏拉走,
+            # 也让 LLM 以为游戏被打断。游戏中的"等待感"由状态锚(read 注入)负责。
+            return None
         if self.proactive.ready_to_speak:
             text = await self._proactive_text()
             if text:
@@ -447,9 +456,11 @@ class GameBrain:
                     break
         cmd_text = "、".join(f"「{n}」" for n in names) if names else "任意指令"
         anchor = (
-            f"[游戏状态] 正在玩{game.name}, 游戏引擎在等主人的输入喵。"
-            f"可用指令: {cmd_text}。用户接下来说的原话请通过 play_game 工具传进来, "
-            "不要自己扮演游戏流程。"
+            f"[游戏状态] 正在玩{game.name}, 游戏还没结束, 引擎在等主人的输入喵。"
+            f"可用指令: {cmd_text}。"
+            "即使刚才插入过其他消息或闲聊, 游戏会话仍在进行——主人接下来说的"
+            "原话请通过 play_game 工具传进来, 不要自己扮演游戏流程, 也不要因为"
+            "中间有别的对话就以为游戏结束了。"
         )
         self._last_anchor_ts = time.time()
         try:
@@ -459,8 +470,8 @@ class GameBrain:
             log.warning("注入游戏状态锚失败: %s", exc)
 
     async def _proactive_text(self) -> Optional[str]:
-        if self._current_game:
-            return "嗯…在想要怎么玩呢"
+        # 注意: 游戏进行中(tick 已短路 return None), 不会到这里。
+        # 非游戏状态才可能主动说话(久不玩邀请等)。
         if await self.proactive.should_invite():
             self.proactive.mark_invited()
             return "好久没一起玩游戏了喵，要不要来一局？"
