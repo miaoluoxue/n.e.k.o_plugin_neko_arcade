@@ -100,11 +100,10 @@ async def main():
     check("重开次数+1", game._cache[uid]["lifes"] == 1, game._cache[uid])
     check("享年记录", game._cache[uid]["best_age"] > 0, game._cache[uid])
     check("life_end fact", r["facts"][0]["kind"] == "life_end", r)
-    # 渲染图(需要 PIL): push 里应有 image 条目
-    img_pushes = [p for p in plugin.pushes if p[0] == "image"]
-    check("人生总结图已渲染推送", len(img_pushes) == 1, [p[:3] for p in plugin.pushes])
-    if img_pushes:
-        print(f"    (总结图 {img_pushes[0][2]} bytes, {img_pushes[0][3]})")
+    # 渲染图(需要 PIL): 游戏返回 images 数据(brain 统一推), 不自己 push
+    check("人生总结图已生成(images)", bool(r.get("images")), r)
+    if r.get("images"):
+        print(f"    (总结图 {len(r['images'][0].get('bytes', b''))} bytes)")
 
     # 6. 随机人生一步到位
     r = await game.handle_action(uid, "随机人生")
