@@ -170,6 +170,13 @@ class ArcadeRuntime:
         except Exception as exc:
             log.error("动态注册 send_photo 工具失败: %s", exc)
 
+    # 弱指令(无关键词、无会话时的「接着玩」意图) → 路由到最近玩过的游戏
+    # 只收明确的"接着玩"意图词, 避免「又」「想玩」「换个」等宽泛词误伤闲聊
+    _WEAK_PLAY_HINTS = (
+        "再来一局", "再来", "继续玩", "继续", "接着玩", "接着", "再玩一次",
+        "还想玩", "玩点什么", "随便玩", "来一局", "来一把", "开一局", "再开",
+    )
+
     def parse_input(self, input: str) -> tuple[Optional[str], str]:
         """解析用户输入，返回 (game_id, cmd)。
 
@@ -179,6 +186,10 @@ class ArcadeRuntime:
         2. 显式切游戏：输入命中**其他**游戏关键词 → 切过去(如玩修仙时发「钓鱼」应切钓鱼)。
         3. current_game 兜底：输入不含任何游戏关键词时回当前游戏(多轮续接, 如
            「随机」「0 1 2」等由游戏自身语义判断)。
+        4. last_game 弱指令兜底：无会话时用户说「再来一局/继续玩/玩点什么」等
+           模糊指令, 路由到最近玩过的游戏, 并把 cmd 换成该游戏的启动指令
+           (各游戏 keywords[0] 即启动指令, 如「钓鱼」「人生重开」), 让 LLM
+           拿到能真正执行的指令而不是"没有找到匹配的游戏"。
 
         确认/催促词(可以/帮我)不在此硬编码——由 LLM 判断并决定调用 play_game 传什么
         (工具描述已指导: 多轮选择时用户说「可以/随机」→ 传「随机」)。
@@ -207,6 +218,16 @@ class ArcadeRuntime:
         # 3. current_game 兜底(多轮续接: 数字/随机等无关键词输入)
         if cur:
             return cur, input
+
+        # 4. last_game 弱指令兜底: 无会话 + 弱指令意图词 → 回最近游戏并换启动指令
+        last = self.brain.last_game if (self.brain and self.brain.last_game) else None
+        if last and self.registry.get(last):
+            for hint in self._WEAK_PLAY_HINTS:
+                if hint in input:
+                    game = self.registry.get(last)
+                    kws = game.get_keywords()
+                    start = kws[0] if kws else input
+                    return last, start
         return None, input
 
     def _wire_llm(self) -> None:
