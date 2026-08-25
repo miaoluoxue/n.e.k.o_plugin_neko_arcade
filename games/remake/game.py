@@ -1,7 +1,6 @@
 """人生重开模拟器: GameAdapter 实现。
 
-移植自 noneplugin/nonebot-plugin-remake(纯逻辑 age/event/talent/property/life/drawer 原样搬运)。
-玩法全保留: 随机10天赋 → 选3(或随机) → 分配属性(或随机) → 逐年模拟 → 人生总结图。
+玩法: 随机10天赋 → 选3(或随机) → 分配属性(或随机) → 逐年模拟 → 人生总结图。
 交互: 多轮状态机(选天赋 → 分属性 → 出图), 猫娘旁白点评这一世。
 """
 
@@ -237,7 +236,22 @@ class RemakeGame(GameAdapter):
                 "facts": [build_fact("prop_prompt", total=total)],
                 "message": (f"天赋选定: {'、'.join(t.name for t in selected)}。\n"
                             f"现在分配属性: 发 4 个数字(颜值 智力 体质 家境), "
-                            f"总和 {total}, 每个≤10, 如「5 5 5 5」; 或发「随机」")}
+                            f"总和 {total}, 每个≤10, "
+                            f"如「{' '.join(str(x) for x in self._example_props(total))}」; "
+                            f"或发「随机」")}
+
+    @staticmethod
+    def _example_props(total: int) -> List[int]:
+        """给 total 造一组合法示例属性(每项≤10, 和=total)。
+
+        天赋加成会改变可分配总和(可能≠20), 示例必须跟着真实 total 走,
+        否则玩家照示例输入必然被「属性之和需为 {total}」拒绝。
+        """
+        n1 = min(total, 10)
+        n2 = min(max(total - n1, 0), 10)
+        n3 = min(max(total - n1 - n2, 0), 10)
+        n4 = max(total - n1 - n2 - n3, 0)
+        return [n1, n2, n3, n4]
 
     async def _pick_props(self, user_id: str, cmd: str, save: Dict[str, Any],
                           life: Life) -> Dict[str, Any]:

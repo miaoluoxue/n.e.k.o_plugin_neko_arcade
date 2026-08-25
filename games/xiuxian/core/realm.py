@@ -1,6 +1,6 @@
-"""境界系统：练气/炼体双轨境界，数据来自 zhutianxiuxian 原版 Level/*.json(原样移植)。
+"""境界系统：练气/炼体双轨境界，数据来自 data/levels/*.json(独立数据体系)。
 
-原版体系(8 套,均拷入 data/levels/)：
+体系(8 套,均存于 data/levels/)：
 - 练气境界.json     64 境(气修主轨)
 - 炼体境界.json     63 境(体修副轨)
 - 真实虚幻境界.json  64 境

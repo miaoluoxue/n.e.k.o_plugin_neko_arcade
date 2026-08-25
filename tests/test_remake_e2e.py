@@ -90,12 +90,29 @@ async def main():
     check("已选 3 个天赋", len(game._cache[uid]["chosen"]) == 3, game._cache[uid]["chosen"])
     check("状态=prop", game._cache[uid]["state"] == "prop", game._cache[uid]["state"])
 
+    # ⚠️ 适配坑: total 不是固定 20, 天赋 status 加成会改变可分配总和(如 21~34)。
+    # 必须从返回 facts 读真实 total, 不能写死「5 5 5 5」(和=20), 否则 total≠20
+    # 时测试随机失败。玩家侧同理: 游戏提示的示例也必须跟真实 total 走。
+    total = 20
+    for f in r.get("facts", []):
+        if f.get("kind") == "prop_prompt":
+            total = int(f.get("total", 20))
+
     # 4. 分属性: 非法(和不对)
-    r = await game.handle_action(uid, "1 1 1 1")
+    wrong = "1 1 1 1" if total != 4 else "2 1 1 1"  # 保证和≠total
+    r = await game.handle_action(uid, wrong)
     check("属性和不对被拒", r.get("outcome") == "prop_prompt" and "和" in r["message"], r)
 
-    # 5. 分属性合法 → 开跑人生
-    r = await game.handle_action(uid, "5 5 5 5")
+    # 5. 分属性合法 → 开跑人生 (按真实 total 构造合法拆分, 每项≤10)
+    n1 = min(total, 10)
+    n2 = min(max(total - n1, 0), 10)
+    n3 = min(max(total - n1 - n2, 0), 10)
+    n4 = max(total - n1 - n2 - n3, 0)
+    if max(n1, n2, n3, n4) <= 10:
+        r = await game.handle_action(uid, f"{n1} {n2} {n3} {n4}")
+    else:
+        # 极端情况 total>40(理论不可能: 单天赋 status 最大+8×3)才走随机兜底
+        r = await game.handle_action(uid, "随机")
     check("开跑后 outcome=life_*", r.get("outcome") in ("life_good", "life_mid", "life_bad"), r)
     check("重开次数+1", game._cache[uid]["lifes"] == 1, game._cache[uid])
     check("享年记录", game._cache[uid]["best_age"] > 0, game._cache[uid])

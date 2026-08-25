@@ -1,4 +1,4 @@
-"""移植自 nonebot-plugin-remake 的 utils.py, 去掉 nonebot 依赖(换标准 logging)。"""
+"""人生重开通用工具(独立实现, 不依赖任何外部项目)。"""
 
 import logging
 import re

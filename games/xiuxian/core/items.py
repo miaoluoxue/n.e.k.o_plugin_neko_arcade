@@ -1,4 +1,4 @@
-"""物品目录：从 zhutianxiuxian 原版 item JSON 加载(原样移植)。
+"""物品目录：从 data/items.json 加载(独立数据体系)。
 
 分类表(按 class 字段)：
 - 道具 / 丹药 / 草药 / 材料 / 装备 / 功法

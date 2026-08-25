@@ -5,6 +5,7 @@
 """
 import asyncio
 import json
+import time
 from pathlib import Path
 
 from plugin.plugins.neko_arcade.adapters.photo_bridge import PhotoBridge
@@ -212,10 +213,93 @@ def test_neko_photo_brain_background_tick():
         brain.registry = FakeRegistry(game)
         brain._current_game = None
         brain._current_user = "user_bg"
+        brain._last_activity_ts = time.time()  # 模拟主人最近说过话
+        brain._background_active_window = 900.0
 
         game._next_auto_ts = 0.0  # 立即触发
         await brain._tick_background_games()
         assert plugin.pushes, "后台 tick 应触发自动发图"
+
+    asyncio.run(run())
+
+
+def test_neko_photo_brain_background_tick_activity_gate():
+    """活动窗口门控: 主人超过窗口没说话, 后台 tick 不应自动发图。"""
+    async def run():
+        from plugin.plugins.neko_arcade.core.brain import GameBrain
+
+        game, plugin = _make_game(_TMP)
+        plugin.pushes.clear()
+
+        class FakeRegistry:
+            def __init__(self, g):
+                self._g = g
+
+            @property
+            def games(self):
+                return [self._g]
+
+            def get(self, gid):
+                return self._g if self._g.id == gid else None
+
+        brain = GameBrain.__new__(GameBrain)
+        brain.registry = FakeRegistry(game)
+        brain._current_game = None
+        brain._current_user = "user_bg"
+        # 主人最后一次说话是 2 小时前(超过默认 15 分钟窗口)
+        brain._last_activity_ts = time.time() - 7200.0
+        brain._background_active_window = 900.0
+
+        game._next_auto_ts = 0.0
+        await brain._tick_background_games()
+        assert not plugin.pushes, "超窗口后不应自动发图"
+        # 从未聊过天也不应发图
+        brain._last_activity_ts = 0.0
+        await brain._tick_background_games()
+        assert not plugin.pushes, "从未活跃不应自动发图"
+
+    asyncio.run(run())
+
+
+def test_neko_photo_brain_on_owner_speak_refreshes_activity():
+    """@message→on_owner_speak 刷新活动窗口: 主人说话后后台自动发图恢复。"""
+    async def run():
+        from plugin.plugins.neko_arcade.core.brain import GameBrain
+
+        game, plugin = _make_game(_TMP)
+        plugin.pushes.clear()
+
+        class FakeProactive:
+            def on_owner_speak(self):
+                pass
+
+        class FakeRegistry:
+            def __init__(self, g):
+                self._g = g
+
+            @property
+            def games(self):
+                return [self._g]
+
+            def get(self, gid):
+                return self._g if self._g.id == gid else None
+
+        brain = GameBrain.__new__(GameBrain)
+        brain.registry = FakeRegistry(game)
+        brain._current_game = None
+        brain._current_user = "user_bg"
+        brain.proactive = FakeProactive()
+        brain._last_activity_ts = time.time() - 7200.0  # 2小时前, 已超窗口
+        brain._background_active_window = 900.0
+
+        game._next_auto_ts = 0.0
+        await brain._tick_background_games()
+        assert not plugin.pushes, "超窗口时不应自动发图"
+
+        # 主人说话(@message 监听 → on_owner_speak)刷新活动时间
+        await brain.on_owner_speak()
+        await brain._tick_background_games()
+        assert plugin.pushes, "主人说话后应恢复自动发图"
 
     asyncio.run(run())
 

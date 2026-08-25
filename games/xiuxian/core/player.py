@@ -1,7 +1,7 @@
 """玩家存档模型：境界/属性/资源/背包/关系，以及存档读写。
 
-移植自 zhutianxiuxian 的 player 数据体系(练气+炼体双轨、灵石、纳戒、关系)，
-单人化：关系字段只面向猫娘(Neko)与 NPC。
+数据体系(练气+炼体双轨、灵石、纳戒、关系)，单人化：
+关系字段只面向猫娘(Neko)与 NPC。
 """
 
 from __future__ import annotations

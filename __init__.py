@@ -10,6 +10,7 @@ from plugin.sdk.plugin import (
     Ok,
     SdkError,
     lifecycle,
+    message,
     neko_plugin,
     plugin_entry,
 )
@@ -60,6 +61,17 @@ class NekoArcadePlugin(NekoPluginBase):
         if self.rt:
             await self.rt.shutdown()
         return Ok({"status": "shutdown"})
+
+    @message(id="chat_activity", source="chat")
+    async def on_chat_activity(self, **_) -> Any:
+        """主人说话信号: 宿主在每次用户聊天时触发(参考 neko_warthunder)。
+
+        刷新 brain 的活动状态——后台自动发图/游戏会话锚都依赖"主人最近是否
+        活跃"来判断是否应该动作, 避免插件在无人聊天时刷屏或发图。
+        """
+        if self.rt and self.rt.brain:
+            await self.rt.brain.on_owner_speak()
+        return Ok({"status": "observed"})
 
     async def store_get_user(self, game_id: str, user_id: str, default: Any = None) -> Any:
         key = f"{STORE_PREFIX}:{game_id}:{user_id}"

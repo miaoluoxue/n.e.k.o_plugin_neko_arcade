@@ -1,6 +1,6 @@
 """历史上的今天: GameAdapter 实现。
 
-移植自 nonebot-plugin-today-in-history(百度百科 eventsOnHistory API)。
+数据: 百度百科 eventsOnHistory API(当天大事)。
 猫娘化改造: 不是干巴巴的查询, 而是猫娘当历史讲解员——
 拉取当天大事 → 渲染精美图片 + 猫娘开场白 → 可按年份/类型继续互动。
 

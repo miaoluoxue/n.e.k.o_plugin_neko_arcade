@@ -46,6 +46,11 @@ class GameBrain:
         # 用户"继续"被当普通聊天打断)——缩短后 LLM 上下文里更频繁有游戏提醒。
         self._last_anchor_ts = 0.0
         self._anchor_interval = float(cfg.get("game_anchor_interval", 20.0))
+        # 后台自动发图的活动窗口: 距主人最后一次聊天(通过 @message 刷新)超过
+        # 该秒数就不再自动发图, 避免长时间没人说话时猫娘还在后台刷图。
+        # 默认 15 分钟, 可用配置 background_active_window 调整。
+        self._last_activity_ts = 0.0
+        self._background_active_window = float(cfg.get("background_active_window", 900.0))
 
     def _load_host_persona(self) -> Optional[Dict[str, Any]]:
         try:
@@ -381,6 +386,8 @@ class GameBrain:
         # 尽快注入状态锚(提醒 LLM 还在游戏中, 把用户的话传给 play_game)。
         # 防止宿主插入互动消息后 LLM 脱节, 用户"继续"被当普通聊天打断。
         self._last_anchor_ts = 0.0
+        # 记录最近活跃时间: 后台自动发图只在此窗口内触发(避免无人也刷图)
+        self._last_activity_ts = time.time()
 
     async def tick(self) -> Optional[str]:
         self.persona.mood.decay_all()
@@ -419,9 +426,17 @@ class GameBrain:
         只对标记了 background_tick=True 且未在会话中的游戏调用 on_tick。
         调用间隔由游戏自身的冷却逻辑(如 neko_photo._next_auto_ts)控制,
         默认 60~180 秒一张, 低打扰(blind 推送, 不触发 AI 轮次)。
+
+        活动窗口门控: 只有最近(默认 15 分钟内)主人说过话才允许自动发图,
+        每次主人说话(@message 监听 → on_owner_speak)都会刷新 _last_activity_ts,
+        超过窗口后后台发图自动停止, 避免无人聊天时猫娘持续刷图。
         """
         if self._current_game:
             return  # 有会话时, 当前游戏的 on_tick 已由主 tick 调用
+        if not self._last_activity_ts:
+            return  # 从未聊过天, 不自动发图
+        if time.time() - self._last_activity_ts > self._background_active_window:
+            return  # 超过活动窗口(默认15分钟无人说话), 停止自动发图
         for game in self.registry.games:
             if not getattr(game, "background_tick", False):
                 continue

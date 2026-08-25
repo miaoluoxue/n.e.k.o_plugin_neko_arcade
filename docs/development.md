@@ -1,5 +1,11 @@
 # 🐱 猫娘小游戏 · 开发文档（小游戏接入标准）
 
+> ⚠️ **输出契约已升级（重要）**：游戏**不得在 `handle_action` 内调用
+> `push_text` / `push_text_image` / `push_help`**——那是旧架构。新架构下游戏
+> 只返回 `{facts, outcome, message, images?}`，一切推送由 brain 统一编排
+> （详见 [rules.md §2.5](rules.md) 与 [pitfalls.md](pitfalls.md)）。
+> 下方「游戏内可用的服务」中的 push 系列仅保留给 on_tick 后台提醒/历史兼容。
+
 ## 标准契约
 
 所有小游戏必须实现 `core.contracts.GameAdapter` 抽象基类。
