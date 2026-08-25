@@ -170,6 +170,44 @@ async def on_chat_activity(self, **_):
 
 ---
 
+## 6.5 推送必须带 target_lanlan（多角色会话，坑）
+
+**坑**：`push_message` 不带 `target_lanlan` 时，宿主 `_get_session_manager("")`
+返回 None；**多角色(多猫娘)会话时 fallback 也为空 → 推送被宿主直接丢弃**。
+早期版本全部推送都没带 target_lanlan，单角色环境碰巧不丢（fallback 兜住），
+多角色环境静默丢消息。
+
+**真相**：官方 lifekit / neko_live 等插件推送一律带 `target_lanlan`（从
+`ctx._current_lanlan` / 环境变量解析）。PushSender 已统一解析并带上：
+
+```python
+# 解析优先级: ctx._current_lanlan → ctx._host_ctx._current_lanlan →
+# NEKO_TARGET_LANLAN / NEKO_LANLAN_NAME / NEKO_HER_NAME 环境变量
+target = self._resolve_target_lanlan()
+self.plugin.push_message(..., target_lanlan=target or None)
+```
+
+**适配规则**：任何走 PushSender / brain 的推送都不用手动传——它已统一处理。
+游戏若绕过 PushSender 直接调 `plugin.push_message`，必须自己带 `target_lanlan`。
+
+---
+
+## 6.6 ctx 没有 user_id：不要按用户隔离（坑）
+
+**坑**：SDK 的 `ctx` 没有 `user_id` 属性——`getattr(self.ctx, "user_id", "default")`
+永远返回 `"default"`。若代码试图「按用户隔离存档/状态」，实际所有用户共享
+同一份数据，且没有任何报错。
+
+**真相**：宿主是单主人(单 master)会话模型，官方插件从不读 `ctx.user_id`。
+本插件所有 `user_id` 参数实际恒为 `"default"`——这在当前架构下是正确的
+（主人只有一个），不要为了实现「多用户隔离」去猜宿主 API。
+
+**适配规则**：存档键用 `game:{id}:user:{uid}` 即可（uid 恒 default 无妨）；
+**不要**依赖任何未在 SDK 文档中声明的 ctx 属性（如 user_id），拿到就当作
+「该属性可能不存在」处理。
+
+---
+
 ## 7. 适配代码不得引用参考项目名
 
 **坑**：从别处移植/适配的游戏代码注释里写了原项目名

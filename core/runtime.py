@@ -240,10 +240,11 @@ class ArcadeRuntime:
             self.llm.set_client(provider, model, api_key, base_url)
             log.info("已配置 LLM: %s/%s (所有游戏走此接口)", provider, model)
             return
-        host_call = getattr(self.plugin, "__call_llm", None)
-        if host_call:
-            self.llm.set_host_call(host_call)
-            log.info("未配置 LLM, 回退宿主 __call_llm")
+        # 宿主不提供「插件直调 LLM」的 API(官方插件从不直接调宿主 LLM——
+        # 它们靠 @llm_tool / @plugin_entry 返回 summary 让宿主演绎, 本插件同样
+        # 通过 entry 的 llm_result_fields=["summary"] 通道实现)。未配置自建 LLM
+        # 时情感渲染降级到预制模板, 不影响对话(猫娘自然回应由宿主 LLM 按 summary 生成)。
+        log.info("未配置自建 LLM, 情感渲染用模板兜底(对话由宿主按 summary 演绎)")
 
     async def shutdown(self) -> None:
         if self._tick_task:

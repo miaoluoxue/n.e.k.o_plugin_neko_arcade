@@ -110,7 +110,8 @@ class LLMProvider:
         self._scene_override: Optional[str] = None
 
     def set_host_call(self, call: Callable[[str], Any]) -> None:
-        """宿主注入（主项目 __call_llm）。"""
+        """注入宿主 LLM 回调(旧接口, 保留兼容; 宿主实际不注入 __call_llm,
+        官方模式是返回 summary 由宿主演绎, 本插件默认走自建客户端+模板兜底)。"""
         self._host_call = call
 
     def set_client(self, provider: str, model: str, api_key: str = "", base_url: str = "") -> None:
@@ -187,8 +188,8 @@ class LLMProvider:
     async def call(self, prompt: str) -> Optional[str]:
         """限流内调用 LLM，失败返回 None。
 
-        优先级：配置自建客户端(新 LLM) → 宿主注入(__call_llm)。
-        符合「配置了所有游戏都走新 LLM, 没配用主的」。
+        优先级：配置自建客户端(新 LLM) → 宿主注入回调(旧接口, 见 set_host_call) →
+        无则返回 None(调用方走模板兜底)。
         """
         if not self._throttle.acquire():
             log.warning("LLM 限流，拒绝调用")

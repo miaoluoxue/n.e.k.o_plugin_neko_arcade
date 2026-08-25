@@ -237,7 +237,7 @@ class NekoArcadePlugin(NekoPluginBase):
 
     # ── LLM 配置(UI「全部游戏」下方, 学泰拉瑞亚猫娘方式) ──────
     # 键名与 runtime._wire_llm 读取的 neko_arcade.llm_main_* 完全一致：
-    # 配置了 → 自建 LLM 客户端; 没配 → 宿主 __call_llm → 模板台词。
+    # 配置了 → 自建 LLM 客户端; 没配 → 模板兜底(对话由宿主按 summary 演绎)。
 
     @plugin_entry(id="get_llm_config", name="获取LLM配置",
                   description="读取插件级 LLM 配置(猫娘对话用)。",

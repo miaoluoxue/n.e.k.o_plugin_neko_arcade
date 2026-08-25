@@ -129,9 +129,35 @@ class PushSender:
         # 注意：SDK 的 push_message 是同步方法（返回回执对象，不是协程），不能 await。
         # 之前写成 await self.plugin.push_message(...) 会抛
         # "TypeError: object dict can't be used in 'await' expression"。
+        #
+        # target_lanlan：多猫娘(多角色)环境下不带目标角色名, 宿主 _get_session_manager("")
+        # 拿不到会话, 多会话时 fallback 也为空 → 推送会被宿主直接丢弃(lifekit/neko_live
+        # 都显式带 target_lanlan)。解析优先级: ctx 当前角色 → 环境变量 → 无(单角色兜底)。
+        target = self._resolve_target_lanlan()
         self.plugin.push_message(
             source=self.source,
             parts=parts,
             visibility=visibility or ["chat", "hud"],
             ai_behavior=ai_behavior,
+            target_lanlan=target or None,
         )
+
+    def _resolve_target_lanlan(self) -> str:
+        """解析推送目标角色名(猫娘名)。
+
+        顺序: ctx._current_lanlan → ctx._host_ctx._current_lanlan →
+        环境变量(NEKO_TARGET_LANLAN / NEKO_LANLAN_NAME / NEKO_HER_NAME)。
+        拿不到返回空串(宿主单角色 fallback 可兜住)。
+        """
+        ctx = getattr(self.plugin, "ctx", None)
+        host_ctx = getattr(ctx, "_host_ctx", None) if ctx is not None else None
+        for source in (
+            getattr(ctx, "_current_lanlan", None) if ctx is not None else None,
+            getattr(host_ctx, "_current_lanlan", None) if host_ctx is not None else None,
+            os.getenv("NEKO_TARGET_LANLAN", ""),
+            os.getenv("NEKO_LANLAN_NAME", ""),
+            os.getenv("NEKO_HER_NAME", ""),
+        ):
+            if isinstance(source, str) and source.strip():
+                return source.strip()
+        return ""
