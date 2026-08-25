@@ -65,6 +65,8 @@ def _make_game():
     game._help = HELP
     game._keywords = KWS
     game._emotion_templates = EMO
+    # 图片资源在 games/tarot/data/(真实目录, 供 _card_image 读 bytes)
+    game._local_scan_dir = str(ROOT / "games" / "tarot" / "data")
     return game, plugin
 
 
@@ -75,8 +77,8 @@ def test_tarot_single_card():
         assert r["outcome"] in ("tarot", "divine", "help"), r
         assert r["facts"][0]["kind"] == "tarot"
         assert "正位" in r["message"] or "逆位" in r["message"], r
-        # 应返回牌面图 images
-        assert r.get("images") and r["images"][0].get("url"), r
+        # 应返回牌面图 images(bytes 形式)
+        assert r.get("images") and r["images"][0].get("bytes"), r
 
     asyncio.run(run())
 
@@ -114,15 +116,18 @@ def test_tarot_divine():
 def test_tarot_theme_switch():
     async def run():
         game, plugin = _make_game()
-        r = await game.handle_action("user_1", "塔罗主题 TouhouTarot")
+        r = await game.handle_action("user_1", "塔罗主题 东方")
         assert r["outcome"] == "theme", r
-        assert game._theme == "TouhouTarot", game._theme
-        # 切到 TouhouTarot 后抽牌 → 只可能出大阿卡纳
+        assert game._theme == "touhou", game._theme
+        # 切到 touhou 后抽牌 → 只可能出大阿卡纳
         r2 = await game.handle_action("user_1", "塔罗牌")
         assert r2["outcome"] == "tarot", r2
-        # 切回
-        await game.handle_action("user_1", "塔罗主题 BilibiliTarot")
-        assert game._theme == "BilibiliTarot", game._theme
+        # 切回 bili
+        await game.handle_action("user_1", "塔罗主题 bili")
+        assert game._theme == "bili", game._theme
+        # ba 主题(碧蓝档案)
+        r3 = await game.handle_action("user_1", "塔罗主题 碧蓝档案")
+        assert r3["outcome"] == "theme" and game._theme == "ba", r3
 
     asyncio.run(run())
 

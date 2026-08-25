@@ -19,20 +19,25 @@ from __future__ import annotations
 import json
 import os
 import random
-import urllib.parse
 from typing import Any, Dict, List, Optional
 
 from ...core.contracts import GameAdapter, build_fact
 
 game_class = "TarotGame"
 
-THEMES = ["BilibiliTarot", "TouhouTarot"]
+# 主题目录名(data/ 下, 简洁命名)
+THEMES = ["bili", "touhou", "ba"]
 _JSON_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tarot.json")
+_DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
 
 # 主题 → 可用的牌类型(主题资源决定)
 _THEME_TYPES: Dict[str, List[str]] = {
-    "BilibiliTarot": ["MajorArcana", "Cups", "Pentacles", "Swords", "Wands"],
-    "TouhouTarot": ["MajorArcana"],
+    "bili": ["MajorArcana", "Cups", "Pentacles", "Swords", "Wands"],
+    "touhou": ["MajorArcana"],
+    "ba": ["MajorArcana"],
+}
+_THEME_LABELS: Dict[str, str] = {
+    "bili": "B站幻星集", "touhou": "东方", "ba": "碧蓝档案",
 }
 
 
@@ -46,7 +51,7 @@ class TarotGame(GameAdapter):
     def __init__(self, plugin: Any) -> None:
         super().__init__(plugin)
         self._data: Optional[Dict[str, Any]] = None
-        self._theme: str = "BilibiliTarot"
+        self._theme: str = "bili"
 
     # ── 数据加载 ──────────────────────────
 
@@ -189,43 +194,55 @@ class TarotGame(GameAdapter):
 
     async def _switch_theme(self, c: str) -> Dict[str, Any]:
         for theme in THEMES:
-            if theme.lower() in c.lower():
+            label = _THEME_LABELS.get(theme, theme)
+            if theme.lower() in c.lower() or label in c:
                 self._theme = theme
                 return {"facts": [build_fact("theme", theme=theme)], "outcome": "theme",
-                        "message": f"已切换塔罗牌主题: {theme} 喵~"}
-        names = "、".join(THEMES)
+                        "message": f"已切换塔罗牌主题: {label} 喵~"}
+        names = "、".join(_THEME_LABELS.get(t, t) for t in THEMES)
         return {"facts": [build_fact("theme_help")], "outcome": "theme_help",
-                "message": f"当前主题: {self._theme}。说「塔罗主题 {names}」切换喵~"}
+                "message": f"当前主题: {_THEME_LABELS.get(self._theme, self._theme)}。"
+                           f"说「塔罗主题 {names}」切换喵~"}
 
     # ── 图片 ──────────────────────────────
 
+    def _data_root(self):
+        """游戏 data 目录(测试可注入 _local_scan_dir)。"""
+        override = getattr(self, "_local_scan_dir", None)
+        if override:
+            return override
+        return _DATA_DIR
+
     def _card_image(self, card: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        """构造牌面图 images 元素(static URL, 交 brain 推送)。"""
+        """从游戏 data 目录读牌面图 bytes, 返回 images 元素(交 brain 推送)。
+
+        文件路径: data/<主题>/<Type>/<pic>.<png|jpg>。pic 字段与文件名匹配
+        (如大阿卡纳 0-愚者, 小阿卡纳 圣杯-01)。
+        """
         ttype = card.get("type", "MajorArcana")
         pic = card.get("pic", "")
-        if not pic or not self._push:
+        if not pic:
             return None
-        # 探测真实扩展名(主题资源 .png/.jpg 混合)
-        base = os.path.join(self.plugin.config_dir, "static", "img", "tarot",
-                            self._theme, ttype)
-        ext = None
+        base = os.path.join(self._data_root(), self._theme, ttype)
         for cand in (".png", ".jpg", ".jpeg"):
-            if os.path.exists(os.path.join(base, pic + cand)):
-                ext = cand
-                break
-        if not ext:
-            # 本地不存在则按 .png 兜底(host 可能未部署资源)
-            ext = ".png"
-        rel = f"img/tarot/{self._theme}/{ttype}/{pic}{ext}"
-        # URL 编码中文路径
-        url = self._push.static_url(urllib.parse.quote(rel))
-        return {"url": url, "text": card.get("name_cn", "")}
+            p = os.path.join(base, pic + cand)
+            if os.path.exists(p):
+                try:
+                    with open(p, "rb") as f:
+                        raw = f.read()
+                    if raw:
+                        return {"bytes": raw,
+                                "mime": "image/png" if cand == ".png" else "image/jpeg",
+                                "text": card.get("name_cn", "")}
+                except OSError:
+                    return None
+        return None
 
     # ── 状态 / 面板 ───────────────────────
 
     async def get_status(self, user_id: str = "default") -> Dict[str, Any]:
         data = self._load_data()
-        return {"theme": self._theme,
+        return {"theme": _THEME_LABELS.get(self._theme, self._theme),
                 "cards": len(data.get("cards", {})),
                 "formations": len(data.get("formations", {}))}
 
@@ -233,7 +250,8 @@ class TarotGame(GameAdapter):
         return {"schemas": [
             {"label": "主题", "component": "Group"},
             {"field": "theme", "label": "默认主题", "component": "Select",
-             "props": {"options": [{"label": t, "value": t} for t in THEMES]},
+             "props": {"options": [{"label": _THEME_LABELS.get(t, t), "value": t}
+                                   for t in THEMES]},
              "help": "占卜使用的牌面主题"},
         ]}
 
