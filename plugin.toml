@@ -2,8 +2,8 @@
 id = "neko_arcade"
 type = "plugin"
 name = "猫娘小游戏"
-description = "让猫娘陪你玩各种小游戏——钓鱼、海龟汤、猜硬币、修仙……一个插件，无限可能。"
-short_description = "Neko mini-games hub for N.E.K.O."
+description = "喵呜~让猫娘陪你玩各种小游戏喵！钓鱼、海龟汤、猜硬币、俄罗斯轮盘、人生重开、诸天修仙……想玩什么说一声就行，猫娘全程陪玩、讲评、撒娇！一个插件，无限可能喵~"
+short_description = "猫娘陪你玩各种小游戏喵！钓鱼、海龟汤、修仙……想玩就说，猫娘陪你嗨~"
 keywords = ["game", "游戏", "小游戏", "mini-games", "fun", "fishing", "钓鱼", "猜硬币", "coinflip", "海龟汤", "猜谜", "soupbubble", "turtle-soup", "修仙", "xiuxian", "cultivation", "诸天", "play", "玩"]
 version = "0.4.0"
 entry = "plugins.neko_arcade:NekoArcadePlugin"
