@@ -101,6 +101,10 @@ class NekoArcadePlugin(NekoPluginBase):
 
     @plugin_entry(id="list_games", name="游戏列表", description="列出所有可玩的小游戏名(按需查询, 一次调用即可, 不要反复调用)。",
                   input_schema={"type": "object", "properties": {}},
+                  # agent_hidden: 查询类入口不参与 LLM 自动路由——宿主评估器若看到
+                  # list_games/game_status 会把"玩钓鱼"路由成"先查列表", 而不是调
+                  # play_game。LLM 路由只留 play_game 一个游戏入口(见其注释)。
+                  metadata={"agent_hidden": True},
                   llm_result_fields=["message"])
     async def entry_list_games(self, **_) -> Any:
         if not self.rt:
@@ -113,16 +117,13 @@ class NekoArcadePlugin(NekoPluginBase):
                    "message": f"可玩的小游戏：{names}。想玩哪个说游戏名就行喵"})
 
     @plugin_entry(id="play_game", name="玩游戏",
-                  description="猫娘小游戏的统一入口。用户说想玩小游戏/提到游戏名(如「塔罗牌」「占卜」「钓鱼」「人生重开」)时调用本入口，传用户原话，插件自动匹配游戏并执行。",
+                  description="猫娘小游戏的唯一游戏入口。用户说想玩小游戏、提到游戏名(塔罗牌/占卜/钓鱼/人生重开/猜硬币/海龟汤/修仙/俄罗斯轮盘/历史上的今天/猫猫进化路等)、或对当前游戏下指令(抛竿/开始/继续/再来一局/帮助)时，直接调用本入口，传用户原话，插件自动匹配游戏并执行。不要先查游戏列表或状态。",
                   input_schema={"type": "object", "properties": {
-                      "input": {"type": "string", "description": "用户说的原话，如「塔罗牌」「占卜」「钓鱼」「人生重开」"},
+                      "input": {"type": "string", "description": "用户说的原话，如「塔罗牌」「占卜」「钓鱼」「抛竿」「人生重开」"},
                   }, "required": ["input"]},
                   # 宿主按 summary 字段拼装任务结果喂给对话 LLM，猫娘才能对游戏结果有反馈。
-                  # ⚠️ 不要设 agent_hidden: 宿主 task_executor 的 Agent 路由(UnifiedAssessment)
-                  # 只把非 hidden 的 plugin_entry 暴露给 LLM 判定"是否调用插件"——隐藏后
-                  # 宿主会认为 neko_arcade 无可用入口, 直接判 can_execute=false(日志:
-                  # "无匹配的可执行插件任务"), LLM 走不到 play_game。schema 用 input-only
-                  # + 强描述, 让 Stage-2 LLM 理解"用户提游戏名=明确要玩, 直接调用"。
+                  # ⚠️ 这是唯一对宿主 LLM 路由可见的 entry——list_games/game_status/game_help
+                  # 都已 agent_hidden(宿主评估器会把"玩钓鱼"错路由成"先查列表/状态")。
                   llm_result_fields=["summary"])
     async def entry_play_game(self, input: str = "", game: str = "", cmd: str = "",
                               args: dict = None, **_) -> Any:
@@ -169,7 +170,8 @@ class NekoArcadePlugin(NekoPluginBase):
         return Ok(result)
 
     @plugin_entry(id="game_status", name="游戏状态", description="查看小游戏当前状态。",
-                  input_schema={"type": "object", "properties": {"game": {"type": "string", "description": "游戏 id 或名称"}}, "required": ["game"]})
+                  input_schema={"type": "object", "properties": {"game": {"type": "string", "description": "游戏 id 或名称"}}, "required": ["game"]},
+                  metadata={"agent_hidden": True})
     async def entry_game_status(self, game: str = "", **_) -> Any:
         if not self.rt:
             return Err(SdkError("猫娘小游戏还没准备好"))
@@ -199,6 +201,7 @@ class NekoArcadePlugin(NekoPluginBase):
                   input_schema={"type": "object", "properties": {
                       "game": {"type": "string", "description": "游戏 id"},
                   }, "required": ["game"]},
+                  metadata={"agent_hidden": True},
                   llm_result_fields=["message"])
     async def entry_game_help(self, game: str = "", **_) -> Any:
         if not self.rt or not self.rt.brain:
