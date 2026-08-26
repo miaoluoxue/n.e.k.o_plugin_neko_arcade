@@ -10,6 +10,7 @@ from plugin.sdk.plugin import (
     Ok,
     SdkError,
     lifecycle,
+    llm_tool,
     message,
     neko_plugin,
     plugin_entry,
@@ -379,8 +380,32 @@ class NekoArcadePlugin(NekoPluginBase):
                    "started": True, "enabled_count": len(enabled),
                    "token_stats": token_stats, "main_config": main_config})
 
+    @llm_tool(
+        name="play_game",
+        description=(
+            "用户想玩小游戏、提到某个游戏名、或对当前游戏下指令时调用（如「塔罗牌」"
+            "「占卜」「钓鱼」「抛竿」「人生重开」「再来一局」「帮助」等）。"
+            "传入用户原话，插件自动匹配游戏并执行。\n\n"
+            "调用规则：\n"
+            "- 用户提到任何游戏名或游戏指令 = 明确的执行请求，直接调用本工具，"
+            "**不要先问「要玩吗？」、不要自己扮演游戏流程**。\n"
+            "- 多轮游戏中游戏返回选择提示后，用户说「可以/好的/随机/继续/对的/嗯」等"
+            "表示继续或让 AI 决定时，同样调用本工具并传「随机」或用户原话。\n"
+            "- 若当前有进行中的游戏（上下文可能出现 [游戏状态] 提示），用户说的原话"
+            "都应传给本工具，不要自己扮演游戏流程。\n"
+            "- 用户没提到任何游戏玩法时不要调用。调用后直接基于工具结果回应，不要重复调用。"
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "input": {"type": "string",
+                          "description": "用户说的原话，如「塔罗牌」「占卜」「钓鱼」「抛竿」「人生重开」"},
+            },
+            "required": ["input"],
+        },
+    )
     async def tool_play_game(self, input: str) -> Any:
-        """play_game LLM 工具处理器（由 runtime._register_dynamic_llm_tool 注册）。
+        """play_game LLM 工具处理器（@llm_tool 静态注册, SDK 启动自动注册）。
 
         auto=True: 多轮状态机游戏(如人生重开)由 AI 代玩时一次调用走完随机流程,
         避免卡在"选天赋/分属性"等用户输入。

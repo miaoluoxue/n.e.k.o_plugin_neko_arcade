@@ -14,21 +14,6 @@ from .registry import GameRegistry
 log = logging.getLogger("neko_arcade.runtime")
 
 
-def build_games_summary(registry: GameRegistry, with_desc: bool = True) -> str:
-    """生成游戏列表摘要，用于 LLM 工具 description。
-
-    默认带一句话简介(帮助模型识别游戏意图, 历史验证此格式 LLM 会正常调工具);
-    不列具体指令, 避免撑爆上下文。
-    """
-    parts = []
-    for game in registry.games:
-        if with_desc:
-            parts.append(f"{game.name}（{game.description}）")
-        else:
-            parts.append(game.name)
-    return "、".join(parts) if parts else "暂无游戏"
-
-
 class ArcadeRuntime:
     """插件运行时。"""
 
@@ -84,53 +69,16 @@ class ArcadeRuntime:
         return count
 
     def _register_dynamic_llm_tool(self) -> None:
-        """注册 play_game 工具：只接收用户原话，插件自动匹配游戏。"""
+        """动态注册 send_photo 工具（play_game 已用 @llm_tool 静态注册, 见 __init__.py）。
+
+        send_photo 需要运行时确定 neko_photo 是否存在, 故动态注册。
+        """
         plugin = self.plugin
         register = getattr(plugin, "register_llm_tool", None)
         if not register:
-            log.info("宿主不支持 register_llm_tool，保留静态工具描述")
+            log.info("宿主不支持 register_llm_tool，跳过动态工具")
             return
-        summary = build_games_summary(self.registry)
-        if not summary:
-            return
-        description = (
-            "用户想玩小游戏时调用。传入用户说的原话，插件自动判断玩什么游戏并执行。"
-            f"可用游戏：{summary}。\n"
-            "重要：用户明确提到游戏名或想玩某个游戏(如「人生重开」「钓鱼」「重启人生」)时, "
-            "**必须立即调用本工具启动游戏, 不要先问「要玩吗?」或自己扮演游戏**——"
-            "调用后游戏会返回开局内容, 你再基于结果自然回应。\n"
-            "多轮游戏(如人生重开需选天赋/分属性)返回选择提示后, 用户说「可以/好的/帮我/"
-            "随机/继续/对的/嗯」等表示继续或让 AI 决定时, 应调用本工具并传「随机」让游戏"
-            "自动选择, 或传用户明确给出的编号/数值。\n"
-            "用户没提到任何游戏玩法时不要调用。调用后直接基于工具结果回应, 不要重复调用。\n"
-            "若当前有进行中的游戏(上下文里可能出现 [游戏状态] 提示), 用户说的原话都应传"
-            "给本工具, 不要自己扮演游戏流程。"
-        )
-        unregister = getattr(plugin, "unregister_llm_tool", None)
-        if unregister:
-            try:
-                unregister("play_game")
-            except Exception as exc:
-                log.warning("注销静态 play_game 工具失败: %s", exc)
-        try:
-            register(
-                name="play_game",
-                description=description,
-                parameters={
-                    "type": "object",
-                    "properties": {
-                        "input": {"type": "string",
-                                  "description": "用户说的原话，如「钓鱼」「钓鱼3次」「鱼缸」「猜硬币」「猜硬币正」"},
-                    },
-                    "required": ["input"],
-                },
-                handler=plugin.tool_play_game,
-            )
-            log.info("已动态注册 play_game 工具（%d 个游戏，自动匹配）",
-                     len(self.registry.game_ids))
-        except Exception as exc:
-            log.error("动态注册 play_game 工具失败: %s", exc)
-        self._register_send_photo_tool(plugin, register, unregister)
+        self._register_send_photo_tool(plugin, register, getattr(plugin, "unregister_llm_tool", None))
 
     def _register_send_photo_tool(self, plugin, register, unregister) -> None:
         """注册 send_photo 工具: 猫娘聊天中自主随机发图。
