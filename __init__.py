@@ -113,17 +113,16 @@ class NekoArcadePlugin(NekoPluginBase):
                    "message": f"可玩的小游戏：{names}。想玩哪个说游戏名就行喵"})
 
     @plugin_entry(id="play_game", name="玩游戏",
-                  description="执行游戏指令。传用户原话，插件自动匹配具体游戏和指令。可用游戏通过list_games查看。",
+                  description="猫娘小游戏的统一入口。用户说想玩小游戏/提到游戏名(如「塔罗牌」「占卜」「钓鱼」「人生重开」)时调用本入口，传用户原话，插件自动匹配游戏并执行。",
                   input_schema={"type": "object", "properties": {
-                      "input": {"type": "string", "description": "用户说的原话，如「钓鱼」「人生重开」「重启人生」"},
+                      "input": {"type": "string", "description": "用户说的原话，如「塔罗牌」「占卜」「钓鱼」「人生重开」"},
                   }, "required": ["input"]},
                   # 宿主按 summary 字段拼装任务结果喂给对话 LLM，猫娘才能对游戏结果有反馈。
-                  # ⚠️ agent_hidden: 隐藏于 LLM 自动路由(宿主 task_executor 会把非 hidden
-                  # 的 plugin_entry 暴露给 LLM)——LLM 只应看到动态注册的 play_game 工具
-                  # (input only + 强化描述), 而不是这个带 game/cmd 参数的 entry, 否则
-                  # LLM 看到 game 必填会先问"玩哪个游戏"而不是直接开玩。面板 callEntry
-                  # 仍可调用本 entry(agent_hidden 只影响 LLM 自动路由)。
-                  metadata={"agent_hidden": True},
+                  # ⚠️ 不要设 agent_hidden: 宿主 task_executor 的 Agent 路由(UnifiedAssessment)
+                  # 只把非 hidden 的 plugin_entry 暴露给 LLM 判定"是否调用插件"——隐藏后
+                  # 宿主会认为 neko_arcade 无可用入口, 直接判 can_execute=false(日志:
+                  # "无匹配的可执行插件任务"), LLM 走不到 play_game。schema 用 input-only
+                  # + 强描述, 让 Stage-2 LLM 理解"用户提游戏名=明确要玩, 直接调用"。
                   llm_result_fields=["summary"])
     async def entry_play_game(self, input: str = "", game: str = "", cmd: str = "",
                               args: dict = None, **_) -> Any:

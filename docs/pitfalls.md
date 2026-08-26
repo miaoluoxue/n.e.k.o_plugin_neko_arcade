@@ -167,28 +167,33 @@ LLM 复述一遍 → 用户看到两条几乎一样的话（双重回复）。
 - 交互语义（确认词/催促词）由 LLM 判断，主插件不硬编码词表；
   游戏自身通过 outcome 语义返回待选择提示。
 
-**5.1 ⚠️ 明确指令被「先问要不要玩」——@plugin_entry 暴露给了 LLM（坑）**
+**5.1 ⚠️ 别给 play_game 加 agent_hidden——会切断宿主路由（坑，重要）**
 
-**坑**：用户发「重启人生」等明确指令，LLM 猫娘还是先问「要玩人生重开吗？」
-而不是直接调用 `play_game` 工具。
+**坑**：用户说「塔罗牌」等明确游戏名，LLM 猫娘却自己扮演游戏流程（"找插件"
+"选牌阵"），完全不调 `play_game`。日志表现：
 
-**根因**：宿主 `task_executor` 会把插件所有**非 `agent_hidden`** 的
-`@plugin_entry` 暴露给 LLM 自动路由。之前 `entry_play_game` 没加
-`agent_hidden`，schema 是 **game/cmd 必填**——LLM 看到必填的 game 参数
-（"填游戏名"），觉得要先确认用户玩哪个游戏 → 先问，而不是直接开玩。
-动态注册的 `play_game` 工具（input only）与这个 entry **同名并存**，LLM
-倾向用带必填参数的 entry。
+```
+[UserPlugin] has_task=False, can_execute=False,
+reason=用户仅提及塔罗牌，未明确要求调用...插件的相关能力，无匹配的可执行插件任务
+```
+
+**根因**：宿主 `brain/task_executor.py` 的 Agent 路由（UnifiedAssessment）只把
+**非 `agent_hidden`** 的 `@plugin_entry` 暴露给 LLM 判定"是否调用插件"。
+若给 `entry_play_game` 加 `agent_hidden=True`，宿主 `_agent_visible_plugin_entries`
+返回空 → `_build_plugin_desc_lines` 直接跳过 neko_arcade → Stage-2 LLM 看不到
+任何游戏入口 → 判 `can_execute=false` → **用户说游戏名也走不到 play_game**。
+动态注册的 `play_game` 工具（ToolRegistry 路径）注册成功也没用——用户对话先
+过 task_executor 的路由判定，这里就被拦下了。
 
 **解法**：
 
-- `entry_play_game` 加 `metadata={"agent_hidden": True}`——从 LLM 自动
-  路由隐藏，只保留给面板 `callEntry`（显式调用不受 agent_hidden 影响）。
-- 入口 schema 统一为 `input`（用户原话），内部走 `parse_input` 自动匹配
-  （含弱指令兜底）；兼容旧面板的 `game+cmd` 参数。
-- LLM 侧只有动态注册的 `play_game` 工具（input only + 强化描述：
-  "必须立即调用, 不要先问「要玩吗?」"）。
-- **适配规则**：任何不想让 LLM 自动路由看到的 entry，都要加
-  `metadata={"agent_hidden": True}`（面板/内部调用不受影响）。
+- `entry_play_game` **不要**设 `agent_hidden`——它是宿主路由看到 neko_arcade
+  有"玩游戏"入口的唯一途径。
+- 避免「先问要玩吗」靠的是 **input-only schema + 强描述**（"用户提到游戏名
+  如塔罗牌/占卜/钓鱼时调用本入口，传原话"），不是靠隐藏。
+- **适配规则**：面板专用 entry（start_game/stop_game/配置类）可以
+  `agent_hidden=True`；但**主游戏入口 play_game 必须对宿主路由可见**。
+  隐藏入口前先确认宿主路由是否需要它。
 
 **5.2 ⚠️ 无会话弱指令（「再来一局/继续玩」）——last_game 兜底（坑）**
 
