@@ -124,12 +124,15 @@ data/config/{game_id}/keywords.json
 ### 3.1 LLM 注入优先级
 
 ```
-宿主注入 __call_llm（主项目提供）> 配置自建客户端 > 无 LLM（模板兜底）
+配置自建客户端 > 无 LLM（模板兜底）
 ```
 
-- 宿主注入：N.E.K.O 主项目在运行时自动注入，零配置
-- 配置自建：面板填入 provider/model/api_key，自建 LLMClient
-- 模板兜底：无 LLM 时走预制模板（游戏提供或通用兜底），猫娘照样说话
+- 配置自建：面板填入 provider/model/api_key，自建 LLMClient（所有游戏情感
+  渲染走此接口，统一限流/统计）
+- 模板兜底：无配置时走预制模板（游戏提供或通用兜底），猫娘照样说话
+- ⚠️ 宿主**不提供**「插件直调 LLM」的 `__call_llm` API——插件不直接调宿主
+  LLM；对话的自然回应由宿主按 summary（`llm_result_fields=["summary"]`）
+  演绎，详见 [pitfalls.md](pitfalls.md)
 
 ### 3.2 三级情感渲染
 
@@ -186,7 +189,9 @@ data/config/{game_id}/keywords.json
 
 ### 4.4 LLM 工具
 
-`play_game` LLM 工具只接受 `input`（用户原话），插件自动判断游戏和指令：
+`play_game` 用 `@llm_tool` 静态注册（SDK 启动自动注册），只接受 `input`
+（用户原话），插件自动判断游戏和指令。描述写通用调用规则（提到游戏名=
+明确指令直接调用，不先问不扮演），不枚举游戏列表——靠对话上下文。
 
 ```
 用户说"钓鱼"      → play_game(input="钓鱼")      → 插件匹配钓鱼游戏 → 抛竿1次
@@ -194,6 +199,12 @@ data/config/{game_id}/keywords.json
 用户说"我想钓鱼"   → play_game(input="我想钓鱼")   → 游戏不认识 → 发邀请
 用户说"猜硬币正"   → play_game(input="猜硬币正")   → 插件匹配猜硬币游戏 → 猜正面
 ```
+
+**入口可见性（重要）**：`@llm_tool` 走宿主 ToolRegistry（主对话 LLM 直接调用）；
+`@plugin_entry(id="play_game")` 兼作宿主 task_executor 路由入口（必须非
+`agent_hidden`，否则宿主判"无可用入口"）。查询类 entry（`list_games`/
+`game_status`/`game_help`）全部 `agent_hidden`——宿主路由只看到一个游戏入口，
+避免评估 LLM 把"玩钓鱼"错路由成"先查列表"。详见 [pitfalls.md §5.1](pitfalls.md)。
 
 ### 4.5 指令注入（只注入当前游戏）
 
@@ -248,7 +259,7 @@ data/config/{game_id}/help.json
     │   → 调用 play_game(input="钓鱼")
     │
     ├─ 面板输入路由
-    │   → callEntry("play_game", {input: "钓鱼"})
+    │   → callEntry("play_game", {game: <游戏id>, cmd: <用户原话>})
     │
     ▼
 runtime.parse_input("钓鱼") → 匹配钓鱼游戏关键词 → (game="fishing", cmd="钓鱼")
@@ -431,10 +442,13 @@ brain.handle_action (core/brain.py)
     └── 负责：通过 push_message 统一输出到主项目
 
 主项目方（N.E.K.O）
-    ├── 注入：__call_llm（LLM 调用能力）
+    ├── 工具路由：LLM 通过 ToolRegistry 调用 play_game(@llm_tool) / 宿主 task_executor
+    │   通过 entry_play_game(@plugin_entry, 非 agent_hidden) 路由插件任务
     ├── 注入：push_message、store、config、data_path
     ├── 自动：TTS 播放（文字走 chat 通道即播报）
     └── 自动：ASR 语音识别（语音进聊天已是文字）
+    （注意：宿主不提供「插件直调 LLM」的 __call_llm API——插件情感渲染靠
+    自建客户端或模板兜底，对话由宿主按 summary 演绎）
 ```
 
 ---

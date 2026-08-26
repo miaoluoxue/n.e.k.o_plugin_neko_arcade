@@ -167,33 +167,38 @@ LLM 复述一遍 → 用户看到两条几乎一样的话（双重回复）。
 - 交互语义（确认词/催促词）由 LLM 判断，主插件不硬编码词表；
   游戏自身通过 outcome 语义返回待选择提示。
 
-**5.1 ⚠️ 别给 play_game 加 agent_hidden——会切断宿主路由（坑，重要）**
+**5.1 ⚠️ 宿主路由会选错入口——只留 play_game 对 LLM 可见（坑，重要）**
 
-**坑**：用户说「塔罗牌」等明确游戏名，LLM 猫娘却自己扮演游戏流程（"找插件"
-"选牌阵"），完全不调 `play_game`。日志表现：
+**坑**：用户说「塔罗牌」「钓鱼」「人生重开」等明确游戏名，LLM 猫娘却自己扮演
+游戏流程（"找插件""选牌阵""帮你点开始"），游戏指令几乎瘫痪。日志表现：
 
 ```
-[UserPlugin] has_task=False, can_execute=False,
-reason=用户仅提及塔罗牌，未明确要求调用...插件的相关能力，无匹配的可执行插件任务
+用户说钓鱼  → [UserPlugin] has_task=True → Dispatching entry_id=list_games   ← 错
+用户说钓鱼  → [UserPlugin] has_task=True → Dispatching entry_id=game_status  ← 错
+用户抛竿吧  → [UserPlugin] has_task=True → Dispatching entry_id=game_status  ← 错
 ```
 
-**根因**：宿主 `brain/task_executor.py` 的 Agent 路由（UnifiedAssessment）只把
-**非 `agent_hidden`** 的 `@plugin_entry` 暴露给 LLM 判定"是否调用插件"。
-若给 `entry_play_game` 加 `agent_hidden=True`，宿主 `_agent_visible_plugin_entries`
-返回空 → `_build_plugin_desc_lines` 直接跳过 neko_arcade → Stage-2 LLM 看不到
-任何游戏入口 → 判 `can_execute=false` → **用户说游戏名也走不到 play_game**。
-动态注册的 `play_game` 工具（ToolRegistry 路径）注册成功也没用——用户对话先
-过 task_executor 的路由判定，这里就被拦下了。
+**根因**：宿主 `brain/task_executor.py` 的 Agent 路由（UnifiedAssessment）会让
+LLM 从插件所有**非 `agent_hidden`** 的 `@plugin_entry` 里选一个调用。若
+`list_games`（"列出所有小游戏名"）、`game_status`（"查看当前状态"）对 LLM
+可见，评估 LLM 倾向选"先查列表/查状态"而不是 `play_game`——于是游戏指令
+被路由到查询入口，游戏根本没启动。
 
-**解法**：
+**解法（参考 game_agent_minecraft 的做法）**：
 
-- `entry_play_game` **不要**设 `agent_hidden`——它是宿主路由看到 neko_arcade
-  有"玩游戏"入口的唯一途径。
-- 避免「先问要玩吗」靠的是 **input-only schema + 强描述**（"用户提到游戏名
-  如塔罗牌/占卜/钓鱼时调用本入口，传原话"），不是靠隐藏。
-- **适配规则**：面板专用 entry（start_game/stop_game/配置类）可以
-  `agent_hidden=True`；但**主游戏入口 play_game 必须对宿主路由可见**。
-  隐藏入口前先确认宿主路由是否需要它。
+- **`play_game` 用 `@llm_tool` 静态注册**（SDK 启动自动注册，走 ToolRegistry），
+  描述写通用规则：「用户提到游戏名/游戏指令 = 明确的执行请求，直接调用，
+  不要先问、不要自己扮演」。不枚举游戏列表，靠对话上下文。
+- **查询类 entry（`list_games`/`game_status`/`game_help`）全部 `agent_hidden`**
+  ——宿主路由只看到一个游戏入口 `play_game`，评估 LLM 没有"先查列表"的选项。
+- 面板专用 entry（start_game/stop_game/配置类）本就 `agent_hidden`。
+- ⚠️ **`play_game` 的 @plugin_entry 不能 agent_hidden**：宿主 task_executor 若
+  看不到任何非 hidden entry，会判 `can_execute=false`（"无匹配的可执行插件
+  任务"）→ 用户说游戏名也走不到插件。**必须有至少一个非 hidden entry**
+  （play_game 兼作宿主路由入口），且它同时是 @llm_tool（主对话工具）。
+- **适配规则**：游戏类插件若想让 LLM 路由稳定，模仿此结构——一个主工具
+  `@llm_tool`（对话直接调用）+ 一个同名/对应非 hidden `@plugin_entry`
+  （宿主路由），查询类 entry 全 hidden。
 
 **5.2 ⚠️ 无会话弱指令（「再来一局/继续玩」）——last_game 兜底（坑）**
 

@@ -270,7 +270,7 @@ async def get_status(self, uid): ... # 面板状态
 | 文字推送 | PushSender.text |
 | 图片推送（卡片/帮助图） | PushSender.text_with_image |
 | 语音（TTS） | 主项目自动播放 chat 文字（插件只保证短句） |
-| LLM 渲染 | LLMProvider（宿主注入优先） |
+| LLM 渲染 | LLMProvider（配置自建，无则模板兜底） |
 | 猫娘表情图 | ImageRenderer.render_neko_avatar |
 
 游戏可通过 `self.push_text()` 等服务接口调用，或只返回 facts + outcome 由大脑统一输出。
