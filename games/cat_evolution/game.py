@@ -46,14 +46,14 @@ class CatEvolutionGame(GameAdapter):
 
     _RULES: List[Tuple[List[str], str, str]] = [
         (["领养小猫", "注册", "开始进化"], "领养一只小猫开始进化之路", "register"),
-        (["探索", "出发"], "探索猫猫森林, 遇敌战斗", "explore"),
+        (["猫猫探索", "探索", "出发"], "探索猫猫森林, 遇敌战斗", "explore"),
         (["返回", "回家"], "结束探索回家", "home"),
-        (["我的背包", "背包"], "查看背包", "bag"),
-        (["我的技能", "技能"], "查看已学技能", "skills"),
-        (["我的状态", "状态"], "查看角色状态", "status"),
+        (["猫猫背包", "我的背包", "背包"], "查看背包", "bag"),
+        (["猫猫技能", "我的技能", "技能"], "查看已学技能", "skills"),
+        (["猫猫状态", "我的状态", "状态"], "查看角色状态", "status"),
         (["猫猫商店", "商店"], "打开商店购买", "shop"),
-        (["我的任务", "任务"], "查看任务", "mission"),
-        (["我的成就", "成就"], "查看成就", "achievement"),
+        (["猫猫任务", "我的任务", "任务"], "查看任务", "mission"),
+        (["猫猫成就", "我的成就", "成就"], "查看成就", "achievement"),
     ]
 
     def __init__(self, plugin: Any) -> None:
@@ -330,7 +330,7 @@ class CatEvolutionGame(GameAdapter):
         else:
             # 战败: 不扣属性, 鼓励重试
             msg = (f"💔 打不过 {enemy['name']}喵… 回去练练再来!\n"
-                   f"试试「我的状态」看属性, 或去更低级的地图练级")
+                   f"试试「猫猫状态」看属性, 或去更低级的地图练级")
             neko = self._pick_emotion("lose", enemy=enemy["name"])
             full = "\n".join([intro, neko, msg]) if intro else "\n".join([neko, msg])
             return {"outcome": "lose", "facts": [build_fact("battle", result="lose", enemy=enemy["name"])],
@@ -397,8 +397,8 @@ class CatEvolutionGame(GameAdapter):
 
     async def _h_help(self, user_id: str, save: Dict[str, Any], c: str) -> Dict[str, Any]:
         msg = ("🐱 猫猫进化路玩法:\n"
-               "  领养小猫 → 探索 → 战斗 → 吞食进化 → 猫娘!\n"
-               "指令: 领养小猫 / 探索 / 我的状态 / 我的背包 / 我的技能 / 猫猫商店 / 我的任务 / 我的成就")
+               "  领养小猫 → 猫猫探索 → 战斗 → 吞食进化 → 猫娘!\n"
+               "指令: 领养小猫 / 猫猫探索 / 猫猫状态 / 猫猫背包 / 猫猫技能 / 猫猫商店 / 猫猫任务 / 猫猫成就")
         return {"outcome": "help", "facts": [], "message": msg}
 
     # ── 工具 ─────────────────────────

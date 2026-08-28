@@ -119,7 +119,7 @@ class XiuxianGame(GameAdapter):
         (["团本", "讨伐帝尊", "讨伐队伍"], "团本(猫娘+队友合攻)", "tuanben"),
         (["宗门大战"], "攻打NPC宗门", "sect_war"),
         # ── 市场/职业(NPC 顶替真人) ──
-        (["商店", "交易"], "市场NPC商店(买)", "shop"),
+        (["市场", "商店", "交易"], "市场NPC商店(买)", "shop"),
         (["出售"], "出售物品给市场NPC", "sell"),
         (["拍卖"], "星阁拍卖行", "auction"),
         (["竞价"], "拍卖出价", "bid"),
@@ -1022,13 +1022,13 @@ class XiuxianGame(GameAdapter):
         save = await self._load(user_id)
         if save.name == "无名散修" and not save.created_at:
             return {"message": "先「踏入仙途」喵", "outcome": "no_player"}
-        text = cmd.replace("商店", "", 1).replace("交易", "", 1).strip()
+        text = cmd.replace("市场", "", 1).replace("商店", "", 1).replace("交易", "", 1).strip()
         if not text:
             goods = self.market.shop_goods()
             lines = ["【市场·NPC商店】"]
             for g in goods:
                 lines.append(f"  {g['name']}({g.get('class','')}) {self.catalog.buy_price(g)}灵石")
-            lines.append("用法: 商店 买 丹药名xN / 出售 物品名xN")
+            lines.append("用法: 市场 买 丹药名xN / 出售 物品名xN")
             return {"message": "\n".join(lines), "outcome": "shop_view",
                     "game_result": [g["name"] for g in goods],
                     "summary": "查看商店"}
@@ -1048,7 +1048,7 @@ class XiuxianGame(GameAdapter):
                         "facts": [{"kind": "shop_buy", "item": item_name, "count": n}],
                         "summary": r["msg"]}
             return {"message": r["msg"], "outcome": "no_lingshi"}
-        return {"message": "商店用法: 商店 买 丹药名xN / 出售 物品名xN", "outcome": "shop_help"}
+        return {"message": "市场用法: 市场 买 丹药名xN / 出售 物品名xN", "outcome": "shop_help"}
 
     async def _h_sell(self, user_id: str, cmd: str) -> Dict[str, Any]:
         save = await self._load(user_id)

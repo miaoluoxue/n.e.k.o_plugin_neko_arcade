@@ -191,6 +191,12 @@ games/
 
 游戏在 `data/config/{id}/help.json` 中配置指令列表，大脑渲染为帮助图。
 
+> ⚠️ **命令命名**：`help.json` 的命令和 `keywords.json` 必须用**游戏专属前缀**
+> （猫猫状态 / 修仙状态 / 鱼店 / 海龟汤状态…），禁止裸泛化词
+> （我的状态 / 背包 / 商店 / 任务 / 成就）。跨游戏共用裸词会串台
+> （详见 [rules.md §2.4.5](rules.md) 与 [pitfalls.md §7](pitfalls.md)），
+> 改完跑 `tests/test_command_naming.py` 全量扫描冲突。
+
 ## 游戏开关
 
 面板自动显示每个游戏的开关（switch），调用 `set_game_enabled` 入口。

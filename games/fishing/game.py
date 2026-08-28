@@ -136,13 +136,13 @@ class FishingGame(GameAdapter):
         if any(k in c for k in ("买", "购买", "购")):
             # 先剥「买」再剥地点词，避免「鱼市买鱼饵」被「鱼市」截成「买鱼饵」
             name = self._strip_kw(c, "购买", "买", "购")
-            name = self._strip_kw(name, "鱼市", "商店")
+            name = self._strip_kw(name, "鱼市", "鱼店", "商店")
             return await self._buy(user_id, name)
         if "售鱼" in c or "卖鱼" in c:
             return await self._do_sell(user_id, self._strip_kw(c, "售鱼", "卖鱼"))
         if "鱼市" in c:
             # 裸「鱼市」→ 商品列表；「鱼市 卖X」已在上面拦截
-            return await self._buy(user_id, self._strip_kw(c, "鱼市", "商店"))
+            return await self._buy(user_id, self._strip_kw(c, "鱼市", "鱼店", "商店"))
         if "鱼缸" in c and "升级" in c:
             return await self._upgrade_tank(user_id)
         if "鱼缸" in c:
@@ -151,8 +151,8 @@ class FishingGame(GameAdapter):
             return await self._switch_rod(user_id, self._strip_kw(c, "换竿", "鱼竿"))
         if "换饵" in c or "鱼饵" in c:
             return await self._switch_bait(user_id, self._strip_kw(c, "换饵", "鱼饵"))
-        if "商店" in c:
-            return await self._buy(user_id, self._strip_kw(c, "商店"))
+        if "商店" in c or "鱼店" in c:
+            return await self._buy(user_id, self._strip_kw(c, "商店", "鱼店"))
         # 不认识的指令 → 让插件发提示
         return {"message": "", "outcome": "unknown", "facts": []}
 
