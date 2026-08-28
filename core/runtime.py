@@ -145,6 +145,26 @@ class ArcadeRuntime:
         input = input.strip()
         if not input:
             return None, ""
+
+        def _normalize(game, raw: str) -> tuple[str, str]:
+            """命中游戏关键词后, 把「玩X/来玩X/我要玩X」等口语前缀归一到游戏启动词。
+
+            parse_input 的关键词匹配是子串匹配(「玩塔罗牌」命中「塔罗牌」), 但游戏
+            handle_action 多用精确匹配——若把「玩塔罗牌」原样传过去, 游戏不认会返回
+            unknown。归一化: raw 仅含口语玩意图(玩/来玩/我要玩/想玩)时, 换成该游戏
+            启动词(keywords[0], 如「钓鱼」「人生重开」); 含具体指令(如「钓鱼3次」)
+            则保留原样。
+            """
+            clean = raw.strip()
+            # 剥掉「玩/来玩/我要玩/想玩/来把」前缀, 看剩下是否还有具体指令
+            for p in ("我要玩", "我想玩", "来玩", "来把", "来一局", "玩一下", "玩", "想玩"):
+                if clean.startswith(p):
+                    rest = clean[len(p):].strip()
+                    if rest and rest not in game.get_keywords():
+                        return game.id, rest  # 有具体指令(如「塔罗牌 恋人」)
+                    return game.id, (game.get_keywords()[0] if game.get_keywords() else rest or raw)
+            return game.id, raw
+
         cur = self.brain.current_game if (self.brain and self.brain.current_game) else None
 
         # 1. 当前游戏优先
@@ -153,7 +173,7 @@ class ArcadeRuntime:
             if cur_game:
                 for kw in cur_game.get_keywords():
                     if kw and kw in input:
-                        return cur, input
+                        return _normalize(cur_game, input)
 
         # 2. 全局关键词(先到先得, 允许切游戏)
         for game in self.registry.games:
@@ -161,7 +181,7 @@ class ArcadeRuntime:
                 continue  # 当前游戏已在上面查过
             for kw in game.get_keywords():
                 if kw and kw in input:
-                    return game.id, input
+                    return _normalize(game, input)
 
         # 3. current_game 兜底(多轮续接: 数字/随机等无关键词输入)
         if cur:

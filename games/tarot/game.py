@@ -82,14 +82,17 @@ class TarotGame(GameAdapter):
         if "主题" in c:
             return await self._switch_theme(c)
 
-        # 指定牌: 「塔罗牌 X」(X 为牌名/编号)
-        if c.startswith("塔罗牌") and c != "塔罗牌":
-            rest = c.replace("塔罗牌", "", 1).strip()
-            if rest:
-                return await self._single_card(rest)
+        # 指定牌: 「塔罗牌 X」(X 为牌名/编号), 兼容「玩塔罗牌X」「来塔罗牌X」
+        for prefix in ("玩塔罗牌", "来塔罗牌", "塔罗牌"):
+            if c.startswith(prefix) and c != prefix:
+                rest = c[len(prefix):].strip()
+                if rest:
+                    return await self._single_card(rest)
 
-        # 单张
+        # 单张: 精确启动词或含"塔罗牌/抽牌/来一张"意图
         if c in ("塔罗牌", "单张", "抽牌", "来一张"):
+            return await self._single_card("")
+        if "玩塔罗牌" in c or "来玩塔罗" in c or "来张塔罗" in c or "塔罗牌" in c and c != "塔罗牌":
             return await self._single_card("")
 
         # 占卜(牌阵)

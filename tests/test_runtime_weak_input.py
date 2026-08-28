@@ -93,3 +93,36 @@ def test_weak_input_not_triggered_by_plain_chat():
     rt = _make_runtime(_FakeBrain(last="fishing"))
     gid, cmd = rt.parse_input("今天天气不错")
     assert gid is None
+
+
+def test_play_prefix_normalized_to_start_cmd():
+    """「玩X/来玩X」口语前缀 → 归一化为游戏启动词(否则游戏不认返回 unknown)。
+
+    parse_input 关键词是子串匹配(「玩塔罗牌」命中「塔罗牌」), 但游戏 handle_action
+    多为精确匹配——不归一化时「玩塔罗牌」原样传给游戏会返回 unknown(线上 bug)。
+    """
+    rt = ArcadeRuntime.__new__(ArcadeRuntime)  # 无会话, 走规则 2
+    rt.brain = _FakeBrain()
+    rt.registry = _FakeRegistry([
+        _FakeGame("tarot", ["占卜", "塔罗牌", "抽牌"]),
+        _FakeGame("fishing", ["钓鱼", "抛竿"]),
+    ])
+    # 纯口语「玩塔罗牌」→ 归一化为 tarot 启动词「占卜」
+    gid, cmd = rt.parse_input("玩塔罗牌")
+    assert gid == "tarot"
+    assert cmd == "占卜", f"纯口语前缀应归一化为启动词, got {cmd!r}"
+
+    # 带具体指令「玩塔罗牌 恋人」→ 保留指令
+    gid, cmd = rt.parse_input("玩塔罗牌 恋人")
+    assert gid == "tarot"
+    assert cmd == "塔罗牌 恋人", f"带具体指令应保留, got {cmd!r}"
+
+    # 「来玩钓鱼」→ 归一化钓鱼启动词
+    gid, cmd = rt.parse_input("来玩钓鱼")
+    assert gid == "fishing"
+    assert cmd == "钓鱼"
+
+    # 直接游戏名「塔罗牌」→ 原样(游戏认识精确词)
+    gid, cmd = rt.parse_input("塔罗牌")
+    assert gid == "tarot"
+    assert cmd == "塔罗牌"
