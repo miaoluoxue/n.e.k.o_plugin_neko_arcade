@@ -1,12 +1,14 @@
 """推送适配：通过主项目 push_message 发送文字/图片/音频。
 
 图片显示策略（重要）：
-- 旧宿主：图片只能走「存 static/cards/ → 文本内嵌 markdown 图片 URL」通道
-  （前端 ReactMarkdown 渲染），markdown 是唯一用户可见方式。
-- 新宿主（#2835 合并后）：SDK 提供 ``ctx.images.upload()`` —— 上传图片返回
-  canonical image part，配合 ``visibility=["chat"]`` 直接在聊天窗渲染为
-  原生图片气泡，无需 markdown 变通。本模块优先走原生通道，SDK 不支持时
-  回退 markdown（兼容旧宿主）。
+- 旧宿主（未合并 #2835）：没有 ctx.images.upload，聊天窗前端
+  ReactMarkdown 只开 remark-gfm/rehype-katex，**不渲染 HTML 标签**——
+  `<img>` 会原样显示成代码。唯一用户可见图片方式是**标准 markdown
+  图片语法 `![alt](url)`**（ReactMarkdown 内置支持）。
+- 新宿主（#2835 合并后）：SDK 提供 ``ctx.images.upload()`` —— 上传图片
+  返回 canonical image part，配合 ``visibility=["chat"]`` 直接在聊天窗
+  渲染为原生图片气泡。本模块优先走原生通道，SDK 不支持时回退
+  markdown（兼容旧宿主）。
 
 注意：宿主不支持 audio/video parts(见 text_with_audio 注释)。
 """
@@ -51,23 +53,58 @@ class PushSender:
         """把图片写入 static/cards/，返回可访问的 http URL；失败返回 None。
 
         文件名带毫秒时间戳 + 内容哈希，避免缓存与冲突。
+        旧宿主 markdown 通道的图片没有 CSS 宽度限制, 落盘前先缩放
+        (最长边 ≤ 720px, 保持纵横比), 防止 720px 帮助图/大图在窄聊天窗溢出。
         """
         static = self._static_dir()
         if not static:
             return None
         try:
+            # 缩放(仅静态图; 失败则原样落盘)。PNG 缩放后转 JPEG, 扩展名跟着变。
+            scaled = self._resize_for_markdown(image_bytes)
+            data = scaled if scaled is not None else image_bytes
             cards = static / "cards"
             cards.mkdir(parents=True, exist_ok=True)
-            if "jpeg" in mime or "jpg" in mime:
+            if scaled is not None:
+                ext = ".jpg"  # 缩放输出恒为 JPEG
+            elif "jpeg" in mime or "jpg" in mime:
                 ext = ".jpg"
             elif "gif" in mime:
                 ext = ".gif"
             else:
                 ext = ".png"
-            digest = hashlib.md5(image_bytes[:4096]).hexdigest()[:8]
+            digest = hashlib.md5(data[:4096]).hexdigest()[:8]
             name = f"{int(time.time() * 1000)}_{digest}{ext}"
-            (cards / name).write_bytes(image_bytes)
+            (cards / name).write_bytes(data)
             return f"{self._base_url()}cards/{name}"
+        except Exception:
+            return None
+
+    @staticmethod
+    def _resize_for_markdown(image_bytes: bytes, max_side: int = 720) -> Optional[bytes]:
+        """把图片缩放到最长边 ≤ max_side(默认 720px), 保持纵横比。
+
+        旧宿主 markdown 图片无 CSS 限制, 大图会溢出聊天窗; 这里在落盘前
+        缩放。PNG 转 JPEG 压缩体积(RGBA 需转 RGB)。失败返回 None(调用方原样落盘)。
+        """
+        try:
+            import io
+
+            from PIL import Image
+            buf = io.BytesIO(image_bytes)
+            img = Image.open(buf)
+            w, h = img.size
+            longest = max(w, h)
+            if longest <= max_side:
+                return None  # 不需要缩放
+            ratio = max_side / longest
+            new_w, new_h = max(1, int(w * ratio)), max(1, int(h * ratio))
+            img = img.resize((new_w, new_h), Image.LANCZOS)
+            if img.mode in ("RGBA", "LA", "P"):
+                img = img.convert("RGB")
+            out = io.BytesIO()
+            img.save(out, format="JPEG", quality=85)
+            return out.getvalue()
         except Exception:
             return None
 
@@ -84,18 +121,16 @@ class PushSender:
 
         优先走原生图片通道(#2835): ctx.images.upload() 上传 → canonical
         image part + visibility=["chat"] → 聊天窗渲染原生图片气泡。
-        SDK 不支持(旧宿主)时回退 markdown URL 通道(static/cards)。
+        SDK 不支持(旧宿主)时回退 markdown 图片语法 `![alt](url)`——
+        注意旧宿主前端不渲染 <img> HTML 标签(ReactMarkdown 无 rehype-raw),
+        必须用标准 markdown 图片语法, 否则图片会显示成代码。
         """
         if await self._push_native_image(text, image_bytes):
             return
-        # 回退: 旧宿主 markdown 通道
+        # 回退: 旧宿主 markdown 图片语法(![alt](url), 前端 ReactMarkdown 内置支持)
         url = await self.save_image(image_bytes, mime)
         if url:
-            content = (
-                f"{text}\n\n"
-                f'<img src="{url}" alt="游戏图片" '
-                f'style="max-width:100%;height:auto;border-radius:8px;" />'
-            )
+            content = f"{text}\n\n![游戏图片]({url})"
         else:
             content = text
         await self._push([{"type": "text", "text": content}])
@@ -103,15 +138,12 @@ class PushSender:
     async def text_with_image_url(self, text: str, url: str) -> None:
         """推文本 + 图片 URL。
 
-        优先原生通道(URL 已由 ctx.images.upload() 产生时); 否则 markdown 引用。
+        优先原生通道(URL 已由 ctx.images.upload() 产生时); 否则 markdown
+        图片语法 `![alt](url)`(旧宿主前端不渲染 <img> HTML)。
         """
         if await self._push_native_image(text, url=url):
             return
-        content = (
-            f"{text}\n\n"
-            f'<img src="{url}" alt="游戏图片" '
-            f'style="max-width:100%;height:auto;border-radius:8px;" />'
-        ) if url else text
+        content = f"{text}\n\n![游戏图片]({url})" if url else text
         await self._push([{"type": "text", "text": content}])
 
     async def _push_native_image(self, text: str, image_bytes: Optional[bytes] = None,
@@ -172,23 +204,20 @@ class PushSender:
         """推帮助文档图片。
 
         优先走原生图片通道(#2835): ctx.images.upload() → canonical image
-        part + visibility=["chat"] → 聊天窗渲染原生图片气泡(自适应宽度)。
-        SDK 不支持(旧宿主)时回退 markdown URL 通道(static/cards), 并带
-        max-width:100% 样式, 防止窄窗口图片溢出(与 text_with_image 一致)。
+        part + visibility=["chat"] → 聊天窗渲染原生图片气泡。
+        SDK 不支持(旧宿主)时回退 markdown 图片语法 `![alt](url)`
+        (前端 ReactMarkdown 内置支持, 旧宿主不渲染 <img> HTML 标签)。
         """
         caption = text or title
         if await self._push_native_image(caption, image_bytes, ai_behavior="blind"):
             return
-        # 回退: 旧宿主 markdown 通道
+        # 回退: 旧宿主 markdown 图片语法
         url = await self.save_image(image_bytes, "image/png")
         lines = []
         if text:
             lines.append(text)
         if url:
-            lines.append(
-                f'<img src="{url}" alt="{title}" '
-                f'style="max-width:100%;height:auto;border-radius:8px;" />'
-            )
+            lines.append(f"![{title}]({url})")
         if not lines:
             return
         await self._push([{"type": "text", "text": "\n".join(lines)}])

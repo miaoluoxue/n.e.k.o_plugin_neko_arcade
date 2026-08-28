@@ -84,10 +84,12 @@ LLM 复述一遍 → 用户看到两条几乎一样的话（双重回复）。
 - **PushSender.text_with_image 已自动走原生通道**（`ctx.images.upload` +
   `visibility=["chat"]`），SDK 不支持（旧宿主）时回退 markdown 通道。
 - **帮助文档图（`help_doc`，由 brain.show_help 调用）同样已走原生通道**，
-  `ai_behavior="blind"`（帮助图是给用户看的参考，不喂 LLM）；旧宿主
-  回退 markdown 时带 `max-width:100%` 样式，防止窄窗口图片溢出
-  （曾漏改：帮助图仍走旧 markdown 通道且无宽度限制 → 720px 宽帮助图
-  在窄聊天窗溢出，与塔罗牌旧坑同源）。
+  `ai_behavior="blind"`（帮助图是给用户看的参考，不喂 LLM）。
+- ⚠️ **旧宿主回退必须用 markdown 图片语法 `![alt](url)`，不能用 `<img>` HTML**：
+  旧宿主前端 ReactMarkdown 只开 remark-gfm/rehype-katex（无 rehype-raw），
+  `<img>` 会原样显示成代码（线上踩过：塔罗牌图/帮助图变成一串 HTML 文本）。
+  且 markdown 图无 CSS 宽度限制 → `save_image` 落盘前先把图片缩放到
+  最长边 ≤720px（PNG 转 JPEG），防窄窗溢出。
 - 不要自己拼 markdown 外链——原生通道优先，markdown 仅旧宿主回退。
 - **限制**：上传图片规范化 JPEG（最长边 ≤2048px，≤8MiB），单消息 chat
   可见图片 ≤8 张、累计 ≤8MiB。
