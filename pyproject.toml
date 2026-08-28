@@ -26,7 +26,6 @@ exclude_files = [
     "*.neko-bundle",
     # 完整文档(在 GitHub 仓库 docs/)——不打包进发布包;
     # 面板仅展示 docs/ui/ 下的简版文档(plugin.toml ui.guide 指向)
-    "docs/guide.md",
     "docs/CHANGELOG.md",
     "docs/development.md",
     "docs/rules.md",
