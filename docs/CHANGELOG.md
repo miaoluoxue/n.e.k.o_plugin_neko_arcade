@@ -2,6 +2,13 @@
 
 > 完整迭代记录，供开发者查阅。插件市场门面 README.md 只保留最新版本。
 
+## v0.5.5 (2026-08)
+
+修复旧宿主（未合并 #2835，如 0.9.1）图片显示成代码：旧宿主前端
+ReactMarkdown 只开 remark-gfm/rehype-katex（无 rehype-raw），`<img>` HTML
+不渲染。PushSender 兜底通道改为标准 markdown 图片语法 `![alt](url)`；
+落盘前大图缩放 ≤720px 转 JPEG，防窄窗溢出。新增缩放回归测试。
+
 ## v0.5.4 (2026-08)
 
 文档体系重构：README 改为插件市场门面（普通用户视角，架构/入口表/版本表移出）；
