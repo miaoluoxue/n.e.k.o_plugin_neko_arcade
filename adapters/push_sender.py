@@ -81,18 +81,34 @@ class PushSender:
 
     async def text_with_image(self, text: str, image_bytes: bytes,
                               mime: str = "image/png") -> None:
-        """推文本 + 图片（图片经 static + markdown 通道显示）。"""
+        """推文本 + 图片（图片经 static + markdown 通道显示）。
+
+        图片用 HTML img 标签带 style: max-width:100%; 高度自适应——宿主
+        react-neko-chat 的 ReactMarkdown 对默认 markdown 图片不做尺寸限制,
+        大图会超出聊天窗口(线上反馈: 塔罗牌面图不适配窗口)。remarkGfm 允许
+        HTML, 聊天窗内渲染即按容器宽度缩放。
+        """
         url = await self.save_image(image_bytes, mime)
         if url:
-            # 前端 ReactMarkdown 会把 ![alt](http://...) 渲染成真实图片
-            content = f"{text}\n\n![游戏图片]({url})"
+            content = (
+                f"{text}\n\n"
+                f'<img src="{url}" alt="游戏图片" '
+                f'style="max-width:100%;height:auto;border-radius:8px;" />'
+            )
         else:
             content = text
         await self._push([{"type": "text", "text": content}])
 
     async def text_with_image_url(self, text: str, url: str) -> None:
-        """推文本 + 图片 URL（图片已存在于 static 下, 直接 markdown 引用）。"""
-        content = f"{text}\n\n![游戏图片]({url})" if url else text
+        """推文本 + 图片 URL（图片已存在于 static 下, 直接 HTML img 引用）。"""
+        if url:
+            content = (
+                f"{text}\n\n"
+                f'<img src="{url}" alt="游戏图片" '
+                f'style="max-width:100%;height:auto;border-radius:8px;" />'
+            )
+        else:
+            content = text
         await self._push([{"type": "text", "text": content}])
 
     def static_url(self, relative_path: str) -> str:

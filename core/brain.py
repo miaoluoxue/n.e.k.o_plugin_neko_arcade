@@ -216,15 +216,21 @@ class GameBrain:
         pushed_any = False
         if images:
             for img in images[:3]:
-                text = img.get("text") or neko_text or game_msg
+                text = img.get("text") or ""
+                # 配文 = 图片说明 + 游戏结算(含含义解析), 让用户看到图的同时看到解读
+                caption = text
+                if game_msg and text != game_msg:
+                    caption = f"{text}\n\n{game_msg}" if text else game_msg
+                if not caption:
+                    caption = neko_text
                 img_bytes = img.get("bytes")
                 img_url = img.get("url")
                 if img_url:
-                    await self.push.text_with_image_url(text, img_url)
+                    await self.push.text_with_image_url(caption, img_url)
                     pushed_any = True
                 elif img_bytes:
                     await self.push.text_with_image(
-                        text, img_bytes, img.get("mime", "image/png"))
+                        caption, img_bytes, img.get("mime", "image/png"))
                     pushed_any = True
             if not pushed_any and game_msg:
                 await self.push.text(game_msg, ai_behavior="blind")
@@ -246,7 +252,13 @@ class GameBrain:
         # ⚠️ 双重回复守门(架构): 游戏不参与推送, 用户已见内容由 brain 统一输出;
         # summary 一律用 neko_text(情感模板, 与用户已见内容不同)——宿主 LLM 收到
         # summary 后自然演绎, 不会复述用户已见的原文。
+        # 但纯模板没有"牌意/结果数据"素材, LLM 无法真正解读(线上: 塔罗抽牌后
+        # 猫娘不解析)。因此从 facts 提取结构化要点拼进 summary(表述与 game_msg
+        # 不同, 不构成复述), 让 LLM 有素材可演绎。
         summary = neko_text or game_msg
+        facts_hint = self._facts_to_hint(facts)
+        if facts_hint:
+            summary = f"{summary}\n[结果要点] {facts_hint}"
         return {
             "game": game_id,
             "game_name": game.name,
@@ -261,6 +273,36 @@ class GameBrain:
             "game_commands": [c[0] for c in cmds if isinstance(c, (list, tuple)) and c[0]],
             "card_image": bool(card_img),
         }
+
+    @staticmethod
+    def _facts_to_hint(facts: List[Dict]) -> str:
+        """从 facts 提取给 LLM 的解读素材(结构化要点, 与 game_msg 不同表述)。
+
+        游戏把关键结果字段放进 facts(如塔罗的 card/position/meaning), 这里
+        提取拼进 summary——宿主 LLM 拿到素材才能真实解读(如解析塔罗牌意),
+        而不是只会说情感模板话。只取常见字段, 不枚举整条 fact。
+        """
+        parts = []
+        for f in facts[:8]:
+            if not isinstance(f, dict):
+                continue
+            kind = f.get("kind", "")
+            card = f.get("card") or f.get("name") or f.get("item") or ""
+            meaning = f.get("meaning") or ""
+            position = f.get("position") or ""
+            pos_name = f.get("position_name") or ""
+            if card:
+                bit = f"{card}"
+                if position:
+                    bit += f"({position})"
+                if pos_name:
+                    bit = f"{pos_name}: {bit}"
+                if meaning:
+                    bit += f" 含义:{meaning}"
+                parts.append(bit)
+            elif kind and f.get("value") is not None:
+                parts.append(f"{kind}={f.get('value')}")
+        return "；".join(parts) if parts else ""
 
     async def _start_session(self, game_id: str, user_id: str) -> None:
         """开始游戏会话，不推送文本（由 LLM 生成邀请/开场白）。"""

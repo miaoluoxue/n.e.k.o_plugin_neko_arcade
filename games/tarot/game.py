@@ -145,7 +145,8 @@ class TarotGame(GameAdapter):
         msg = "\n".join(lines)
 
         images = [image] if image else []
-        return {"facts": [build_fact("tarot", card=name_cn, position="up" if up else "down")],
+        return {"facts": [build_fact("tarot", card=name_cn, position="up" if up else "down",
+                                     meaning=meaning)],
                 "outcome": "tarot", "message": msg, "images": images}
 
     # ── 牌阵占卜 ──────────────────────────
@@ -188,7 +189,7 @@ class TarotGame(GameAdapter):
             if img:
                 images.append({**img, "text": f"{rep}: {name_cn}"})
             facts.append(build_fact("tarot", card=name_cn, position="up" if up else "down",
-                                    position_name=rep))
+                                    position_name=rep, meaning=meaning))
 
         return {"facts": facts, "outcome": "divine",
                 "message": "\n".join(lines), "images": images}
