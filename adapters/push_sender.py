@@ -1,15 +1,14 @@
 """推送适配：通过主项目 push_message 发送文字/图片/音频。
 
 图片显示策略（重要）：
-宿主(character_runtime)只把 ai_behavior="respond"/"read" 的图片 parts 当作
-AI 视觉输入(stream_image 喂给 LLM)，ai_behavior="blind" 的图片 parts 被直接
-丢弃，用户聊天窗口看不到。但前端聊天窗口(react-neko-chat)用 ReactMarkdown
-渲染文本，``![图](http://...)`` 会被渲染成真实图片。
+- 旧宿主：图片只能走「存 static/cards/ → 文本内嵌 markdown 图片 URL」通道
+  （前端 ReactMarkdown 渲染），markdown 是唯一用户可见方式。
+- 新宿主（#2835 合并后）：SDK 提供 ``ctx.images.upload()`` —— 上传图片返回
+  canonical image part，配合 ``visibility=["chat"]`` 直接在聊天窗渲染为
+  原生图片气泡，无需 markdown 变通。本模块优先走原生通道，SDK 不支持时
+  回退 markdown（兼容旧宿主）。
 
-因此本模块的图片推送统一走「存 static/cards/ → 文本内嵌 markdown 图片 URL」
-通道：图片写入插件 static 目录，宿主静态服务(/plugin/neko_arcade/ui/)直接
-提供访问，前端 markdown 渲染出图。这是当前宿主版本唯一可靠的游戏图片显示
-通道（验证: 48916 端口 /plugin/neko_arcade/ui/*.png 返回 200）。
+注意：宿主不支持 audio/video parts(见 text_with_audio 注释)。
 """
 
 from __future__ import annotations
@@ -81,13 +80,15 @@ class PushSender:
 
     async def text_with_image(self, text: str, image_bytes: bytes,
                               mime: str = "image/png") -> None:
-        """推文本 + 图片（图片经 static + markdown 通道显示）。
+        """推文本 + 图片。
 
-        图片用 HTML img 标签带 style: max-width:100%; 高度自适应——宿主
-        react-neko-chat 的 ReactMarkdown 对默认 markdown 图片不做尺寸限制,
-        大图会超出聊天窗口(线上反馈: 塔罗牌面图不适配窗口)。remarkGfm 允许
-        HTML, 聊天窗内渲染即按容器宽度缩放。
+        优先走原生图片通道(#2835): ctx.images.upload() 上传 → canonical
+        image part + visibility=["chat"] → 聊天窗渲染原生图片气泡。
+        SDK 不支持(旧宿主)时回退 markdown URL 通道(static/cards)。
         """
+        if await self._push_native_image(text, image_bytes):
+            return
+        # 回退: 旧宿主 markdown 通道
         url = await self.save_image(image_bytes, mime)
         if url:
             content = (
@@ -100,16 +101,54 @@ class PushSender:
         await self._push([{"type": "text", "text": content}])
 
     async def text_with_image_url(self, text: str, url: str) -> None:
-        """推文本 + 图片 URL（图片已存在于 static 下, 直接 HTML img 引用）。"""
-        if url:
-            content = (
-                f"{text}\n\n"
-                f'<img src="{url}" alt="游戏图片" '
-                f'style="max-width:100%;height:auto;border-radius:8px;" />'
-            )
-        else:
-            content = text
+        """推文本 + 图片 URL。
+
+        优先原生通道(URL 已由 ctx.images.upload() 产生时); 否则 markdown 引用。
+        """
+        if await self._push_native_image(text, url=url):
+            return
+        content = (
+            f"{text}\n\n"
+            f'<img src="{url}" alt="游戏图片" '
+            f'style="max-width:100%;height:auto;border-radius:8px;" />'
+        ) if url else text
         await self._push([{"type": "text", "text": content}])
+
+    async def _push_native_image(self, text: str, image_bytes: Optional[bytes] = None,
+                                 url: Optional[str] = None) -> bool:
+        """尝试走原生图片通道(ctx.images.upload + canonical image part)。
+
+        返回 True 表示已推送(原生通道可用); False 表示 SDK 不支持, 调用方
+        应回退 markdown。visibility=["chat"] 让图片在用户聊天窗可见。
+        """
+        try:
+            images_api = getattr(self.plugin.ctx, "images", None)
+            upload = getattr(images_api, "upload", None)
+            if not callable(upload):
+                return False
+            if url is None and not image_bytes:
+                return False
+            if url is None:
+                # 上传 bytes → canonical part
+                part = await upload(image_bytes or b"", timeout=8.0)
+            else:
+                # 已是 upload 产生的 URL, 直接构造 part
+                part = {"type": "image", "url": url, "mime": "image/jpeg"}
+            parts = []
+            if text:
+                parts.append({"type": "text", "text": text})
+            parts.append(part)
+            self.plugin.push_message(
+                source=self.source,
+                parts=parts,
+                visibility=["chat"],
+                ai_behavior="read",
+                target_lanlan=self._resolve_target_lanlan() or None,
+            )
+            return True
+        except Exception:
+            # SDK 不支持/上传失败 → 回退 markdown
+            return False
 
     def static_url(self, relative_path: str) -> str:
         """把 static 下的相对路径转成可访问的 http URL。
