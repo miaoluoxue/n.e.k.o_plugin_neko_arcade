@@ -12,6 +12,8 @@ exclude_dirs = [
     ".pytest_cache",
     ".ruff_cache",
     "tests",
+    ".tmp_neko_photo_test",
+    ".tmp_push_sender_test",
 ]
 exclude_files = [
     ".gitignore",
@@ -22,4 +24,11 @@ exclude_files = [
     "data/store.db",
     "*.neko-plugin",
     "*.neko-bundle",
+    # 完整文档(在 GitHub 仓库 docs/)——不打包进发布包;
+    # 面板仅展示 docs/ui/ 下的简版文档(plugin.toml ui.guide 指向)
+    "docs/guide.md",
+    "docs/development.md",
+    "docs/rules.md",
+    "docs/pitfalls.md",
+    "docs/ARCHITECTURE.md",
 ]

@@ -349,7 +349,7 @@ function render() {
 
 function renderGames() {
   var gs = state.games||[], grid = document.getElementById('gameGrid');
-  if (!gs.length) { grid.innerHTML = '<div class="empty"><div class="big">🎮</div><p>还没有小游戏喵<br>按开发文档把游戏放进 games/ 目录即可接入</p></div>'; return; }
+  if (!gs.length) { grid.innerHTML = '<div class="empty"><div class="big">🎮</div><p>还没有小游戏喵<br>试试在聊天里对猫娘说「钓鱼」「修仙」等游戏名吧</p></div>'; return; }
   grid.innerHTML = gs.map(function(g){
     var en = g.enabled!==false;
     var running = (((state.brain||{}).session)||{}).game === g.id;

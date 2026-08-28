@@ -36,30 +36,34 @@ entry = "static/index.html"
 context = "dashboard"
 permissions = ["state:read", "action:call"]
 
+# 面板 guide 文档 = docs/ui/ 下的简版（面向普通用户/快速查阅）。
+# 完整开发者文档（docs/rules.md、docs/pitfalls.md、docs/ARCHITECTURE.md、
+# docs/development.md）保留在 GitHub 仓库，打包时排除（见 pyproject.toml）。
+
 [[plugin.ui.guide]]
 id = "guide"
 title = "使用指南"
-entry = "docs/guide.md"
+entry = "docs/ui/guide.md"
 mode = "markdown"
 permissions = ["state:read"]
 
 [[plugin.ui.guide]]
 id = "development"
 title = "开发文档"
-entry = "docs/development.md"
+entry = "docs/ui/development.md"
 mode = "markdown"
 permissions = ["state:read"]
 
 [[plugin.ui.guide]]
 id = "rules"
 title = "接入规则"
-entry = "docs/rules.md"
+entry = "docs/ui/rules.md"
 mode = "markdown"
 permissions = ["state:read"]
 
 [[plugin.ui.guide]]
 id = "architecture"
 title = "运行机制总纲"
-entry = "docs/ARCHITECTURE.md"
+entry = "docs/ui/ARCHITECTURE.md"
 mode = "markdown"
 permissions = ["state:read"]
