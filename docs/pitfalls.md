@@ -66,29 +66,25 @@ LLM 复述一遍 → 用户看到两条几乎一样的话（双重回复）。
 
 ---
 
-## 2. 图片可见性：宿主通道的现实
+## 2. 图片可见性：原生通道已可用（#2835 已合并）
 
-**坑**：想让游戏图片「用户看得见」——但宿主聊天窗口没有「用户可见图片」通道。
+**背景**：曾以为宿主没有「用户可见图片」通道——早期宿主确实只有
+`visibility=[], ai_behavior="respond"/"read"` 把图片喂给 AI 视觉，
+用户聊天窗看不到；唯一的用户可见方式是 markdown `![alt](url)` 变通。
 
-**现实（已验证官方插件全部如此）**：
-
-- 所有官方插件发图片都用 `visibility=[], ai_behavior="respond"`（或 `read`）→
-  **只有 AI 看得见（喂给 LLM 上下文），用户聊天窗看不见**。
-- 用户可见图片只有一种方式：在 `chat + blind` 文本里用 markdown
-  `![alt](url)` 引用外链图（如 lifekit 的做法）。
-- 宿主没有「推一张图进用户聊天窗」的 API。上游 #2835/#2905 在推进，
-  插件侧目前无法解决——这不是插件 bug，不要为它绕路。
+**现状（上游 #2835 已合并）**：SDK 新增 `ctx.images.upload()` —— 上传
+图片返回 **canonical image part**，配合 `visibility=["chat"]` 在用户聊天窗
+渲染**原生图片气泡**，无需 markdown 变通。`ai_behavior` 独立控制模型行为
+（`read` = 注入现有模型 session，无 session 则丢弃）。
 
 **适配规则**：
 
-- 游戏要展示图片：返回 `images: [{text, bytes, mime}]` 或 `{text, url}`，
-  brain 会以图文一次推给 AI（vision 可见），这是标准做法。
-- 若确需用户可见图片：走 markdown 外链（`chat + blind` + `![alt](url)`），
-  且图片必须托管在可访问的 URL（不传 bytes）。
-- 不要试图用 push 通道塞 bytes 让用户可见——做不到，且会刷屏。
-- **图片中转**：PushSender.save_image 会把 bytes 中转落盘到
-  `static/cards/` 并返回可访问 URL——游戏资源目录下的图（如
-  `games/tarot/data/`）推送时经此中转，无需自己拼 URL。
+- 游戏要展示图片：返回 `images: [{text, bytes, mime}]`，brain 统一推送。
+- **PushSender.text_with_image 已自动走原生通道**（`ctx.images.upload` +
+  `visibility=["chat"]`），SDK 不支持（旧宿主）时回退 markdown 通道。
+- 不要自己拼 markdown 外链——原生通道优先，markdown 仅旧宿主回退。
+- **限制**：上传图片规范化 JPEG（最长边 ≤2048px，≤8MiB），单消息 chat
+  可见图片 ≤8 张、累计 ≤8MiB。
 
 ## 2.5 音频/视频 parts 宿主不支持（坑）
 
@@ -97,7 +93,7 @@ LLM 复述一遍 → 用户看到两条几乎一样的话（双重回复）。
 **现实（源码核实）**：`character_runtime.py` 对 `type != "image"` 的 part
 直接 warning 后 drop（`stream_audio` 是实时麦克风 PCM 管线，非通用文件
 注入器；无 video API）。SDK schema 虽定义 `audio`/`video` part，消费端
-未实现。
+未实现（#2835 只解决了图片，audio/video 仍缺消费端）。
 
 **适配规则**：
 
