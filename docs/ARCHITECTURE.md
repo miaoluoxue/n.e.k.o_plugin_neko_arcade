@@ -80,7 +80,7 @@ data/config/{game_id}/help.json
 }
 ```
 
-- 大脑读取 → 渲染为**带猫娘表情的帮助图** → push_message 推送
+- 大脑读取 → 渲染为**帮助图**（分页）→ 原生图片通道推送
 - 入口：面板「📖 帮助」按钮 / 聊天说"帮助"
 
 ### 2.3 情感模板
@@ -233,8 +233,8 @@ data/config/{game_id}/help.json
     → callEntry("game_help", {game: "fishing"})
     → brain.show_help("fishing")
     → registry.get_help("fishing") 读取 data/config/fishing/help.json
-    → image_renderer.render_help(...) 用 PIL 绘制帮助图（带猫娘头像）
-    → push_sender.help_doc(...) 推送图片到聊天
+    → image_renderer.render_help(...) 用 PIL 绘制帮助图（分页, 单页 ≤~600px）
+    → push_sender.help_doc(...) 原生图片通道推送(#2835), 旧宿主回退 markdown
 ```
 
 ### 5.3 入口
@@ -365,7 +365,7 @@ start_game("fishing") → 猫娘："来玩钓鱼了喵！"（兴奋+0.5）
 |------|------|------|
 | 文字 | 猫娘的话（情感渲染） | 每次互动 |
 | 图片 | 结果卡片（高光事件） | 高光事件 |
-| 帮助图 | 玩法帮助（带猫娘表情） | 用户请求 |
+| 帮助图 | 玩法帮助（分页多页图） | 用户请求 |
 | 语音（TTS） | 主项目自动播放 | 所有聊天消息 |
 | 面板 | 心情/会话/统计 | 3s 轮询 |
 

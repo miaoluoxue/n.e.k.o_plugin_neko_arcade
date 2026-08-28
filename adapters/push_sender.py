@@ -115,11 +115,15 @@ class PushSender:
         await self._push([{"type": "text", "text": content}])
 
     async def _push_native_image(self, text: str, image_bytes: Optional[bytes] = None,
-                                 url: Optional[str] = None) -> bool:
+                                 url: Optional[str] = None,
+                                 ai_behavior: str = "read") -> bool:
         """尝试走原生图片通道(ctx.images.upload + canonical image part)。
 
         返回 True 表示已推送(原生通道可用); False 表示 SDK 不支持, 调用方
         应回退 markdown。visibility=["chat"] 让图片在用户聊天窗可见。
+
+        ai_behavior: "read" = 注入现有模型 session(结果图需要 LLM 解读);
+        "blind" = 仅用户可见, 不喂 LLM(帮助文档图等纯用户参考)。
         """
         try:
             images_api = getattr(self.plugin.ctx, "images", None)
@@ -142,7 +146,7 @@ class PushSender:
                 source=self.source,
                 parts=parts,
                 visibility=["chat"],
-                ai_behavior="read",
+                ai_behavior=ai_behavior,
                 target_lanlan=self._resolve_target_lanlan() or None,
             )
             return True
@@ -165,13 +169,26 @@ class PushSender:
 
     async def help_doc(self, title: str, image_bytes: bytes,
                        text: Optional[str] = None) -> None:
-        """推帮助文档图片（图片经 static + markdown 通道显示）。"""
+        """推帮助文档图片。
+
+        优先走原生图片通道(#2835): ctx.images.upload() → canonical image
+        part + visibility=["chat"] → 聊天窗渲染原生图片气泡(自适应宽度)。
+        SDK 不支持(旧宿主)时回退 markdown URL 通道(static/cards), 并带
+        max-width:100% 样式, 防止窄窗口图片溢出(与 text_with_image 一致)。
+        """
+        caption = text or title
+        if await self._push_native_image(caption, image_bytes, ai_behavior="blind"):
+            return
+        # 回退: 旧宿主 markdown 通道
         url = await self.save_image(image_bytes, "image/png")
         lines = []
         if text:
             lines.append(text)
         if url:
-            lines.append(f"![{title}]({url})")
+            lines.append(
+                f'<img src="{url}" alt="{title}" '
+                f'style="max-width:100%;height:auto;border-radius:8px;" />'
+            )
         if not lines:
             return
         await self._push([{"type": "text", "text": "\n".join(lines)}])

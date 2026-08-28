@@ -5,7 +5,7 @@ name = "猫娘小游戏"
 description = "让猫娘陪你玩各种小游戏——钓鱼、海龟汤、猜硬币、修仙……一个插件，无限可能。"
 short_description = "Neko mini-games hub for N.E.K.O."
 keywords = ["game", "游戏", "小游戏", "mini-games", "fun", "play", "玩"]
-version = "0.5.1"
+version = "0.5.2"
 entry = "plugins.neko_arcade:NekoArcadePlugin"
 
 [plugin.author]

@@ -172,7 +172,8 @@ self._config.get("max_plays_per_day", 20)
 }
 ```
 
-玩家说「帮助」时，大脑读取 help.json → 渲染成**带猫娘表情的帮助图**推送。
+玩家说「帮助」时，大脑读取 help.json → 渲染成帮助图推送
+（分页多页图，单页 ≤~600px，原生图片通道优先）。
 
 ### emotion.json（情感模板，可选）
 
@@ -268,7 +269,8 @@ async def get_status(self, uid): ... # 面板状态
 | 渠道 | 适配器 |
 |------|--------|
 | 文字推送 | PushSender.text |
-| 图片推送（卡片/帮助图） | PushSender.text_with_image |
+| 图片推送（结果卡片） | PushSender.text_with_image（原生通道优先） |
+| 帮助文档图 | PushSender.help_doc（brain.show_help 统一调用，原生通道优先） |
 | 语音（TTS） | 主项目自动播放 chat 文字（插件只保证短句） |
 | LLM 渲染 | LLMProvider（配置自建，无则模板兜底） |
 | 猫娘表情图 | ImageRenderer.render_neko_avatar |

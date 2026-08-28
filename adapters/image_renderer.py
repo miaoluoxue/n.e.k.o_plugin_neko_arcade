@@ -232,8 +232,8 @@ class ImageRenderer:
             cmds = list(commands or [])
             n = len(cmds)
 
-            # 分页: 每页最多 40 条(两列 × 20 行), 单页高度可控
-            per_page = 40
+            # 分页: 每页最多 34 条(两列 × 17 行), 单页高度 ≤ ~600px
+            per_page = 34
             pages = [cmds[i:i + per_page] for i in range(0, n, per_page)] or [[]]
 
             W = 720

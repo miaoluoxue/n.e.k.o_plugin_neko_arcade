@@ -179,7 +179,8 @@ games/
 | 渠道 | 适配器 | 说明 |
 |------|--------|------|
 | 文字推送 | `PushSender.text()` | 推送到聊天和面板 |
-| 图片推送 | `PushSender.text_with_image()` | 结果卡片、帮助图 |
+| 图片推送 | `PushSender.text_with_image()` | 结果卡片（原生通道优先） |
+| 帮助文档图 | `PushSender.help_doc()` | 帮助图（brain.show_help 调用，原生通道优先） |
 | 语音（TTS） | 宿主自动播放 chat 通道文字（无需推音频数据） |
 | LLM 渲染 | `LLMProvider.call()` | 配置自建，无则模板兜底 |
 | 图片渲染 | `ImageRenderer` | 游戏结果卡片、帮助文档图 |
