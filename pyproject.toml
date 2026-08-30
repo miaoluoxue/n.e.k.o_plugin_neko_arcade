@@ -3,6 +3,7 @@ name = "neko_arcade"
 version = "0.4.0"
 description = "N.E.K.O mini-games hub: catgirl plays fishing, turtle-soup, coin-flip and more."
 requires-python = ">=3.11"
+license = "Apache-2.0"
 dependencies = []
 
 [tool.neko.build]
