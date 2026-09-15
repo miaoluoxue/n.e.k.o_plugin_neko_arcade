@@ -1,13 +1,53 @@
-"""配置统一管理：每个小游戏的配置和帮助数据集中存放于 data/。"""
+"""配置统一管理：每个小游戏的配置和帮助数据集中存放于 data/。
+
+数据目录解析（N.E.K.O 0.9.0.2+ 适配）：
+- 新宿主把插件代码装在不可变目录（.neko-plugin-installations/plugins/<id>），
+  安装时会剥掉包内 data/；用户数据落在 SDK 的 storage dir：
+  %LOCALAPPDATA%\\N.E.K.O\\plugins\\<id>\\data（可用 NEKO_STORAGE_SELECTED_ROOT 改根）。
+- 因此优先用插件的 self.data_path()；没有该 API 的老宿主/本地开发回退到代码目录旁 data/。
+"""
 
 from __future__ import annotations
 
 import json
 import os
+import shutil
 from typing import Any, Dict, List, Optional
 
-DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
+# 兜底默认值(代码目录旁的 data/)，仅在拿不到 SDK 数据目录时使用
+_PLUGIN_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DATA_DIR = os.path.join(_PLUGIN_ROOT, "data")
 CONFIG_DIR = os.path.join(DATA_DIR, "config")
+
+
+def resolve_data_dir(plugin: Any = None) -> str:
+    """解析插件的数据目录(优先 SDK 存储目录, 回退代码目录旁 data/)。"""
+    data_path = getattr(plugin, "data_path", None)
+    if callable(data_path):
+        try:
+            resolved = data_path()
+            if resolved:
+                return str(resolved)
+        except Exception:
+            pass
+    config_dir = getattr(plugin, "config_dir", None) or getattr(plugin, "plugin_dir", None)
+    base = str(config_dir) if config_dir else _PLUGIN_ROOT
+    return os.path.join(base, "data")
+
+
+def _seed_defaults(data_dir: str) -> None:
+    """数据目录缺 config/ 时, 从代码目录旁 data/ 播种默认配置(仅首次, 不覆盖已有)。"""
+    target = os.path.join(data_dir, "config")
+    if os.path.isdir(target):
+        return
+    source = CONFIG_DIR
+    if not os.path.isdir(source) or os.path.abspath(source) == os.path.abspath(target):
+        return
+    try:
+        shutil.copytree(source, target)
+    except Exception:
+        pass
+
 
 
 class GameConfig:
@@ -54,15 +94,17 @@ class ConfigManager:
 
     MAIN_DIR_NAME = "main"
 
-    def __init__(self, data_dir: str = DATA_DIR) -> None:
-        self.data_dir = data_dir
+    def __init__(self, data_dir: Optional[str] = None) -> None:
+        self.data_dir = str(data_dir) if data_dir else DATA_DIR
+        self.config_dir = os.path.join(self.data_dir, "config")
+        _seed_defaults(self.data_dir)
         self._cache: Dict[str, GameConfig] = {}
 
     def _game_dir(self, game_id: str) -> str:
-        return os.path.join(CONFIG_DIR, game_id)
+        return os.path.join(self.config_dir, game_id)
 
     def _main_dir(self) -> str:
-        d = os.path.join(DATA_DIR, self.MAIN_DIR_NAME)
+        d = os.path.join(self.data_dir, self.MAIN_DIR_NAME)
         os.makedirs(d, exist_ok=True)
         return d
 
@@ -120,9 +162,9 @@ class ConfigManager:
             self._cache[game_id].help = help_data
 
     def get_game_ids(self) -> list:
-        if not os.path.isdir(CONFIG_DIR):
+        if not os.path.isdir(self.config_dir):
             return []
-        return [d for d in os.listdir(CONFIG_DIR) if os.path.isdir(os.path.join(CONFIG_DIR, d))]
+        return [d for d in os.listdir(self.config_dir) if os.path.isdir(os.path.join(self.config_dir, d))]
 
     def clear(self) -> None:
         self._cache.clear()

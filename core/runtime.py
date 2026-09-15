@@ -8,7 +8,7 @@ from typing import Any, Dict, Optional
 
 from ..adapters import ImageRenderer, LLMProvider, PhotoBridge, PushSender, TTSClient
 from .brain import GameBrain
-from .config_manager import ConfigManager
+from .config_manager import ConfigManager, resolve_data_dir
 from .registry import GameRegistry
 
 log = logging.getLogger("neko_arcade.runtime")
@@ -20,7 +20,9 @@ class ArcadeRuntime:
     def __init__(self, plugin: Any) -> None:
         self.plugin = plugin
         self.cfg: Dict[str, Any] = {}
-        self.cfg_mgr = ConfigManager()
+        # 数据目录走 SDK storage dir(0.9.0.2+ 插件代码目录不含 data/), 老宿主回退代码目录旁 data/
+        self.data_dir = resolve_data_dir(plugin)
+        self.cfg_mgr = ConfigManager(self.data_dir)
         self.registry = GameRegistry(plugin, self.cfg_mgr)
         self.llm = LLMProvider(15)
         self.push = PushSender(plugin)
@@ -95,8 +97,10 @@ class ArcadeRuntime:
             except Exception as exc:
                 log.warning("注销静态 send_photo 工具失败: %s", exc)
         description = (
-            "聊天过程中想给主人发一张照片时调用。适合这些时刻: 聊到开心想分享心情、"
+            "给主人发一张照片时调用。适合这些时刻: 聊到开心想分享心情、"
             "气氛有点安静想活跃一下、想给主人一个惊喜、或者主人提到想看你的照片/图片时。"
+            "**主人明确说「发图/来张图/来一张/照片/自拍/喵图/给我看看/看图」时，"
+            "必须立即调用本工具，不要闲聊绕开**。"
             "调用后你会随机发一张照片给主人(可能是你的表情自拍, 也可能是主人上传的图库照片), "
             "不要连续多次调用, 一次聊天里发一两张就够了。"
         )
