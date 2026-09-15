@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import abc
+import logging
 from typing import Any, Dict, List, Optional, Tuple
+
+log = logging.getLogger("neko_arcade.contracts")
 
 
 class GameAdapter(abc.ABC):
@@ -29,19 +32,24 @@ class GameAdapter(abc.ABC):
         self._tts: Any = None
         self._llm: Any = None
         self._photo: Any = None
+        self._render: Any = None
 
     def bind_services(self, push=None, img=None, tts=None, llm=None,
-                      photo=None) -> None:
+                      photo=None, render=None) -> None:
         """绑定插件服务（由注册表在注册时调用），游戏可通过 self 调用。
 
         photo: PhotoBridge 实例(插件主体通用发图桥接), 游戏可用 self.send_photo
         自主发图, 无需自己实现图库扫描/分类/推送。
+        render: RenderBridge 实例(插件主体通用**渲染桥接**), 游戏可用
+        self.render_help / self.render_page / self.send_page 出图,
+        **无需自己写 HTML/CSS/主题**——渲染完全由插件主体负责。
         """
         self._push = push
         self._img = img
         self._tts = tts
         self._llm = llm
         self._photo = photo
+        self._render = render
 
     # ── 发图桥接(插件主体通用能力) ─────────
 
@@ -149,15 +157,65 @@ class GameAdapter(abc.ABC):
             return await self._img.render_help(game_name, commands, footer)
         return None
 
+    # ── 渲染桥接(插件主体通用能力: 游戏只给数据) ─────
+    #
+    # 「游戏适配插件」的核心约定: 图片渲染(帮助图/面板图/结果卡)全部由插件主体
+    # 负责——官方 UI Kit 视觉、主题、版式块、宿主浏览器都在插件侧。
+    # 游戏**不要**写 HTML/CSS, 也不要自己调 PIL/浏览器, 只调用下面的接口传数据。
+
+    async def render_help(self, topic: str = "") -> List[bytes]:
+        """渲染本游戏的帮助图(支持功能主题, 如「纳戒」「战斗」)。
+
+        数据来自 data/config/<id>/help.json; 渲染由插件统一完成。
+        返回每页 PNG bytes 列表; 渲染不可用返回空列表(游戏可降级为文本)。
+        """
+        if not self._render:
+            return []
+        return await self._render.help(self.id, game_name=self.name,
+                                       raw_help=self._help_raw(), topic=topic)
+
+    async def render_page(self, title: str, subtitle: str = "", blocks: Any = None,
+                          rows: Any = None, commands: Any = None, chips: Any = None,
+                          tip: str = "", theme: str = "") -> Optional[bytes]:
+        """渲染一个自定义页面(官方组件 + 版式块), 游戏只给数据。
+
+        blocks: [{"type": "slots|bag|table|steps|flow|chips|text", ...}, ...]
+        rows:   [["左", "右"], ...]  简单两列表格
+        commands: [["指令", "说明"], ...] 或对象形式
+        返回 PNG bytes; 不可用返回 None。
+        """
+        if not self._render:
+            return None
+        pages = await self._render.page(title, subtitle=subtitle, blocks=blocks,
+                                        rows=rows, commands=commands, chips=chips,
+                                        tip=tip, theme=theme, game_id=self.id)
+        return pages[0] if pages else None
+
+    async def send_page(self, title: str, subtitle: str = "", blocks: Any = None,
+                        rows: Any = None, commands: Any = None, chips: Any = None,
+                        tip: str = "", text: str = "") -> Dict[str, Any]:
+        """渲染并推送一条图片消息(渲染+推送都由插件主体完成)。"""
+        if not self._render:
+            return {"ok": False, "summary": "渲染桥接未就绪喵"}
+        return await self._render.send(title, subtitle=subtitle, blocks=blocks,
+                                       rows=rows, commands=commands, chips=chips,
+                                       tip=tip, text=text, game_id=self.id)
+
+    def _help_raw(self) -> Dict[str, Any]:
+        """本游戏的原始 help.json 数据(注册表注入; 没有则空)。"""
+        return getattr(self, "_help_data", None) or {}
+
+    # ── 插件内部/历史渲染接口(游戏不应再使用) ─────────────
+
     async def render_html(self, html: str, css: str = "", width: int = 720,
                           height: int = 600, game_name: str = "",
                           selector: str = "body", brand_footer: bool = False) -> Optional[bytes]:
-        """渲染 HTML 为 PNG 图片（插件端渲染方案，供游戏接入）。
+        """【已废弃·插件内部】渲染 HTML 为 PNG。
 
-        优先用 Playwright(Chromium) 渲染，支持游戏自定义 HTML/CSS 风格；
-        brand_footer=True 时叠加统一品牌落款「N.E.K.O 猫娘小游戏 × 游戏名」。
-        渲染失败返回 None，游戏自行降级。
+        保留仅为兼容历史游戏。按「游戏适配插件」约定, 游戏不参与渲染:
+        请改用 render_page(数据) 或 render_help —— 主题、版式、浏览器都在插件侧。
         """
+        log.warning("游戏 %s 调用了已废弃的 render_html, 请改用 render_page", self.id)
         if not self._img:
             return None
         renderer = getattr(self._img, "render_html", None)

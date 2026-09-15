@@ -416,7 +416,16 @@ class GameBrain:
         return [w for w in words if len(w) >= 2]
 
     def _help_theme(self) -> str:
-        """帮助图主题: 主配置 help.theme(light/dark), 缺省官方亮色。"""
+        """帮助图主题: 优先桥接(与游戏一致), 否则读主配置, 缺省官方亮色。"""
+        bridge = getattr(self.registry, "_render", None)
+        theme = ""
+        if bridge is not None and hasattr(bridge, "theme"):
+            try:
+                theme = str(bridge.theme() or "")
+            except Exception:
+                theme = ""
+        if theme in ("light", "dark"):
+            return theme
         try:
             cfg = (self.cfg_mgr.load_main_config() or {}) if self.cfg_mgr else {}
         except Exception:
@@ -441,10 +450,15 @@ class GameBrain:
             doc = normalize_help(help_data or {}, game_id, game.name)
             page = resolve_topic(doc, topic)
 
-            # ① 统一渲染器(官方 UI Kit 视觉 + 主题)
+            # ① 统一渲染桥接(官方 UI Kit 视觉 + 主题 + 宿主浏览器) —— 与游戏共用同一套
             try:
-                renderer = self._help_renderer()
-                pages = await renderer.render(doc, page, theme=self._help_theme())
+                bridge = getattr(self.registry, "_render", None)
+                if bridge is not None and getattr(bridge, "ready", False):
+                    pages = await bridge.help(game_id, game_name=game.name,
+                                              raw_help=help_data, topic=topic)
+                else:
+                    renderer = self._help_renderer()
+                    pages = await renderer.render(doc, page, theme=self._help_theme())
             except Exception as exc:
                 log.warning("统一帮助渲染失败: %s", exc)
                 pages = []

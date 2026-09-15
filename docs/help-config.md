@@ -10,6 +10,44 @@
 - 分层：`游戏 → 分组(group) → 指令(command)`，三层都能被直接寻址
 - 兼容：不写 `groups` 的游戏行为与升级前完全一致（老的扁平单页帮助）
 
+## 0. 渲染桥接（游戏侧 API）
+
+**游戏不参与渲染**——不写 HTML/CSS、不碰 PIL、不碰浏览器、不管主题配色。
+插件主体把渲染能力以"**数据进、图片出**"的方式桥接给游戏：
+
+```python
+class MyGame(GameAdapter):
+    async def handle_action(self, user_id, cmd, args=None):
+        # ① 本游戏的帮助图(数据来自 data/config/<id>/help.json, 支持功能主题)
+        pages = await self.render_help(topic="纳戒")        # List[bytes]
+
+        # ② 任意页面: 只描述要展示什么, 版式由插件决定
+        png = await self.render_page(
+            "今日战绩", subtitle="第 3 天",
+            blocks=[{"type": "table", "title": "冷却", "rows": [["打劫", "CD 60s"]]}],
+            commands=[["签到", "每日签到"]], chips=["连击", "满勤"], tip="加油喵")
+
+        # ③ 渲染 + 推送一条龙(连推送都不用管)
+        await self.send_page("图鉴", blocks=[{"type": "bag", "cols": 8, "cells": 16}])
+
+        return {"message": "…", "outcome": "done"}
+```
+
+| 接口 | 入参 | 出参 | 说明 |
+|---|---|---|---|
+| `render_help(topic="")` | 主题词（可省） | `List[bytes]` | 本游戏帮助图，多页时逐页返回 |
+| `render_page(...)` | 标题/副标题/版式块/表格/指令/胶囊/提示 | `bytes \| None` | 自定义页面 |
+| `send_page(...)` | 同上 + `text` | `{ok, pages, summary}` | 渲染并推送 |
+| `render_card(...)` | 标题/条目 | `bytes \| None` | 结果卡片（历史接口，仍可用） |
+
+约定与降级：
+- **渲染不可用时返回空**（`[]` / `None` / `{"ok": False}`），游戏自行降级为文本，不会抛异常
+- `render_html(html, css, ...)` **已废弃**（仅兼容历史游戏）：游戏不得自带样式，
+  需要新视觉请提需求给插件侧，由主题统一解决
+- 主题（light/dark）由插件主配置决定，游戏侧不感知
+
+---
+
 ## 1. 最小可用（零改动）
 
 ```jsonc

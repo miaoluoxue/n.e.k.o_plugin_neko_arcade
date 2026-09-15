@@ -10,6 +10,7 @@
     page = resolve_topic(doc, topic)          # 三层寻址: 游戏 → 分组 → 指令
     pages = await renderer.render(doc, page)  # [PNG bytes]
 """
+from .bridge import RenderBridge  # noqa: F401
 from .contract import (  # noqa: F401
     HELP_INTENT_WORDS,
     Command,
@@ -32,6 +33,7 @@ __all__ = [
     "HelpDoc",
     "HelpRenderer",
     "Page",
+    "RenderBridge",
     "auto_groups",
     "icon_glyph",
     "normalize_help",

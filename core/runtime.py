@@ -9,6 +9,7 @@ from typing import Any, Dict, Optional
 from ..adapters import ImageRenderer, LLMProvider, PhotoBridge, PushSender, TTSClient
 from .brain import GameBrain
 from .config_manager import ConfigManager, resolve_data_dir
+from .help import HelpRenderer, RenderBridge
 from .registry import GameRegistry
 
 log = logging.getLogger("neko_arcade.runtime")
@@ -30,8 +31,27 @@ class ArcadeRuntime:
         self.tts = TTSClient(plugin)
         # 发图桥接: 插件主体通用发图能力, 注入所有游戏(游戏 self.send_photo 走桥接)
         self.photo = PhotoBridge(plugin, push=self.push, img=self.img)
+        # 渲染桥接: 插件主体统一的图片渲染能力(帮助图/面板图/结果卡)。
+        # 「游戏适配插件」——游戏只给数据, HTML/CSS/主题/浏览器全在插件侧。
+        self.render_bridge = RenderBridge(
+            renderer=HelpRenderer(self.img, self._code_dir(), self._help_cache_dir()),
+            config_manager=self.cfg_mgr, push_sender=self.push)
         self.brain: Optional[GameBrain] = None
         self._tick_task: Optional[asyncio.Task] = None
+
+    def _code_dir(self) -> str:
+        """插件代码目录(只读, 放静态素材与默认配置)。"""
+        return str(getattr(self.plugin, "plugin_dir", "") or "")
+
+    def _help_cache_dir(self) -> str:
+        """渲染缓存目录(插件私有缓存区; 老宿主不可用时退化为不缓存)。"""
+        cache_path = getattr(self.plugin, "cache_path", None)
+        if callable(cache_path):
+            try:
+                return str(cache_path("help"))
+            except Exception as exc:
+                log.debug("cache_path 不可用, 帮助图不缓存: %s", exc)
+        return ""
 
     async def start(self) -> int:
         cfg = await self.plugin.config.dump()
@@ -61,6 +81,7 @@ class ArcadeRuntime:
         # 将插件服务注入注册表，游戏注册后可调用
         self.registry._push = self.push
         self.registry._img = self.img
+        self.registry._render = self.render_bridge
         self.registry._tts = self.tts
         self.registry._llm = self.llm
         self.registry._photo = self.photo

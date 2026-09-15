@@ -149,6 +149,42 @@ def test_escaping_in_help_text() -> None:
     assert "&lt;script&gt;" in html and "a &amp; b" in html
 
 
+# ── 渲染桥接底座: 自定义页面(游戏只给数据) ───────────────
+SPEC = {
+    "title": "今日战绩", "subtitle": "第 3 天", "role": "喵喵陪你玩",
+    "blocks": [{"type": "table", "title": "冷却", "rows": [["打劫", "CD 60s"]]}],
+    "commands": [["签到", "每日签到"], {"cmd": "修炼", "desc": "获得修为"}],
+    "rows": [["得分", "100"]],
+    "chips": ["连击", "满勤"],
+    "tip": "加油喵",
+}
+
+
+def test_custom_page_assembles_every_data_shape() -> None:
+    """桥接传入的数据(块/表格/指令/胶囊/提示)都要落到官方组件上。"""
+    html = _renderer()._spec_page(SPEC)
+    for probe in ("今日战绩", "第 3 天", "CD 60s", "签到", "每日签到", "修炼",
+                  "获得修为", "得分", "连击", "加油喵"):
+        assert probe in html, probe
+    assert 'class="table"' in html and 'class="chip"' in html and 'class="tip"' in html
+
+
+def test_render_custom_goes_through_renderer_and_cache() -> None:
+    tmp = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_help_cache_tmp2")
+    os.makedirs(tmp, exist_ok=True)
+    try:
+        img = FakeImg()
+        r = _renderer(tmp=tmp, img=img)
+        pages = asyncio.run(r.render_custom(SPEC, theme="light"))
+        assert pages == [b"\x89PNG-fake"]
+        assert len(img.calls) == 1
+        assert "今日战绩" in img.calls[0][0]
+        asyncio.run(r.render_custom(SPEC, theme="light"))
+        assert len(img.calls) == 1              # 命中缓存
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 # ── 多页 / 缓存 / 降级 ──────────────────────────────────
 def test_long_group_paginates() -> None:
     many = [{"id": "big", "name": "大分组", "icon": "star",

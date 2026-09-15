@@ -139,6 +139,16 @@ class HelpRenderer:
             out.append(png)
         return out
 
+    async def render_custom(self, spec: Dict[str, Any], theme: str = "",
+                            use_cache: bool = True) -> List[bytes]:
+        """渲染一个"自定义页面"(游戏只给数据: 标题/副标题/版式块/指令表)。
+
+        这是渲染桥接的底座: 游戏永远不写 HTML/CSS, 只描述要展示什么。
+        """
+        theme_name = self._pick_theme(HelpDoc(theme=str(spec.get("theme") or "")), theme)
+        png = await self._render_one(self._spec_page(spec), theme_name, use_cache)
+        return [png] if png else []
+
     def build_html(self, doc: HelpDoc, page: Page, theme: str = "light",
                    page_index: int = 0) -> str:
         """公开给测试/预览用: 直接拿到某一页的 HTML。"""
@@ -403,3 +413,32 @@ class HelpRenderer:
                 return self._command_page(doc, page)
             return self._catalog(doc, page)
         return self._flat(doc, page)
+
+    def _spec_page(self, spec: Dict[str, Any]) -> str:
+        """自定义页面骨架: 标题 + 版式块 + 指令表(全部由游戏给的数据驱动)。"""
+        blocks = "".join(
+            f'<div class="card"><div class="card-bd">{self._block(b)}</div></div>'
+            for b in (spec.get("blocks") or []) if isinstance(b, dict))
+        rows = [r for r in (spec.get("rows") or []) if isinstance(r, (list, tuple))
+                and len(r) >= 2]
+        parsed = [c for c in (_as_command(x) for x in (spec.get("commands") or []))
+                  if c is not None]
+        cmds = (f'<div class="card"><div class="card-bd">'
+                f'{self._table([[c.cmd, c.desc] for c in parsed])}</div></div>'
+                if parsed else "")
+        table = (f'<div class="card"><div class="card-bd">{self._table(rows)}</div></div>'
+                 if rows else "")
+        chips = spec.get("chips")
+        chip_card = (f'<div class="card"><div class="card-bd">'
+                     f'{self._chips([str(c) for c in chips], limit=len(chips))}</div></div>'
+                     if chips else "")
+        tip = self._tip(str(spec["tip"])) if spec.get("tip") else ""
+        return (self._head(str(spec.get("title") or ""), str(spec.get("subtitle") or ""),
+                           str(spec.get("role") or ""))
+                + blocks + table + cmds + chip_card + tip + self._foot())
+
+
+def _as_command(raw: Any) -> Optional[Any]:
+    """把桥接传入的指令数据(二元组或对象)转成内部 Command。"""
+    from .contract import _parse_command  # 局部导入避免循环依赖
+    return _parse_command(raw)

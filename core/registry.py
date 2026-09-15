@@ -26,6 +26,7 @@ class GameRegistry:
         self._tts: Any = None
         self._llm: Any = None
         self._photo: Any = None
+        self._render: Any = None          # 渲染桥接(插件主体提供, 游戏只给数据)
 
     # ── 注册与发现 ────────────────────────────
 
@@ -42,11 +43,13 @@ class GameRegistry:
             kws.append(game.name)
         game._keywords = kws
         game._emotion_templates = gc.emotion_templates
+        game._help_data = gc.help or {}       # 渲染桥接读它出帮助图(游戏不碰渲染)
         # 恢复启停状态(从 data/config/main/games.json)
         states = self.cfg_mgr.load_game_states()
         if isinstance(states, dict) and game.id in states:
             game.enabled = bool(states.get(game.id, True))
-        game.bind_services(self._push, self._img, self._tts, self._llm, self._photo)
+        game.bind_services(self._push, self._img, self._tts, self._llm, self._photo,
+                           render=self._render)
         self._games[game.id] = game
         log.info("已注册游戏: %s (%s)%s", game.name, game.id,
                  "" if game.enabled else " [停用]")
