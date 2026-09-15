@@ -6,6 +6,9 @@
 
 from __future__ import annotations
 
+import os
+import sys
+
 from plugin.plugins.neko_arcade.adapters.image_renderer import ImageRenderer
 
 
@@ -45,3 +48,23 @@ def test_browser_roots_include_system_playwright_cache() -> None:
     roots = ImageRenderer()._browser_roots()
     assert any("ms-playwright" in r for r in roots), roots
     assert any("playwright_browsers" in r for r in roots), roots
+
+
+def test_system_browser_candidates_cover_platform_browsers() -> None:
+    """内置 Chromium 全不可用时, 还要能退到系统已装 Chrome/Edge(与宿主回退一致)。"""
+    cands = ImageRenderer()._system_browser_candidates()
+    assert cands, "系统浏览器候选列表不能为空"
+    joined = " ".join(cands).replace("\\", "/").lower()
+    if sys.platform == "win32":
+        assert "chrome.exe" in joined
+        assert "msedge.exe" in joined
+    elif sys.platform == "darwin":
+        assert "google chrome.app" in joined
+    else:
+        assert "chromium" in joined
+
+
+def test_find_chromium_only_returns_real_files() -> None:
+    """定位到的浏览器必须真实存在——不能是被剥空的目录(0.9.0.2 自带包就是这个坑)。"""
+    exe = ImageRenderer()._find_chromium()
+    assert exe is None or os.path.isfile(exe), exe

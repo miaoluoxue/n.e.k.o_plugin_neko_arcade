@@ -494,9 +494,45 @@ class ImageRenderer:
                 seen.append(r)
         return seen
 
+    @staticmethod
+    def _system_browser_candidates() -> List[str]:
+        """系统上已装的 Chrome / Edge / Chromium 可执行文件候选。
+
+        与宿主 brain/browser_use_adapter._find_chrome_path 的第二级回退对齐:
+        内置 Playwright Chromium 不可用时, 退到系统已装浏览器。
+        """
+        env = os.environ
+        if sys.platform == "win32":
+            bases = [env.get("ProgramFiles", r"C:\Program Files"),
+                     env.get("ProgramFiles(x86)", r"C:\Program Files (x86)"),
+                     env.get("LOCALAPPDATA", "")]
+            rels = [
+                r"Google\Chrome\Application\chrome.exe",
+                r"Google\Chrome Beta\Application\chrome.exe",
+                r"Microsoft\Edge\Application\msedge.exe",
+                r"Chromium\Application\chrome.exe",
+            ]
+            return [os.path.join(b, r) for b in bases if b for r in rels]
+        if sys.platform == "darwin":
+            apps = ["/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+                    "/Applications/Chromium.app/Contents/MacOS/Chromium",
+                    "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge"]
+            return apps
+        return ["/usr/bin/google-chrome", "/usr/bin/google-chrome-stable",
+                "/usr/bin/chromium", "/usr/bin/chromium-browser",
+                "/usr/bin/microsoft-edge", "/snap/bin/chromium"]
+
     @classmethod
     def _find_chromium(cls) -> Optional[str]:
-        """定位可用的 Chromium/headless-shell 可执行文件(自带缺失时回退系统缓存)。"""
+        """定位可用的 Chromium 可执行文件。
+
+        优先级(与宿主一致 + 额外兜底):
+        1. Playwright 浏览器目录(PLAYWRIGHT_BROWSERS_PATH / 应用自带 / 系统 ms-playwright 缓存)
+        2. 系统已装的 Chrome / Edge / Chromium
+        应用自带的 playwright_browsers 可能只有资源文件、缺 chrome.exe
+        (实测 0.9.0.2 安装包如此, 且宿主启动检查只看目录非空 → 不会自动修复),
+        因此必须逐个验证文件真实存在, 并保留系统回退。
+        """
         import glob
         patterns = (
             ("chromium-*", "chrome-win64", "chrome.exe"),
@@ -510,10 +546,14 @@ class ImageRenderer:
             if not os.path.isdir(browsers_dir):
                 continue
             for pat in patterns:
-                matches = glob.glob(os.path.join(browsers_dir, *pat))
+                matches = [p for p in glob.glob(os.path.join(browsers_dir, *pat))
+                           if os.path.isfile(p)]
                 if matches:
                     matches.sort()
                     return matches[-1]  # 版本号最大的
+        for candidate in cls._system_browser_candidates():
+            if os.path.isfile(candidate):
+                return candidate
         return None
 
     def _append_footer(self, png_bytes: bytes, game_name: str) -> Optional[bytes]:
