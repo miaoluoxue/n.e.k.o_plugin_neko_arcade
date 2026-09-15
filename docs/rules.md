@@ -67,8 +67,13 @@ async def handle_action(self, user_id: str, cmd: str, args: dict | None = None) 
 - ❌ 不得直接读写主项目配置
 - ❌ 不得直接调用 `push_message`（应使用 `self.push_text()` 等服务接口）
 - ❌ 不得在 `games/__init__.py` 中手动导入游戏（自动发现）
+- ❌ **不得自绘图片**：`import PIL` / `ImageDraw` / 起浏览器 / 自带 HTML 模板 /
+  调用 `render_html` 一律禁止——渲染是插件的事，游戏只给数据
+  （CI 守卫：`tests/test_render_bridge.py::test_games_do_not_render_images_themselves`）
 - ✅ 用 `self._config`（大脑注入的配置）、`get_user_data`/`save_user_data`（存档）
-- ✅ 可用 `self.push_text()` / `self.render_card()` 等服务接口
+- ✅ 可用 `self.push_text()` / `self.render_card()` / `self.render_page()` 等服务接口
+- ✅ 出图需求写成**版式块数据**交给渲染桥接（`blocks`: chips/table/cards/stats/
+  steps/flow/slots/bag/text），样式与主题由插件统一决定
 
 ### 2.4.5 ⚠️ 命令命名规范：每个游戏的指令独立，禁止裸泛化词（重要）
 
@@ -144,15 +149,17 @@ return {
 | 图库分类 | `self.photo_categories()` → 分类名列表 |
 | 上传图片 | `await self.upload_photo(user_id, name, data_b64=..., category=...)` → 存图库 |
 | 渲染卡片 | `await self.render_card(...)` → 生成 bytes 放进 images |
-| 渲染帮助图 | `await self.render_help_img(...)` → 多页 PNG bytes 列表 |
-| 渲染 HTML 图 | `await self.render_html(html, css=...)` → 用 Chromium 渲染自定义 HTML 为 PNG |
-| 渲染猫娘头像 | `await self.render_avatar(mood, size)` → 表情头像 bytes |
+| 渲染帮助图 | `await self.render_help(topic="纳戒")` → 本游戏帮助图(多页 PNG bytes) |
+| 渲染自定义页 | `await self.render_page(title, blocks=..., commands=..., tip=...)` → 单页 PNG |
+| 渲染并推送 | `await self.send_page(title, blocks=...)` → 渲染+推送一条龙 |
 | 构造图片数据 | `self.build_image(text, bytes, mime)` → 生成 images 元素 |
 | 语音标记 | `self.tts_note(text)` → 标记短句, 宿主自动 TTS 播放 |
 | 调用 LLM | `await self.call_llm(prompt)` → 主插件统一限流/统计 |
 
 **禁止：**
 
+- ❌ **自绘图片**（PIL / 浏览器 / HTML 模板 / `render_html`）——用渲染桥接给数据；
+  `render_html` 仅保留兼容历史游戏, 调用会打废弃告警
 - ❌ `handle_action` 内调用 `push_text`/`push_text_image`/`push_text_image_url`/`push_help`
   （这些方法仅保留给 on_tick 后台提醒/历史兼容，新游戏 handle_action 不得使用）
 - ❌ 直接调用 `plugin.push_message` / 读宿主 ctx 私有属性（如 `ctx.user_id`）
@@ -262,12 +269,15 @@ async def get_status(self, uid): ... # 面板状态
 | 能力 | 用法 |
 |------|------|
 | 渲染卡片 | `await self.render_card("游戏名", "标题", lines, mood)` → 生成 bytes 放进 images |
-| 渲染帮助图 | `await self.render_help_img("游戏名", commands)` |
+| 渲染帮助图 | `await self.render_help(topic="纳戒")` → 本游戏帮助图多页 bytes（主题可选） |
+| 渲染自定义页 | `await self.render_page(title, blocks=..., commands=..., tip=...)` → 单页 PNG |
+| 渲染并推送 | `await self.send_page(title, blocks=...)` → 渲染 + 推送一条龙 |
 | 渲染头像 | `await self.render_avatar("excitement", 128)` |
 | 取图(交brain推) | `await self.pick_photo_for_delivery("可爱")` → 返回 images 数据 |
 | 构造图片数据 | `self.build_image("配文", img_bytes, "image/png")` |
 | 语音（TTS） | `self.tts_note("文字")` 标记短句, 宿主自动播放 chat 文字 |
 | 调用 LLM | `await self.call_llm("prompt")` |
+| ~~自绘 HTML~~ | ~~`render_html(html, css=...)`~~（已废弃：游戏不参与渲染，改 `render_page`） |
 | ~~推送文字~~ | ~~`push_text`~~（已废弃，仅 on_tick 后台提醒/历史兼容；handle_action 用 message 返回） |
 | ~~推送图片~~ | ~~`push_text_image`~~（已废弃，handle_action 用 images 返回） |
 

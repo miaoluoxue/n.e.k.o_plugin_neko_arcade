@@ -20,3 +20,27 @@ games/
 
 > ✅ **零登记**：插件自动发现游戏包，无需改主插件或文档，面板自动出现。
 > ⚠️ 命令必须**游戏专属前缀**（防跨游戏串台），详见完整版文档。
+
+## 帮助与图片：只写数据，不写样式
+
+```jsonc
+// data/config/my_game/help.json —— 结构自己定
+{ "commands": [["开始", "开始一局"]],            // 只写这个 = 平铺单页
+  "groups": [                                   // 写这个 = 功能分组(可两级)
+    { "id": "a", "name": "开始游戏", "icon": "star", "aliases": ["开始","开局"],
+      "commands": [{"cmd": "我的面板", "desc": "看状态", "kind": "view",
+                    "blocks": [{"type": "bag", "title": "背包", "cols": 8, "cells": 16}]}] }
+  ]}
+```
+
+```python
+# 游戏里要一张图时——只给数据, 渲染交给插件
+png = await self.render_page("今日战绩", subtitle="第3天",
+        blocks=[{"type": "stats", "title": "属性",
+                 "items": [{"label": "颜值", "value": 8, "max": 10}]}])
+await self.send_page("图鉴", blocks=[{"type": "bag", "cols": 8, "cells": 16}])
+```
+
+> ⛔ **游戏不参与渲染**：不要 `import PIL`、不要起浏览器、不要写 HTML/CSS。
+> 版式块：`chips` / `table` / `cards` / `stats` / `steps`·`flow` / `slots` / `bag` / `text`。
+> 完整契约见 `docs/help-config.md`。

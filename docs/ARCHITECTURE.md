@@ -219,32 +219,98 @@ data/config/{game_id}/keywords.json
 
 ---
 
-## 五、帮助系统
+## 五、帮助系统（统一渲染 + 三层寻址）
 
 ### 5.1 数据存储
 
 ```
-data/config/{game_id}/help.json
+data/config/{game_id}/help.json     ← 游戏只提供**数据**, 视觉/排版全在插件端
 ```
 
-### 5.2 调用链路
+结构由**游戏自己声明**（插件不擅自改）：写 `groups` 就是分组帮助，只写 `commands`
+就是平铺单页，写 `"auto_groups": true` 才是"请插件代劳分组"。
+
+```jsonc
+{ "text": "...", "commands": [["老格式","仍然可用"]],     // 老字段保留
+  "title": "诸天修仙", "subtitle": "...", "theme": "inherit",
+  "groups": [                                             // 一级分组
+    { "id": "bag", "name": "装备与道具", "icon": "bag", "aliases": ["纳戒","背包"],
+      "blocks": [ {"type":"bag","title":"纳戒背包","cols":8,"cells":16,"filled":[0]} ],
+      "commands": [
+        ["我的纳戒", "查看背包"],
+        {"cmd": "装备 X", "desc": "穿戴装备", "params": ["装备名"],
+         "aliases": ["穿戴"], "related": ["卸下 X"],
+         "blocks": [ {"type":"bag","title":"纳戒背包","cols":8} ]}   // 指令专属图
+      ]},
+    { "id": "gear", "name": "装备道具", "aliases": ["装备"],
+      "groups": [ /* 二级子分组: 同样挂指令/版式块 */ ] }
+  ]}
+```
+
+版式块（`blocks`，可挂在分组或单条指令上）：
+`chips` / `table`(可配 `headers`) / `cards`(卡片组) / `stats`(进度条) /
+`steps`·`flow`(阶梯/流程) / `slots`(槽位) / `bag`(格子) / `text`。
+
+### 5.2 三层寻址（用户不必知道层级）
 
 ```
-面板按钮「📖 帮助」
-    → callEntry("game_help", {game: "fishing"})
-    → brain.show_help("fishing")
-    → registry.get_help("fishing") 读取 data/config/fishing/help.json
-    → image_renderer.render_help(...) 用 PIL 绘制帮助图（分页, 单页 ≤~600px）
+游戏 → 分组(可两级) → 指令
+```
+
+| 用户说 | 命中 | 渲染 |
+|---|---|---|
+| 修仙帮助 / 怎么玩 | 游戏 | 目录页（功能分组卡 + 代表指令，条数多时按估高分页） |
+| 修仙帮助 纳戒 / 储物 | 分组别名 | 分组页（版式块 + 指令表） |
+| 修仙帮助 装备 X | 指令 | 指令页；带 `blocks` 的指令出**自己的专属图** |
+| 修仙帮助 怎么装备 | 包含匹配 → 装备 X | 指令页 |
+| 都没命中 | — | 目录页 + "你是想看 XX 吗？" |
+
+帮助意图由**插件统一拦截**（`帮助/攻略/玩法/怎么玩/说明/指令表/help`），游戏无需实现。
+
+### 5.3 调用链路
+
+```
+面板「📖 帮助」 / 聊天「修仙帮助 战斗」
+    → brain.show_help(game_id, topic)
+    → core.help.contract: normalize_help(help.json) → resolve_topic(doc, topic)
+    → core.help.renderer: 版式块 → HTML（官方 UI Kit token/类名 + 插件素材内联）
+    → ImageRenderer.render_html（**宿主内置浏览器**优先）→ PNG（按 HTML 哈希缓存）
     → push_sender.help_doc(...) 原生图片通道推送(#2835), 旧宿主回退 markdown
+降级链: 统一渲染 → 旧 HTML 渲染 → PIL → 纯文本（任何一环失败都不给用户空白）
 ```
 
-### 5.3 入口
+### 5.4 入口
 
 | 方式 | 说明 |
 |------|------|
-| 面板「📖 帮助」按钮 | 直调 game_help 入口 |
-| 聊天说「帮助」 | 大脑 handle_action 检测 cmd 含"帮助"→ show_help |
-| AI 对话 | LLM 可调用 `play_game(input="帮助")`，插件自动路由 |
+| 面板「📖 帮助」按钮 | 直调 `game_help` 入口（可带 `topic`） |
+| 聊天说「帮助」/「XX帮助 功能名」 | brain 拦截帮助意图 → `show_help(game_id, topic)` |
+| AI 对话 | LLM 调 `play_game(input="帮助")`，插件自动路由 |
+
+### 5.5 渲染桥接（游戏只给数据，不参与渲染）
+
+游戏**不得自带渲染**（不准 `import PIL`、不准起浏览器、不准写 HTML/CSS 模板），
+需要图就调桥接（由 `bind_services(render=...)` 注入）：
+
+| 接口 | 入参 | 出参 |
+|---|---|---|
+| `self.render_help(topic="")` | 主题词 | `List[bytes]` 帮助图 |
+| `self.render_page(title, blocks=..., rows=..., commands=..., tip=...)` | 纯数据 | `bytes \| None` |
+| `self.send_page(...)` | 纯数据 | `{ok, pages, summary}`（渲染+推送） |
+| `self.render_card(...)` | 标题/条目 | `bytes \| None`（结果卡片） |
+
+渲染不可用时一律返回空，游戏降级为文本。守卫测试
+`test_games_do_not_render_images_themselves` 会在 CI 拦下自绘代码。
+
+### 5.6 猫娘图库（喵图相册）
+
+| 项 | 位置 / 策略 |
+|---|---|
+| 图库根目录 | `games/neko_photo/data/<分类>/`（用户可直接丢图/建分类） |
+| git | **不跟踪该目录**（.gitignore 排除 → 打包默认空图库） |
+| 只读安装位置 | 退化到宿主私有存储，保证上传/发图仍可用 |
+| 空库兜底 | 插件自带 `assets/icon.png`，图库为空也能出图 |
+| 发图频率 | 由 LLM 决定；插件闸门：`send_min_interval`/`send_max_per_hour`/`max_photos_per_day`；`auto_send_enabled` 定时刷图默认关 |
 
 ---
 
@@ -430,15 +496,19 @@ brain.handle_action (core/brain.py)
     ├── 只做：handle_action() 返回 facts + outcome + message + images?
     ├── 只做：get_user_data() / save_user_data() 存档
     ├── 只读：self._config（大脑注入的配置）
+    ├── 可用：self.render_help() / render_page() / send_page() 走**渲染桥接**出图
+    │          （只给数据: 版式块/表格/指令; HTML/CSS/主题/浏览器全在插件侧）
     ├── 可用：self.render_card() / pick_photo_for_delivery() 生成图片数据(交 brain 推)
     ├── 可用：self.call_llm() / tts_note() 等交互接口
+    ├── 禁止：**自绘图片**(import PIL / 起浏览器 / 自带 HTML 模板 / 调 render_html)
     └── 禁止：直接调用 push_text/push_text_image/push_message、自行管理情感话术
 
-大脑方（core/brain.py + adapters/）
+大脑方（core/brain.py + core/help/ + adapters/）
     ├── 负责：LLM 调用、情感渲染、拟人化
+    ├── 负责：统一帮助系统（契约/寻址/主题/渲染/缓存）与渲染桥接
     ├── 负责：图片渲染、帮助文档推送
     ├── 负责：会话管理、记忆、主动性
-    ├── 负责：输入路由（parse_input 关键词匹配）
+    ├── 负责：输入路由（parse_input 关键词匹配 + 帮助意图拦截）
     ├── 负责：未知指令检测 → 邀请流程
     └── 负责：通过 push_message 统一输出到主项目
 
@@ -446,6 +516,7 @@ brain.handle_action (core/brain.py)
     ├── 工具路由：LLM 通过 ToolRegistry 调用 play_game(@llm_tool) / 宿主 task_executor
     │   通过 entry_play_game(@plugin_entry, 非 agent_hidden) 路由插件任务
     ├── 注入：push_message、store、config、data_path
+    ├── 提供：内置浏览器宿主环境（出图优先走它，见 adapters/image_renderer）
     ├── 自动：TTS 播放（文字走 chat 通道即播报）
     └── 自动：ASR 语音识别（语音进聊天已是文字）
     （注意：宿主不提供「插件直调 LLM」的 __call_llm API——插件情感渲染靠
@@ -459,7 +530,12 @@ brain.handle_action (core/brain.py)
 | 项目 | 规则 |
 |------|------|
 | 配置数据 | `data/config/{game_id}/config.json`，大脑统一管理 |
-| 帮助数据 | `data/config/{game_id}/help.json`，大脑渲染推送 |
+| 帮助数据 | `data/config/{game_id}/help.json`，**结构由游戏声明**（groups / 平铺），插件渲染 |
+| 帮助寻址 | 游戏 → 分组(可两级) → 指令，每层都可用别名直达；未命中回目录页 |
+| 帮助出图 | 官方 UI Kit token/类名 + 插件素材内联 + 宿主内置浏览器 + HTML 哈希缓存 |
+| 渲染桥接 | 游戏只给数据（`render_help` / `render_page` / `send_page`）；**禁止自绘**（CI 守卫） |
+| 图库 | `games/neko_photo/data/`（**不进 git**，打包默认空）；空库有自带图兜底 |
+| 发图频率 | LLM 决定，插件封顶（最短间隔 / 每小时 / 每日）；定时刷图默认关 |
 | 情感模板 | `data/config/{game_id}/emotion.json`，游戏提供，大脑使用 |
 | 关键词 | `data/config/{game_id}/keywords.json`，游戏声明，`parse_input` 匹配 |
 | 情感渲染 | 三级渲染，LLM 优先，游戏模板次之，通用模板兜底 |
@@ -469,4 +545,4 @@ brain.handle_action (core/brain.py)
 | 主动性 | urge 机制 + 每日限次邀请 |
 | 输出 | 文字/图片/语音 全部走大脑 push_message |
 | TTS | 主项目自动播放，插件只保证短句 |
-| 游戏 | 纯逻辑，提供 facts + outcome，可利用服务接口交互 |
+| 游戏 | 纯逻辑，提供 facts + outcome，可利用桥接服务交互 |

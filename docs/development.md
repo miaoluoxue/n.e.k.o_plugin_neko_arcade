@@ -88,11 +88,14 @@ await self.push_text("文字")                          # 推送文字到聊天�
 await self.push_text_image("文字", image_bytes)        # 推送文字+图片
 await self.push_help("标题", image_bytes, "文字")       # 推送帮助文档
 
-# 渲染
-await self.render_card("游戏名", "标题", lines, mood)  # 渲染结果卡片
-await self.render_help_img("游戏名", commands)          # 渲染帮助图
-await self.render_html("html", css=...)                # 渲染自定义 HTML 为 PNG
-await self.render_avatar("excitement", 128)             # 渲染猫娘头像
+# 渲染桥接（推荐；游戏只给数据, 详见 help-config.md）
+await self.render_help(topic="纳戒")                    # 本游戏帮助图(可带功能主题)
+await self.render_page("今日战绩", subtitle="第3天",     # 自定义页面(官方组件+版式块)
+                       blocks=[{"type": "stats", "title": "属性",
+                                "items": [{"label": "颜值", "value": 8, "max": 10}]}],
+                       commands=[["签到", "每日签到"]], tip="加油喵")
+await self.send_page("面板", blocks=[...])              # 渲染 + 推送一条龙
+await self.render_card("游戏名", "标题", lines, mood)   # 结果卡片
 
 # 发图桥接（PhotoBridge，主插件统一实现）
 await self.pick_photo_for_delivery(category=...)       # 取图(不推), 返回 images
@@ -106,6 +109,11 @@ self.build_image("配文", img_bytes, "image/png")        # 构造 images 元素
 self.tts_note("文字")                                   # 标记 TTS 短句(宿主自动播)
 await self.call_llm("prompt")                           # 调用 LLM(主插件限流统计)
 ```
+
+> ⚠️ **不要自绘图片**：`import PIL` / 起浏览器 / 自带 HTML 模板都不允许
+> （CI 有守卫测试）。需要一张图就把内容写成**版式块数据**交给渲染桥接。
+> 版式块：`chips` / `table`(可配 `headers`) / `cards` / `stats` / `steps`·`flow` /
+> `slots` / `bag` / `text`。`render_html` 已废弃（仅兼容历史游戏）。
 
 ### 情绪自动映射
 
@@ -151,15 +159,29 @@ games/
 
 ### help.json
 
+**结构由游戏自己决定**（插件只渲染）：写 `groups` 就是分组帮助，只写 `commands`
+就是平铺单页；`"auto_groups": true` 表示"请插件代劳分组"。完整契约见
+[help-config.md](help-config.md)。
+
 ```json
 {
-  "commands": [
-    ["钓鱼", "抛竿钓鱼（可加数量：钓鱼 3）"],
-    ["鱼缸", "查看收藏的鱼"]
-  ],
-  "text": "🎣 钓鱼：每日抛竿，收藏鱼获！"
+  "commands": [["钓鱼", "抛竿钓鱼（可加数量：钓鱼 3）"]],
+  "text": "🎣 钓鱼：每日抛竿，收藏鱼获！",
+
+  "title": "钓鱼", "subtitle": "每日抛竿 · 鱼市换鱼蛋",
+  "groups": [
+    { "id": "fish", "name": "钓鱼玩法", "icon": "star", "aliases": ["钓鱼", "抛竿"],
+      "blocks": [{"type": "table", "title": "冷却", "rows": [["钓鱼", "无 CD"]]}],
+      "commands": [["钓鱼", "抛竿钓鱼"]] },
+    { "id": "tank", "name": "鱼缸收藏", "icon": "bag", "aliases": ["鱼缸"],
+      "commands": [{"cmd": "鱼缸", "desc": "查看收藏的鱼", "kind": "view",
+                    "blocks": [{"type": "bag", "title": "鱼缸", "cols": 8, "cells": 16}]}] }
+  ]
 }
 ```
+
+指令可以写成 `["指令","说明"]`，也可以写成对象（带 `aliases` / `kind` / `params` /
+`related` / `blocks`）；带 `blocks` 的指令命中时会出**自己的专属图**。
 
 ### emotion.json
 
@@ -195,11 +217,22 @@ games/
 
 游戏在 `data/config/{id}/help.json` 中配置指令列表，大脑渲染为帮助图。
 
+- **结构自己定**：`groups`（可两级）分组帮助 / 只写 `commands` 平铺单页 /
+  `"auto_groups": true` 请插件代劳分组
+- **每层都能直达**：用户说「修仙帮助」看目录、「修仙帮助 纳戒」看分组、
+  「修仙帮助 装备 X」看单条指令（带 `blocks` 的指令还会出专属图）
+- **别名**：`aliases` 写用户可能怎么称呼（纳戒/背包/储物），插件做模糊匹配，
+  未命中回目录页并给近似建议
+- **不要写样式**：配色/排版/图标/主题全在插件端（官方 UI Kit 视觉）
+
 > ⚠️ **命令命名**：`help.json` 的命令和 `keywords.json` 必须用**游戏专属前缀**
 > （猫猫状态 / 修仙状态 / 鱼店 / 海龟汤状态…），禁止裸泛化词
 > （我的状态 / 背包 / 商店 / 任务 / 成就）。跨游戏共用裸词会串台
 > （详见 [rules.md §2.4.5](rules.md) 与 [pitfalls.md §7](pitfalls.md)），
 > 改完跑 `tests/test_command_naming.py` 全量扫描冲突。
+>
+> ⚠️ **分组别名别和子分组抢词**：父分组别名若与子分组同名（父别名「纳戒」、
+> 子组也叫「纳戒背包」），用户永远只能命中父页。测试里有防重校验。
 
 ## 游戏开关
 
