@@ -70,7 +70,11 @@ class Command:
 
 @dataclass
 class Group:
-    """一个功能分组(如「装备与道具」)。"""
+    """一个功能分组(如「装备与道具」)。
+
+    结构刻意保持**一层**: 分组直接挂指令 + (可选)版式块, 不再嵌套子分组——
+    分组多了靠目录页分页解决, 不靠多级目录。
+    """
 
     id: str
     name: str
@@ -78,7 +82,6 @@ class Group:
     aliases: List[str] = field(default_factory=list)
     blocks: List[Dict[str, Any]] = field(default_factory=list)
     commands: List[Command] = field(default_factory=list)
-    groups: List["Group"] = field(default_factory=list)   # 二级目录(可选)
 
     def names(self) -> List[str]:
         return [self.name, *self.aliases]
@@ -105,8 +108,7 @@ class HelpDoc:
     @property
     def command_count(self) -> int:
         if self.groups:
-            return sum(len(g.commands) for g in self.groups
-                       if not g.groups) or sum(len(g.commands) for g in self.groups)
+            return sum(len(g.commands) for g in self.groups)
         return len(self.flat)
 
     def all_commands(self) -> List[Command]:
@@ -161,8 +163,6 @@ def _parse_group(raw: Dict[str, Any], index: int) -> Optional[Group]:
         name = gid
     commands = [c for c in (_parse_command(r, gid) for r in (raw.get("commands") or []))
                 if c is not None]
-    subs = [g for g in (_parse_group(r, i) for i, r in enumerate(raw.get("groups") or []))
-            if g is not None]
     return Group(
         id=gid,
         name=name,
@@ -170,7 +170,6 @@ def _parse_group(raw: Dict[str, Any], index: int) -> Optional[Group]:
         aliases=[str(a) for a in (raw.get("aliases") or []) if str(a).strip()],
         blocks=[b for b in (raw.get("blocks") or []) if isinstance(b, dict)],
         commands=commands,
-        groups=subs,
     )
 
 
@@ -262,10 +261,7 @@ def resolve_topic(doc: HelpDoc, topic: str = "") -> Page:
         return Page(kind="catalog", title=doc.title or doc.game_name,
                     subtitle=doc.subtitle)
 
-    groups: List[Group] = []
-    for g in doc.groups:
-        groups.append(g)
-        groups.extend(g.groups or [])
+    groups: List[Group] = list(doc.groups)
 
     # ① 精确匹配(指令 → 别名 → 分组 → 分组别名), 精确永远优先于包含
     for g in groups:

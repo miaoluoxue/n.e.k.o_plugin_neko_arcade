@@ -122,6 +122,27 @@ def test_auto_groups_opt_in_only() -> None:
     assert opted.groups
 
 
+def test_group_nesting_is_not_supported() -> None:
+    """分组只有一层: JSON 里再嵌 groups 一律忽略, 不做多级目录(避免过度嵌套)。"""
+    raw = {
+        "groups": [{
+            "id": "outer", "name": "外层", "icon": "star",
+            "commands": [["外层指令", "说明"]],
+            "groups": [{"id": "inner", "name": "内层",
+                        "commands": [["内层指令", "说明"]]}],
+        }]
+    }
+    doc = normalize_help(raw, "g", "G")
+    assert len(doc.groups) == 1
+    outer = doc.groups[0]
+    assert not hasattr(outer, "groups")            # 模型里没有嵌套分组的槽位
+    assert [c.cmd for c in outer.commands] == ["外层指令"]
+    assert doc.command_count == 1
+    # 内层名字不参与寻址(它压根没被解析), 只回目录页
+    page = resolve_topic(doc, "内层")
+    assert page.kind == "catalog" and page.miss
+
+
 # ── 帮助意图识别 ────────────────────────────────────────
 def test_split_help_intent() -> None:
     assert split_help_intent("帮助") == ""
