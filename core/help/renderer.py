@@ -368,8 +368,10 @@ class HelpRenderer:
             subtitle = doc.subtitle or (doc.text and doc.text[:60]) or ""
             if len(chunks) > 1:
                 subtitle = f"{subtitle} （{pi + 1}/{len(chunks)}）".strip()
-            tip_body = ('想看某类指令的详细用法 → 发「<b>帮助 功能名</b>」，'
-                        '例如「修仙帮助 战斗」；直接发指令名也可以。')
+            gname = doc.title or doc.game_name
+            sample = groups[0].name if groups else "功能名"
+            tip_body = (f'想看某类指令的详细用法 → 发「<b>{_esc(gname)}帮助 功能名</b>」，'
+                        f'例如「{_esc(gname)}帮助 {_esc(sample)}」；直接发指令名也可以。')
             if page.miss and pi == 0:
                 guess = "、".join(page.suggestions) if page.suggestions else "上面的功能分组"
                 tip_body = f'没找到「{_esc(getattr(page, "topic", "") or "")}」这个分类喵，' \

@@ -20,19 +20,37 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 # 帮助意图: 聊天里出现这些词时, 由插件统一拦截并渲染帮助(游戏无需实现)
 HELP_INTENT_WORDS = ("帮助", "攻略", "玩法", "怎么玩", "说明", "指令表", "help")
 
-# 分组关键词 → 语义图标名(零配置聚簇时的兜底映射)
-_ICON_HINTS: Sequence[Tuple[Sequence[str], str]] = (
-    (("纳戒", "背包", "装备", "道具", "物品"), "bag"),
-    (("战斗", "打劫", "讨伐", "团本", "秘境", "比试", "打怪"), "sword"),
-    (("宗门", "门派", "俸禄", "仓库", "药田"), "sect"),
-    (("仙宠", "宠物", "灵宠"), "pet"),
-    (("炼丹", "炼器", "采药", "采矿", "合成", "加工", "配方"), "furnace"),
-    (("市集", "市场", "拍卖", "交易", "出售", "购买"), "coin"),
-    (("修行", "修炼", "突破", "境界", "闭关", "炼体"), "meditate"),
-    (("日常", "签到", "任务", "成就"), "daily"),
-    (("猫娘", "道侣", "亲密", "师"), "heart"),
-    (("诸天", "小世界", "位面"), "star"),
-    (("魔", "神石", "堕"), "flame"),
+# 指令数达到该值时, 游戏可用 ``"auto_groups": true`` 请插件代劳分组(见 auto_groups)
+AUTO_GROUP_MIN = 6
+
+# 自动分组规则表: (命中关键词, 语义图标名, 分组名) —— 顺序即优先级, 先命中先用。
+# 插件侧通用规则, 覆盖当前全部小游戏的指令词汇; 新增游戏若词汇特殊, 加一行即可。
+GROUP_RULES: Sequence[Tuple[Sequence[str], str, str]] = (
+    (("签到", "每日", "周年", "任务", "成就", "领奖", "提交"), "daily", "日常与任务"),
+    (("排行", "排行榜", "天榜", "榜"), "star", "排行榜"),
+    (("探索", "打劫", "切磋", "讨伐", "团本", "秘境", "比试", "开枪", "装弹",
+      "逃跑", "攻打", "战斗", "挑战", "渡劫"), "sword", "冒险与对战"),
+    (("钓", "抛竿", "猜", "占卜", "塔罗", "抽牌", "海龟汤", "提问", "猜汤底",
+      "下注", "轮盘"), "star", "玩法"),
+    (("发图", "来张图", "看图", "自拍", "照片"), "heart", "看图与晒图"),
+    (("背包", "纳戒", "物品", "道具", "装备", "鱼缸", "仓库", "卸下", "穿戴", "服用"),
+     "bag", "背包与装备"),
+    (("商店", "鱼店", "市场", "市集", "购买", "出售", "售鱼", "换竿", "换饵",
+      "拍卖", "竞价", "交易", "钱袋"), "coin", "商店与交易"),
+    (("随机", "编号", "阶段", "数字", "选"), "misc", "选择与随机"),
+    (("技能", "天赋", "属性", "进化", "升级", "进阶", "培养", "喂", "领养",
+      "修炼", "突破", "炼体", "闭关", "修为"), "meditate", "养成与成长"),
+    (("仙宠", "宠物", "灵宠", "出战"), "pet", "仙宠与伙伴"),
+    (("宗门", "门派", "俸禄", "贡献", "药田", "开宗", "道侣", "亲密度", "拜师"),
+     "heart", "宗门与道侣"),
+    (("炼丹", "炼器", "采药", "采矿", "合成", "加工", "配方", "生活", "职业"),
+     "furnace", "生活与制作"),
+    (("诸天", "小世界", "位面", "投影", "开辟", "栽种", "演化"), "star", "诸天秘境"),
+    (("魔", "神石", "堕"), "flame", "魔道与神道"),
+    (("状态", "查看", "面板", "我的", "图鉴", "相册", "图库", "纪录", "战绩",
+      "猫粮", "资料", "等级"), "book", "查看与记录"),
+    (("换", "设置", "主题", "切换", "重开", "重启", "刷新"), "misc", "开局与设置"),
+    (("退出", "结束", "放弃", "停止", "取消"), "misc", "会话控制"),
 )
 
 
@@ -191,10 +209,13 @@ def _parse_group(raw: Dict[str, Any], index: int) -> Optional[Group]:
                 if c is not None]
     subs = [g for g in (_parse_group(r, i) for i, r in enumerate(raw.get("groups") or []))
             if g is not None]
+    icon = str(raw.get("icon") or "").strip()
+    if not icon:
+        icon = _icon_for(name, commands)      # 游戏没写图标名 → 插件按语义补一个
     return Group(
         id=gid,
         name=name,
-        icon=str(raw.get("icon") or "").strip(),
+        icon=icon,
         aliases=[str(a) for a in (raw.get("aliases") or []) if str(a).strip()],
         blocks=[b for b in (raw.get("blocks") or []) if isinstance(b, dict)],
         commands=commands,
@@ -203,53 +224,69 @@ def _parse_group(raw: Dict[str, Any], index: int) -> Optional[Group]:
 
 
 def _icon_for(group_name: str, commands: Sequence[Command]) -> str:
+    """给一个分组挑语义图标名(按 GROUP_RULES 的关键词表)。"""
     haystack = group_name + "".join(c.cmd for c in commands[:8])
-    for words, icon in _ICON_HINTS:
+    for words, icon, _name in GROUP_RULES:
         if any(w in haystack for w in words):
             return icon
     return "star"
 
 
-def auto_groups(flat: Sequence[Command]) -> List[Group]:
-    """零配置聚簇: 按关键词把扁平指令表分成若干功能组(细分游戏也能自动出目录)。
+def _is_help_command(cmd: str) -> bool:
+    """指令名本身就是"帮助/攻略"这类 → 由插件统一处理, 不进帮助列表(避免自我指涉)。"""
+    name = _norm(cmd)
+    return name in {_norm(w) for w in HELP_INTENT_WORDS}
 
-    规则很轻: 逐条指令按 ``_ICON_HINTS`` 命中第一个关键词桶; 都不命中则进「其他玩法」。
+
+def _match_rule(cmd: Command) -> Tuple[str, str]:
+    """给一条指令挑分组: **先看指令名, 再看说明**(说明里的词太容易误伤)。"""
+    for words, icon, name in GROUP_RULES:
+        if any(w in cmd.cmd for w in words):
+            return icon, name
+    for words, icon, name in GROUP_RULES:
+        if any(w in cmd.desc for w in words):
+            return icon, name
+    return "misc", "其他玩法"
+
+
+def auto_groups(flat: Sequence[Command]) -> List[Group]:
+    """插件侧自动分组: 按指令语义把扁平指令表聚成功能分组(游戏零改动)。
+
+    规则见 :data:`GROUP_RULES`(关键词 → 语义图标 + 分组名), 先命中先用;
+    都不命中进「其他玩法」。只做分组, 不改游戏数据。
     """
     buckets: Dict[str, List[Command]] = {}
+    meta: Dict[str, Tuple[str, str]] = {}
     order: List[str] = []
     for c in flat:
-        hay = c.cmd + c.desc
-        icon = ""
-        for words, ic in _ICON_HINTS:
-            if any(w in hay for w in words):
-                icon = ic
-                break
-        key = icon or "misc"
-        if key not in buckets:
-            buckets[key] = []
-            order.append(key)
-        buckets[key].append(c)
-    label = {ic: name for name, ic in (
-        ("装备与道具", "bag"), ("战斗挑战", "sword"), ("宗门", "sect"), ("仙宠", "pet"),
-        ("生活职业", "furnace"), ("市集经济", "coin"), ("修行之路", "meditate"),
-        ("日常与成就", "daily"), ("猫娘与道侣", "heart"), ("诸天与小世界", "star"),
-        ("魔道与神道", "flame"), ("其他玩法", "misc"),
-    )}
-    return [Group(id=key, name=label.get(key, "其他玩法"), icon=key,
-                  commands=buckets[key]) for key in order]
+        if _is_help_command(c.cmd):
+            continue                      # 「帮助」由插件拦截, 不占帮助图位置
+        icon, name = _match_rule(c)
+        if name not in buckets:
+            buckets[name] = []
+            meta[name] = (icon, name)
+            order.append(name)
+        buckets[name].append(c)
+    return [Group(id=f"auto-{i}", name=name, icon=meta[name][0],
+                  commands=buckets[name]) for i, name in enumerate(order)]
 
 
 def normalize_help(raw: Optional[Dict[str, Any]], game_id: str = "",
                    game_name: str = "") -> HelpDoc:
-    """把 help.json 的原始 dict 归一化成 :class:`HelpDoc`(新旧格式通吃)。"""
+    """把 help.json 的原始 dict 归一化成 :class:`HelpDoc`(新旧格式通吃)。
+
+    **结构由游戏自己决定, 插件照做**:
+    - 游戏写了 ``groups``(或两级 groups) → 按游戏的分组渲染
+    - 游戏只写 ``commands`` → 平铺单页渲染(插件不擅自改结构)
+    - 游戏写 ``"auto_groups": true`` → 明确请求插件代劳分组(可选帮手, 不是默认)
+    """
     raw = raw or {}
     flat = [c for c in (_parse_command(r) for r in (raw.get("commands") or []))
             if c is not None]
     groups = [g for g in (_parse_group(r, i) for i, r in enumerate(raw.get("groups") or []))
               if g is not None]
-    if not groups and raw.get("auto_groups") and flat:
-        groups = auto_groups(flat)
-        # 自动聚簇只用于"生成目录"; 指令仍保留在分组里, flat 保留给回退
+    if not groups and raw.get("auto_groups") is True and flat:
+        groups = auto_groups(flat)       # 游戏显式请求"帮我分一下组"
     return HelpDoc(
         game_id=game_id,
         game_name=game_name,

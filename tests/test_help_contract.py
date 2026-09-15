@@ -157,10 +157,69 @@ def test_command_level_blocks_give_own_page() -> None:
 
 
 def test_auto_groups_opt_in_only() -> None:
-    """没写 auto_groups 就不自动聚簇(保持老行为); 写了才生成目录。"""
+    """结构由游戏决定: 没写 groups 也没请求 auto_groups → 平铺(插件不擅自改结构)。"""
     assert normalize_help(OLD_FORMAT, "fishing", "钓鱼").groups == []
-    opted = normalize_help({**OLD_FORMAT, "auto_groups": True}, "fishing", "钓鱼")
-    assert opted.groups
+    many = {"commands": [[f"指令{i}", f"说明{i}"] for i in range(12)]}
+    assert normalize_help(many, "g", "G").groups == []          # 指令多也不擅自分组
+    opted = normalize_help({**many, "auto_groups": True}, "g", "G")
+    assert opted.groups                                          # 游戏明确请求才分组
+
+
+def test_game_declared_groups_are_respected() -> None:
+    """游戏写了 groups → 插件照做, 分组名/别名/条数都按游戏写的来。"""
+    doc = normalize_help(NEW_FORMAT, "fishing", "钓鱼")
+    assert [g.name for g in doc.groups] == ["钓鱼玩法", "鱼缸与鱼市"]
+    assert [len(g.commands) for g in doc.groups] == [2, 2]
+
+
+def test_auto_group_matches_name_before_desc() -> None:
+    """代劳分组时看**指令名**优先: 说明里出现"猫娘"不该把看图指令拐进伙伴分组。"""
+    raw = {"auto_groups": True,
+           "commands": [["发图", "猫娘随机发一张图"], ["照片", "看猫娘的自拍"],
+                        ["图库", "查看分类"], ["停止", "结束会话"],
+                        ["领养小猫", "养一只猫娘"], ["猫猫背包", "查看背包"]]}
+    doc = normalize_help(raw, "g", "G")
+    names = {g.name for g in doc.groups}
+    assert "看图与晒图" in names
+    paotu = next(g for g in doc.groups if g.name == "看图与晒图")
+    assert {c.cmd for c in paotu.commands} == {"发图", "照片"}
+
+
+def test_auto_group_skips_help_command() -> None:
+    """代劳分组时指令名叫「帮助」的由插件统一拦截, 不进帮助列表。"""
+    raw = {"auto_groups": True,
+           "commands": [["帮助", "显示玩法帮助"], ["钓鱼", "抛竿"],
+                        ["鱼缸", "看鱼"], ["鱼市", "卖鱼"], ["购买 竿", "买竿"],
+                        ["换竿 竿", "换竿"]]}
+    doc = normalize_help(raw, "fishing", "钓鱼")
+    cmds = [c.cmd for g in doc.groups for c in g.commands]
+    assert "帮助" not in cmds and len(cmds) == 5
+
+
+def test_all_games_help_configs_are_addressable() -> None:
+    """10 个游戏的 help.json 都能出图: 每条指令都能被寻址到, 不因配置形状失败。"""
+    root = Path(__file__).resolve().parents[1]
+    cfg_root = root / "data" / "config"
+    seen_games = 0
+    for gdir in sorted(p for p in cfg_root.iterdir() if p.is_dir()):
+        hp = gdir / "help.json"
+        if not hp.exists():
+            continue
+        seen_games += 1
+        raw = json.loads(hp.read_text(encoding="utf-8"))
+        doc = normalize_help(raw, gdir.name, gdir.name)
+        assert doc.title, gdir.name
+        commands = doc.all_commands()
+        assert commands, gdir.name
+        for c in commands:
+            page = resolve_topic(doc, c.cmd)
+            # 扁平游戏(指令少)整页就是全部指令; 分组游戏应命中指令页或分组页
+            assert page.kind in ("command", "group", "flat"), \
+                f"{gdir.name}/{c.cmd} → {page.kind}"
+            if page.kind == "group":
+                # 指令名与分组名重名时落到分组页也算可达(内容一致)
+                assert page.group is not None
+    assert seen_games >= 10                       # 10 个游戏都覆盖到
 
 
 # ── 帮助意图识别 ────────────────────────────────────────
