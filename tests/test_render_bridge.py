@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from plugin.plugins.neko_arcade.core.contracts import GameAdapter
@@ -189,3 +190,24 @@ def test_bind_services_keeps_backward_compatible_signature() -> None:
     g = DemoGame(plugin=None)
     g.bind_services(object(), object(), object(), object(), object())
     assert g._render is None and g._push is not None
+
+
+def test_games_do_not_render_images_themselves() -> None:
+    """「游戏适配插件」硬约束: 游戏侧不得自己渲染图片。
+
+    游戏只能给数据 / 调桥接(render_help / render_page / send_page / render_card),
+    不得 import PIL、不得起浏览器、不得自带 HTML 模板。
+    """
+    import re
+    root = Path(__file__).resolve().parents[1] / "games"
+    banned = re.compile(r"(from\s+PIL|import\s+PIL|ImageDraw|playwright|render_html"
+                        r"|<!doctype|<html|<div\s+class=)")
+    offenders = []
+    for py in root.rglob("*.py"):
+        if "__pycache__" in str(py):
+            continue
+        text = py.read_text(encoding="utf-8", errors="replace")
+        for i, line in enumerate(text.splitlines(), 1):
+            if banned.search(line):
+                offenders.append(f"{py.relative_to(root.parent)}:{i}: {line.strip()[:70]}")
+    assert not offenders, "游戏侧出现自绘代码:\n" + "\n".join(offenders)

@@ -169,6 +169,44 @@ def test_custom_page_assembles_every_data_shape() -> None:
     assert 'class="table"' in html and 'class="chip"' in html and 'class="tip"' in html
 
 
+def test_cards_and_stats_blocks() -> None:
+    """cards(天赋/成就) 与 stats(属性进度条) 是游戏侧"自带图"迁到插件的表达方式。"""
+    html = _renderer()._spec_page({
+        "title": "人生总结",
+        "blocks": [
+            {"type": "cards", "title": "天赋", "cols": 3, "items": [
+                {"icon": "heart", "name": "天生丽质", "desc": "颜值 +2"}]},
+            {"type": "stats", "title": "属性", "items": [
+                {"icon": "book", "label": "智力", "value": 8, "max": 10,
+                 "note": "天才"}]},
+        ],
+    })
+    assert "天生丽质" in html and "颜值 +2" in html
+    assert 'class="cardgrid"' in html and "repeat(3,1fr)" in html
+    assert "智力" in html and 'class="bar"' in html and "width:80%" in html
+    assert "天才" in html
+
+
+def test_stats_block_clamps_percent() -> None:
+    """数值超上限/为 0 都不能把进度条画爆或画负。"""
+    html = _renderer()._spec_page({
+        "title": "t", "blocks": [{"type": "stats", "items": [
+            {"label": "a", "value": 999, "max": 10},
+            {"label": "b", "value": 0, "max": 10},
+            {"label": "c", "value": 5, "max": 0},
+        ]}]})
+    assert "width:100%" in html and "width:0%" in html
+
+
+def test_table_block_headers_are_configurable() -> None:
+    """表格表头随内容走: 人生轨迹应是"年龄/事件", 不是"指令/说明"。"""
+    html = _renderer()._spec_page({
+        "title": "t", "blocks": [{"type": "table", "title": "人生轨迹",
+                                  "headers": ["年龄", "事件"],
+                                  "rows": [["0岁", "出生"]]}]})
+    assert "年龄" in html and "事件" in html and "指令" not in html
+
+
 def test_render_custom_goes_through_renderer_and_cache() -> None:
     tmp = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_help_cache_tmp2")
     os.makedirs(tmp, exist_ok=True)

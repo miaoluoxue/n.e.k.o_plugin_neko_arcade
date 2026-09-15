@@ -6,7 +6,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import itertools
 import random
 import re
@@ -388,7 +387,7 @@ class RemakeGame(GameAdapter):
         img_bytes = await self._render_life(talents, init_prop, results, summary)
         images = []
         if img_bytes:
-            images.append(self.build_image(text, img_bytes, "image/jpeg"))
+            images.append(self.build_image(text, img_bytes, "image/png"))
         return {"outcome": outcome,
                 "facts": [build_fact("life_end", age=age, sum=sum_val,
                                      grade=summary.SUM.judge,
@@ -397,13 +396,56 @@ class RemakeGame(GameAdapter):
 
     async def _render_life(self, talents: List[Talent], init_prop, results,
                            summary) -> Optional[bytes]:
-        """绘制人生总结图(drawer.py)。失败返回 None, 降级纯文本。"""
+        """人生总结图 —— 走插件渲染桥接(游戏只给数据, 不自己画图)。
+
+        版式块由插件解释: cards(天赋) / stats(属性进度条) / table(人生轨迹)。
+        桥接不可用或渲染失败返回 None, 调用方降级纯文本。
+        """
         try:
-            def _draw():
-                from .drawer import draw_life, save_jpg
-                img = draw_life(talents, init_prop, results, summary)
-                return save_jpg(img).getvalue()
-            return await asyncio.to_thread(_draw)
+            def _attr(obj, key: str, default: str = "") -> str:
+                """统一取值: 有的字段是 property, 有的是普通属性。"""
+                val = getattr(obj, key, default)
+                return str(val() if callable(val) else val)
+
+            prop_items = [
+                {"icon": "heart", "label": _attr(s, "name"), "value": s.value, "max": 10,
+                 "note": _attr(s, "judge")}
+                for s in (summary.CHR, summary.INT, summary.STR, summary.MNY,
+                          summary.SPR)
+            ]
+            talent_items = [
+                {"icon": "star", "name": getattr(t, "name", ""),
+                 "desc": getattr(t, "description", "") or getattr(t, "desc", "")}
+                for t in talents
+            ]
+            log_rows = []
+            for r in results:
+                p = r.property
+                logs = list(getattr(r, "event_log", []) or []) + \
+                    list(getattr(r, "talent_log", []) or [])
+                if logs:
+                    log_rows.append([f"{p.AGE}岁", "；".join(logs[:3])])
+            blocks: List[Dict[str, Any]] = []
+            if talent_items:
+                blocks.append({"type": "cards", "title": "天赋", "cols": 3,
+                               "items": talent_items})
+            blocks.append({"type": "stats", "title": "最终属性", "items": prop_items})
+            blocks.append({"type": "stats", "title": "总评", "items": [
+                {"icon": "star", "label": "享年", "value": summary.AGE.value, "max": 100,
+                 "note": _attr(summary.AGE, "judge")},
+                {"icon": "star", "label": "总评", "value": summary.SUM.value, "max": 150,
+                 "note": _attr(summary.SUM, "judge")},
+            ]})
+            if log_rows:
+                blocks.append({"type": "table", "title": "人生轨迹",
+                               "headers": ["年龄", "事件"], "rows": log_rows[-14:]})
+            return await self.render_page(
+                f"人生重开 · 享年 {summary.AGE.value} 岁",
+                subtitle=f"总评 {summary.SUM.value}（{summary.SUM.judge}）",
+                blocks=blocks,
+                commands=[["随机人生", "再来一次（随机天赋+属性）"],
+                          ["我的重开纪录", "看重开次数/最高享年"]],
+                tip="想再来一世 → 发「随机人生」；想看纪录 → 发「我的重开纪录」")
         except Exception as exc:
             import logging
             logging.getLogger("neko_arcade.remake").warning("渲染人生图失败: %s", exc)

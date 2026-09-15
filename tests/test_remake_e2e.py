@@ -51,6 +51,27 @@ class StubPlugin:
         await self.store.store_save_user(gid, uid, data)
 
 
+class StubRenderBridge:
+    """渲染桥接桩: 记录游戏传来的页面数据, 返回假 PNG。
+
+    按「游戏适配插件」: 游戏只给数据(标题/版式块), 出图由插件负责。
+    """
+
+    def __init__(self):
+        self.pages = []
+
+    @property
+    def ready(self):
+        return True
+
+    async def page(self, title, subtitle="", blocks=None, rows=None,
+                   commands=None, chips=None, tip="", theme="", game_id=""):
+        self.pages.append({"title": title, "subtitle": subtitle,
+                           "blocks": list(blocks or []), "commands": list(commands or []),
+                           "tip": tip})
+        return [b"\x89PNG-life"]
+
+
 async def main():
     plugin = StubPlugin()
     game = RemakeGame(plugin)
@@ -59,6 +80,8 @@ async def main():
     game._help = HELP
     game._keywords = KWS
     game._emotion_templates = EMO
+    bridge = StubRenderBridge()
+    game.bind_services(render=bridge)
 
     uid = "user_1"
     passed, failed = [], []
@@ -117,8 +140,15 @@ async def main():
     check("重开次数+1", game._cache[uid]["lifes"] == 1, game._cache[uid])
     check("享年记录", game._cache[uid]["best_age"] > 0, game._cache[uid])
     check("life_end fact", r["facts"][0]["kind"] == "life_end", r)
-    # 渲染图(需要 PIL): 游戏返回 images 数据(brain 统一推), 不自己 push
+    # 渲染图: 游戏把页面数据交给插件渲染桥接(不再自己画), brain 统一推
     check("人生总结图已生成(images)", bool(r.get("images")), r)
+    check("总结图走渲染桥接", bool(bridge.pages), bridge.pages)
+    if bridge.pages:
+        spec = bridge.pages[-1]
+        kinds = [b.get("type") for b in spec["blocks"]]
+        check("页面含 cards(天赋)", "cards" in kinds, kinds)
+        check("页面含 stats(属性/总评)", kinds.count("stats") >= 2, kinds)
+        check("页面含 table(人生轨迹)", "table" in kinds, kinds)
     if r.get("images"):
         print(f"    (总结图 {len(r['images'][0].get('bytes', b''))} bytes)")
 

@@ -102,8 +102,7 @@ body { width:%(width)dpx; position:relative; color:var(--text); background:var(-
 .mascot { position:absolute; right:8px; bottom:2px; width:112px; z-index:3;
   filter:drop-shadow(0 6px 16px rgba(15,23,42,0.28)); }
 /* 版式块 */
-.steps { display:flex; align-items:center; gap:6px; flex-wrap:wrap; }
-.step { border:1px solid var(--border); border-radius:var(--radius-md); padding:8px 10px;
+.steps { display:flex; align-items:center; gap:6px; flex-wrap:wrap; }.step { border:1px solid var(--border); border-radius:var(--radius-md); padding:8px 10px;
   background:var(--surface-strong); text-align:center; min-width:92px; }
 .step .s1 { display:block; font-size:12.5px; font-weight:650; margin-top:4px; }
 .step .s2 { font-size:10.5px; color:var(--muted); }
@@ -119,6 +118,24 @@ body { width:%(width)dpx; position:relative; color:var(--text); background:var(-
   justify-content:center; font-size:14px; }
 .cell.on { border-color:var(--primary); background:rgba(64,158,255,0.10); }
 .block-tt { font-size:12.5px; font-weight:650; color:var(--muted); margin-bottom:8px; }
+/* 卡片组(天赋/成就这类) */
+.cardgrid { display:grid; gap:10px; }
+.mini { border:1px solid var(--border); border-radius:var(--radius-md);
+  background:var(--surface-strong); padding:10px; display:grid; gap:4px;
+  justify-items:center; text-align:center; }
+.mini-ico { font-size:20px; }
+.mini-nm { font-size:12.5px; font-weight:650; color:var(--text); }
+.mini-ds { font-size:11px; color:var(--muted); line-height:1.45; }
+/* 进度条(属性/总评这类) */
+.stats2 { display:grid; gap:8px; }
+.statrow { display:flex; align-items:center; gap:9px; }
+.statlb { font-size:12.5px; color:var(--text); min-width:44px; }
+.bar { flex:1; height:9px; border-radius:999px; overflow:hidden;
+  background:rgba(148,163,184,0.22); }
+.bar i { display:block; height:100%%; border-radius:inherit; background:var(--primary); }
+.statvl { font-size:12.5px; font-weight:650; color:var(--text); min-width:26px;
+  text-align:right; }
+.statnt { font-size:11.5px; color:var(--muted); min-width:48px; }
 """
 
 
@@ -248,11 +265,13 @@ class HelpRenderer:
             html += f'<span class="chip more">+{extra}</span>'
         return f'<div class="chips">{html}</div>'
 
-    def _table(self, rows: Sequence[Sequence[str]]) -> str:
+    def _table(self, rows: Sequence[Sequence[str]],
+               headers: Sequence[str] = ("指令", "说明")) -> str:
+        head = "".join(f"<th>{_esc(h)}</th>" for h in headers)
         body = "".join(
             f'<tr><td class="k">{_esc(r[0])}</td><td class="d">{_esc(r[1])}</td></tr>'
             for r in rows if len(r) >= 2)
-        return (f'<table class="table"><tr><th>指令</th><th>说明</th></tr>{body}</table>')
+        return f'<table class="table"><tr>{head}</tr>{body}</table>'
 
     def _block(self, block: Dict[str, Any]) -> str:
         """版式块: chips / table / steps / flow / slots / bag / text。"""
@@ -264,7 +283,8 @@ class HelpRenderer:
             names = [str(i.get("name") if isinstance(i, dict) else i) for i in items]
             return head + self._chips(names, limit=block.get("limit") or 12)
         if kind == "table":
-            return head + self._table(block.get("rows") or [])
+            headers = block.get("headers") or ["指令", "说明"]
+            return head + self._table(block.get("rows") or [], headers)
         if kind in ("steps", "flow"):
             parts = []
             for i, it in enumerate(items):
@@ -302,6 +322,43 @@ class HelpRenderer:
                              % (" on" if i in filled else "", glyph))
             return (head + f'<div class="bag" style="grid-template-columns:repeat({cols},1fr)">'
                     f'{"".join(cells)}</div>')
+        if kind == "cards":
+            cols = max(1, min(int(block.get("cols") or 3), 4))
+            items_html = []
+            for it in items:
+                if not isinstance(it, dict):
+                    continue
+                desc = str(it.get("desc") or "")
+                items_html.append(
+                    '<div class="mini"><span class="mini-ico emoji">%s</span>'
+                    '<span class="mini-nm">%s</span>'
+                    '%s</div>'
+                    % (self._icon(str(it.get("icon") or "")), _esc(it.get("name") or ""),
+                       f'<span class="mini-ds">{_esc(desc)}</span>' if desc else ""))
+            return (head + f'<div class="cardgrid" style="grid-template-columns:'
+                    f'repeat({cols},1fr)">{"".join(items_html)}</div>')
+        if kind == "stats":
+            rows_html = []
+            for it in items:
+                if not isinstance(it, dict):
+                    continue
+                value = it.get("value", 0)
+                top = float(it.get("max") or 10) or 10.0
+                try:
+                    pct = max(0.0, min(100.0, float(value) / top * 100.0))
+                except (TypeError, ValueError):
+                    pct = 0.0
+                note = str(it.get("note") or "")
+                note_html = f'<span class="statnt">{_esc(note)}</span>' if note else ""
+                rows_html.append(
+                    '<div class="statrow">'
+                    f'<span class="mini-ico emoji">{self._icon(str(it.get("icon") or ""))}</span>'
+                    f'<span class="statlb">{_esc(it.get("label") or "")}</span>'
+                    f'<span class="bar"><i style="width:{pct:.0f}%"></i></span>'
+                    f'<span class="statvl">{_esc(value)}</span>'
+                    f'{note_html}'
+                    '</div>')
+            return head + f'<div class="stats2">{"".join(rows_html)}</div>'
         return head + f'<div class="page-sub">{_esc(block.get("text") or "")}</div>'
 
     # ── 页面类型 ─────────────────────────────────────────

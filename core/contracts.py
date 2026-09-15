@@ -43,13 +43,21 @@ class GameAdapter(abc.ABC):
         render: RenderBridge 实例(插件主体通用**渲染桥接**), 游戏可用
         self.render_help / self.render_page / self.send_page 出图,
         **无需自己写 HTML/CSS/主题**——渲染完全由插件主体负责。
+
+        传 None 表示"该项不动"(便于只补绑一个服务), 注册表会一次性全量绑定。
         """
-        self._push = push
-        self._img = img
-        self._tts = tts
-        self._llm = llm
-        self._photo = photo
-        self._render = render
+        if push is not None:
+            self._push = push
+        if img is not None:
+            self._img = img
+        if tts is not None:
+            self._tts = tts
+        if llm is not None:
+            self._llm = llm
+        if photo is not None:
+            self._photo = photo
+        if render is not None:
+            self._render = render
 
     # ── 发图桥接(插件主体通用能力) ─────────
 

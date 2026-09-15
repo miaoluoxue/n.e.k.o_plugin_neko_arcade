@@ -49,6 +49,13 @@ class MyGame(GameAdapter):
   需要新视觉请提需求给插件侧，由主题统一解决
 - 主题（light/dark）由插件主配置决定，游戏侧不感知
 
+**硬约束：游戏侧不得自己渲染图片。** 不允许 `import PIL`、不允许起浏览器、
+不允许自带 HTML/CSS 模板——这类代码会被测试挡下（`test_games_do_not_render_images_themselves`）。
+需要一张图时，把内容描述成**版式块数据**交给桥接即可。
+`remake` 原来用 400 行 PIL 画人生总结图，已按这条规则改成
+`cards(天赋) + stats(属性进度条) + table(人生轨迹)` 数据 → 插件渲染，
+游戏侧的 `drawer.py`、图片素材、像素字体一并删除。
+
 ---
 
 ## 1. 最小可用（零改动）
@@ -130,7 +137,9 @@ weapon armor trinket herb pill book gem misc help
 | type | 用途 | 关键字段 |
 |---|---|---|
 | `chips` / `list` | 名称胶囊（默认） | `items`（字符串或 `{name}`）, `limit` |
-| `table` | 表格（冷却/条件/兑换） | `title`, `rows: [[左, 右], ...]` |
+| `table` | 表格（冷却/条件/兑换/轨迹） | `title`, `headers`（默认 `["指令","说明"]`）, `rows: [[左, 右], ...]` |
+| `cards` | 卡片组（天赋/成就/道具） | `title`, `cols`（1–4）, `items: [{icon, name, desc}]` |
+| `stats` | 进度条行（属性/总评/熟练度） | `title`, `items: [{icon, label, value, max, note}]` |
 | `steps` / `flow` | 阶梯 / 流程链（→） | `title`, `items: [{icon, name, sub}]` |
 | `slots` | 槽位示意（装备栏） | `title`, `items: [{icon, name, sub}]` |
 | `bag` | 格子（背包/仓库） | `title`, `cols`, `cells`, `filled: [下标]`, `icons: [语义名]` |
