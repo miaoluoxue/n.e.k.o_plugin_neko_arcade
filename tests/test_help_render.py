@@ -87,19 +87,43 @@ def test_host_browser_is_preferred(monkeypatch) -> None:
 
 
 def test_host_hint_ignores_missing_browser(monkeypatch) -> None:
-    """宿主给的路径不存在时必须继续往下找, 不能返回坏路径。"""
+    """宿主/依赖给的路径都不存在时必须返回 None, 不能返回坏路径。
+
+    注意: CI(Linux)上 browser_use 依赖是装的, 且系统真有 /usr/bin/google-chrome*,
+    所以必须把这两条来源都换成"指向不存在的文件"才能确定性断言(否则测试依赖环境)。
+    """
+    import sys
     import types
 
     def fake_import(name: str, *a, **kw):
         if name == "brain.browser_use_adapter":
-            return types.SimpleNamespace(_find_chrome_path=lambda: r"Z:\nope\chrome.exe")
+            return types.SimpleNamespace(_find_chrome_path=lambda: r"/nope/chrome")
         raise ImportError(name)
 
+    stub_watchdog = types.ModuleType(
+        "browser_use.browser.watchdogs.local_browser_watchdog")
+
+    class _Watchdog:
+        @staticmethod
+        def _find_installed_browser_path():
+            return r"/nope/also-chrome"
+
+    stub_watchdog.LocalBrowserWatchdog = _Watchdog
     monkeypatch.setattr("importlib.import_module", fake_import)
+    monkeypatch.setitem(sys.modules,
+                        "browser_use.browser.watchdogs.local_browser_watchdog",
+                        stub_watchdog)
+    monkeypatch.delenv("PLAYWRIGHT_BROWSERS_PATH", raising=False)
+    assert ImageRenderer._host_browser_hint() is None
+
+
+def test_find_chromium_none_when_nothing_available(monkeypatch) -> None:
+    """所有来源都不可用时返回 None(不返回假路径)。"""
+    monkeypatch.setattr(ImageRenderer, "_host_browser_hint",
+                        classmethod(lambda cls: None))
     monkeypatch.setattr(ImageRenderer, "_browser_roots", classmethod(lambda cls: []))
     monkeypatch.setattr(ImageRenderer, "_system_browser_candidates",
                         staticmethod(lambda: []))
-    assert ImageRenderer._host_browser_hint() is None
     assert ImageRenderer._find_chromium() is None
 
 
