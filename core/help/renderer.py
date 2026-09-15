@@ -26,7 +26,7 @@ from .themes import AssetResolver, icon_glyph, theme_tokens, theme_veil
 log = logging.getLogger(__name__)
 
 WIDTH = 740
-CATALOG_PER_PAGE = 12          # 目录页每页分组数(12 组 = 6 行两列, 一页放得下)
+CATALOG_HEIGHT_BUDGET = 660    # 目录页卡片区高度预算(px): 按估高打包, 保持比例合适
 GROUP_CMD_PER_PAGE = 22        # 分组页每页指令数
 FLAT_CMD_PER_PAGE = 26         # 扁平(老格式)帮助每页指令数
 
@@ -75,6 +75,12 @@ body { width:%(width)dpx; position:relative; color:var(--text); background:var(-
 .tip img { width:30px; height:30px; border-radius:50%%; flex:0 0 30px; object-fit:cover;
   object-position:center 16%%; border:1px solid rgba(230,162,60,0.45); }
 .grid2 { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+.grid1 { display:grid; grid-template-columns:1fr; gap:12px; }
+.subs { display:flex; flex-wrap:wrap; gap:6px; margin-top:8px; }
+.sub { display:inline-flex; align-items:center; gap:5px; border:1px solid var(--border);
+  border-radius:var(--radius-sm); background:var(--surface); padding:4px 8px; }
+.sub-nm { font-size:12px; color:var(--text); }
+.sub-n { font-size:11px; color:var(--muted); }
 .table { width:100%%; border-collapse:separate; border-spacing:0; overflow:hidden;
   border:1px solid var(--border); border-radius:var(--radius-lg); }
 .table th, .table td { padding:10px 12px; text-align:left; font-size:13px;
@@ -295,23 +301,66 @@ class HelpRenderer:
         return head + f'<div class="page-sub">{_esc(block.get("text") or "")}</div>'
 
     # ── 页面类型 ─────────────────────────────────────────
-    def _group_card(self, group: Group, index: int) -> str:
-        names = [c.cmd for c in group.commands]
+    def _group_card(self, group: Group, index: int, cols: int = 2) -> str:
+        """分组卡: 组名 + 总条数 + 代表指令; 有子分组时并列展示(二级收在父卡里)。"""
+        own = [c.cmd for c in group.commands]
+        total = len(group.all_commands())
         badge_tone = ' data-tone="info"' if index % 2 else ""
+        chips = self._chips(own, limit=3 if cols == 2 else 6, total=len(own)) if own else ""
+        subs = ""
+        if group.groups:
+            rows = "".join(
+                '<div class="sub"><span class="emoji">%s</span>'
+                '<span class="sub-nm">%s</span><span class="sub-n">%d</span></div>'
+                % (self._icon(s.icon), _esc(s.name), len(s.all_commands()))
+                for s in group.groups)
+            subs = f'<div class="subs">{rows}</div>'
         return (f'<div class="card"><div class="card-hd"><span class="emoji">'
                 f'{self._icon(group.icon)}</span><span class="card-tt">{_esc(group.name)}'
-                f'</span><span class="badge"{badge_tone}>{len(names)} 条</span></div>'
-                f'<div class="card-bd">{self._chips(names, limit=3)}</div></div>')
+                f'</span><span class="badge"{badge_tone}>{total} 条</span></div>'
+                f'<div class="card-bd">{chips}{subs}</div></div>')
+
+    @staticmethod
+    def _estimate_card(group: Group, cols: int) -> int:
+        """预估一张分组卡的高度(px): 用于按比例分页(避免半空页/挤压)。"""
+        per_row = 3 if cols == 2 else 6
+        n = len(group.commands)
+        chip_rows = max(1, (min(n, per_row) + per_row - 1) // per_row) if n else 0
+        return 62 + chip_rows * 30 + len(group.groups) * 30
+
+    @classmethod
+    def _pack_catalog(cls, groups: Sequence[Group], cols: int,
+                      budget: int) -> List[List[Group]]:
+        """按预估高度把分组打包成页: 每页高度不超过预算, 保持行列整齐。"""
+        pages: List[List[Group]] = []
+        cur: List[Group] = []
+        used = 0
+        for g in groups:
+            h = cls._estimate_card(g, cols)
+            row_h = h
+            if cur and len(cur) % cols != 0:            # 与本行已有卡作伴
+                prev_h = cls._estimate_card(cur[-1], cols)
+                row_h = max(h, prev_h) - prev_h         # 只补差额
+            if cur and used + row_h > budget:
+                pages.append(cur)
+                cur, used, row_h = [], 0, h
+            cur.append(g)
+            used += row_h
+        if cur:
+            pages.append(cur)
+        return pages or [[]]
 
     def _catalog(self, doc: HelpDoc, page: Page) -> List[str]:
         groups = doc.groups
-        chunks = [groups[i:i + CATALOG_PER_PAGE]
-                  for i in range(0, len(groups), CATALOG_PER_PAGE)] or [groups]
+        # 比例自适应: 分组少 → 单列大卡(舒展); 分组多 → 两列(紧凑); 分页按估高打包
+        cols = 1 if len(groups) <= 4 else 2
+        chunks = self._pack_catalog(groups, cols, CATALOG_HEIGHT_BUDGET)
         out: List[str] = []
         for pi, chunk in enumerate(chunks):
-            cards = [self._group_card(g, i) for i, g in enumerate(chunk)]
-            pairs = "".join(f'<div class="grid2">{"".join(cards[k:k + 2])}</div>'
-                            for k in range(0, len(cards), 2))
+            cards = [self._group_card(g, i, cols) for i, g in enumerate(chunk)]
+            grid_cls = "grid2" if cols == 2 else "grid1"
+            pairs = "".join(f'<div class="{grid_cls}">{"".join(cards[k:k + cols])}</div>'
+                            for k in range(0, len(cards), cols))
             subtitle = doc.subtitle or (doc.text and doc.text[:60]) or ""
             if len(chunks) > 1:
                 subtitle = f"{subtitle} （{pi + 1}/{len(chunks)}）".strip()
@@ -336,6 +385,17 @@ class HelpRenderer:
             return self._catalog(doc, page)
         blocks = "".join(f'<div class="card"><div class="card-bd">{self._block(b)}</div></div>'
                          for b in group.blocks)
+        # 子分组: 在父页里各自成卡片(二级内容不丢)
+        for sub in group.groups:
+            sub_blocks = "".join(
+                f'<div class="card"><div class="card-bd">{self._block(b)}</div></div>'
+                for b in sub.blocks)
+            sub_rows = self._table([[c.cmd, c.desc] for c in sub.commands])
+            blocks += (f'<div class="card"><div class="card-hd"><span class="emoji">'
+                       f'{self._icon(sub.icon)}</span><span class="card-tt">'
+                       f'{_esc(sub.name)}</span><span class="badge">'
+                       f'{len(sub.commands)} 条</span></div>'
+                       f'<div class="card-bd">{sub_rows}</div></div>{sub_blocks}')
         cmds = group.commands
         chunks = [cmds[i:i + GROUP_CMD_PER_PAGE]
                   for i in range(0, len(cmds), GROUP_CMD_PER_PAGE)] or [cmds]
@@ -362,6 +422,11 @@ class HelpRenderer:
         return out
 
     def _command_page(self, doc: HelpDoc, page: Page) -> List[str]:
+        """指令页: 声明了专属版式块的指令(如「我的纳戒」)→ 单独出一张专属图。
+
+        「我的纳戒」「我的背包」这类查看指令, 用户要看的是一张**自己的图**
+        (背包格/装备栏), 而不是分组页里的一行说明。
+        """
         cmd = page.command
         if cmd is None:
             return self._catalog(doc, page)
@@ -378,10 +443,14 @@ class HelpRenderer:
         if group is not None:
             related = [c.cmd for c in group.commands if c.cmd != cmd.cmd]
         related = list(dict.fromkeys([*cmd.related, *related]))
+        own_blocks = "".join(
+            f'<div class="card"><div class="card-bd">{self._block(b)}</div></div>'
+            for b in cmd.blocks)
         tip = (f'直接发「<b>{_esc(cmd.cmd)}</b>」就能用喵'
                + ("；换装备名即可，例如「装备 青锋剑」" if cmd.params else ""))
         body = (self._head(cmd.cmd, (group.name if group else "") or (doc.title or ""),
                            "喵喵陪你玩")
+                + own_blocks
                 + f'<div class="card"><div class="card-bd">{self._table(rows)}</div></div>'
                 + (f'<div class="card"><div class="card-bd">'
                    f'<div class="block-tt">同一分类的其他指令</div>'

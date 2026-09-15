@@ -115,32 +115,52 @@ def test_auto_groups_cluster_flat_commands() -> None:
     assert all(g.name and g.icon for g in groups)
 
 
+def test_group_nesting_is_supported_one_level() -> None:
+    """指令多的游戏必须能分组嵌套: 一级分组 + 子分组(子分组同样挂指令/版式块)。"""
+    raw = {
+        "groups": [{
+            "id": "outer", "name": "装备与道具", "icon": "bag", "aliases": ["纳戒"],
+            "commands": [["我的装备", "查看装备栏"]],
+            "groups": [{"id": "inner", "name": "背包", "icon": "bag",
+                        "commands": [["我的背包", "查看背包"]]}],
+        }]
+    }
+    doc = normalize_help(raw, "g", "G")
+    outer = doc.groups[0]
+    assert len(outer.groups) == 1 and outer.groups[0].name == "背包"
+    # 条数/指令统计要算上子分组
+    assert doc.command_count == 2
+    assert [c.cmd for c in outer.all_commands()] == ["我的装备", "我的背包"]
+    # 子分组名也要能被寻址(用户直接说「背包」)
+    page = resolve_topic(doc, "背包")
+    assert page.kind == "group" and page.group.name == "背包"
+    # 父分组别名照样命中父分组
+    assert resolve_topic(doc, "纳戒").group.name == "装备与道具"
+
+
+def test_command_level_blocks_give_own_page() -> None:
+    """「我的纳戒」这类查看指令可以带专属版式块 → 命中时出它自己的图。"""
+    raw = {"groups": [{
+        "id": "bag", "name": "装备与道具", "icon": "bag", "aliases": ["纳戒"],
+        "commands": [
+            {"cmd": "我的纳戒", "desc": "查看背包", "kind": "view",
+             "blocks": [{"type": "bag", "title": "纳戒背包", "cols": 8, "cells": 16,
+                         "filled": [0]}]},
+            ["装备 X", "穿戴装备"],
+        ]}]}
+    doc = normalize_help(raw, "g", "G")
+    bag = doc.groups[0].commands[0]
+    assert bag.has_own_page and bag.blocks[0]["type"] == "bag"
+    assert not doc.groups[0].commands[1].has_own_page
+    page = resolve_topic(doc, "我的纳戒")
+    assert page.kind == "command" and page.command.has_own_page
+
+
 def test_auto_groups_opt_in_only() -> None:
     """没写 auto_groups 就不自动聚簇(保持老行为); 写了才生成目录。"""
     assert normalize_help(OLD_FORMAT, "fishing", "钓鱼").groups == []
     opted = normalize_help({**OLD_FORMAT, "auto_groups": True}, "fishing", "钓鱼")
     assert opted.groups
-
-
-def test_group_nesting_is_not_supported() -> None:
-    """分组只有一层: JSON 里再嵌 groups 一律忽略, 不做多级目录(避免过度嵌套)。"""
-    raw = {
-        "groups": [{
-            "id": "outer", "name": "外层", "icon": "star",
-            "commands": [["外层指令", "说明"]],
-            "groups": [{"id": "inner", "name": "内层",
-                        "commands": [["内层指令", "说明"]]}],
-        }]
-    }
-    doc = normalize_help(raw, "g", "G")
-    assert len(doc.groups) == 1
-    outer = doc.groups[0]
-    assert not hasattr(outer, "groups")            # 模型里没有嵌套分组的槽位
-    assert [c.cmd for c in outer.commands] == ["外层指令"]
-    assert doc.command_count == 1
-    # 内层名字不参与寻址(它压根没被解析), 只回目录页
-    page = resolve_topic(doc, "内层")
-    assert page.kind == "catalog" and page.miss
 
 
 # ── 帮助意图识别 ────────────────────────────────────────
@@ -168,7 +188,9 @@ def _xiuxian_doc():
 
 def test_xiuxian_help_covers_all_commands() -> None:
     doc = _xiuxian_doc()
-    assert doc.grouped and len(doc.groups) == 11
+    assert doc.grouped
+    assert len(doc.groups) == 6                      # 6 大类(父分组)
+    assert sum(len(g.groups) for g in doc.groups) == 12   # 12 子分组
     assert doc.command_count == 61
     # 老字段保留(面板 get_game_config 仍读 commands/text)
     assert doc.flat and doc.text
@@ -176,12 +198,35 @@ def test_xiuxian_help_covers_all_commands() -> None:
 
 def test_xiuxian_topics_resolve() -> None:
     doc = _xiuxian_doc()
+    # 父分组
+    assert resolve_topic(doc, "装备道具").group.name == "装备道具"
+    assert resolve_topic(doc, "生活").group.name == "生活经营"
+    # 子分组(含别名)
     bag = resolve_topic(doc, "纳戒")
-    assert bag.kind == "group" and bag.group.name == "装备与道具"
-    assert bag.group.blocks          # 纳戒页带版式块(装备栏/背包格)
-    battle = resolve_topic(doc, "战斗")
-    assert battle.kind == "group" and battle.group.name == "战斗挑战"
-    cmd = resolve_topic(doc, "装备 X")
-    assert cmd.kind == "command" and cmd.command.cmd == "装备 X"
-    assert resolve_topic(doc, "背包").kind in ("group", "command")
-    assert resolve_topic(doc, "生活").group.name == "生活职业"
+    assert bag.kind == "group" and bag.group.name == "纳戒背包"
+    assert resolve_topic(doc, "战斗").group.name == "战斗挑战"
+    # 指令级: 「我的纳戒」有专属图, 命中指令而不是分组
+    cmd = resolve_topic(doc, "我的纳戒")
+    assert cmd.kind == "command" and cmd.command.cmd == "我的纳戒"
+    assert cmd.command.has_own_page
+    assert cmd.command.blocks[0]["type"] == "bag"
+    # 带参数指令仍可寻址
+    param = resolve_topic(doc, "装备 X")
+    assert param.kind == "command" and param.command.cmd == "装备 X"
+    assert resolve_topic(doc, "我的装备").command.has_own_page
+
+
+def test_xiuxian_parent_aliases_do_not_shadow_children() -> None:
+    """父分组的别名/名字不能和子分组重名, 否则用户永远只能命中父分组。"""
+    doc = _xiuxian_doc()
+    for parent in doc.groups:
+        parent_words = {_norm_test(w) for w in parent.names()}
+        for sub in parent.groups:
+            child_words = {_norm_test(w) for w in sub.names()}
+            assert not (parent_words & child_words), \
+                f"{parent.name} 与子分组 {sub.name} 抢词: {parent_words & child_words}"
+
+
+def _norm_test(text: str) -> str:
+    import re
+    return re.sub(r"[\s\u3000]+", "", str(text or "")).lower()
