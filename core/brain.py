@@ -396,7 +396,16 @@ class GameBrain:
             text = (help_data or {}).get("text", "") or ""
             if commands:
                 try:
-                    pages = await self.img.render_help(game.name, commands, text)
+                    # 浏览器(HTML/CSS)渲染优先——排版更精细; 无浏览器环境回退 PIL 绘制
+                    pages = None
+                    html_render = getattr(self.img, "render_help_html", None)
+                    if callable(html_render):
+                        try:
+                            pages = await html_render(game.name, commands, text)
+                        except Exception as exc:
+                            log.warning("帮助图浏览器渲染失败, 回退 PIL: %s", exc)
+                    if not pages:
+                        pages = await self.img.render_help(game.name, commands, text)
                     if pages:
                         # 多页帮助依次推送, 每页高度 ≤ ~600px 避免截断
                         for i, page_bytes in enumerate(pages):

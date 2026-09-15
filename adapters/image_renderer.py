@@ -1,7 +1,12 @@
-"""图片渲染：猫娘表情头像 + 结果卡片 + 帮助文档图（纯 PIL 绘制）。"""
+"""图片渲染：猫娘表情头像 + 结果卡片 + 帮助文档图（纯 PIL 绘制）。
+
+帮助文档图另有一条浏览器(Playwright/Chromium)渲染通道 render_help_html，
+排版更精细；无浏览器环境回退本文件的 PIL 版 render_help。
+"""
 
 from __future__ import annotations
 
+import html as _html
 import importlib.util
 import io
 import logging
@@ -10,6 +15,12 @@ import sys
 from typing import Any, Dict, List, Optional, Tuple
 
 log = logging.getLogger("neko_arcade.image")
+
+
+def _esc(text: Any) -> str:
+    """HTML 转义(帮助图里的指令/描述可能含 & < > 等字符)。"""
+    return _html.escape(str(text), quote=True)
+
 
 RARITY_COLORS = {
     "common": "#8a7e72", "uncommon": "#4a9e5f", "rare": "#3a7bd5",
@@ -340,6 +351,68 @@ class ImageRenderer:
     # HTML → PNG（Playwright，复用 N.E.K.O 内置 Chromium）
     # ══════════════════════════════════════════
 
+    HELP_HTML_CSS = """
+    * { margin:0; padding:0; box-sizing:border-box; }
+    html, body { background:#FCF9F3; }
+    body { width:720px; font-family:"Microsoft YaHei","PingFang SC","Noto Sans CJK SC",sans-serif; }
+    .card { width:720px; background:linear-gradient(180deg,#FCF9F3 0%,#F4EDE1 100%); }
+    .hd { background:linear-gradient(135deg,#604A3C 0%,#9E7654 100%); color:#FFFAF0;
+          font-size:20px; font-weight:600; letter-spacing:1px; text-align:center;
+          padding:20px 0; }
+    .hd .pg { font-size:14px; font-weight:400; opacity:.85; margin-left:8px; }
+    .grid { display:grid; grid-template-columns:1fr 1fr; gap:7px 18px; padding:16px 28px 6px; }
+    .row { display:flex; align-items:center; gap:9px; min-height:25px; }
+    .k { flex:0 0 auto; background:#F1C994; border:1px solid #E0B276; color:#6E4A2A;
+         border-radius:9px; padding:2px 8px; font-size:13px; white-space:nowrap; }
+    .v { color:#463A2E; font-size:12px; overflow:hidden; text-overflow:ellipsis;
+         white-space:nowrap; }
+    .ft { color:#8A7A66; font-size:12px; line-height:1.7; padding:10px 28px 0; }
+    .brand { color:#968470; font-size:11px; text-align:center; padding:14px 0 16px; }
+    """
+
+    def build_help_html(self, game_name: str, commands: List[Tuple[str, str]],
+                        footer: str = "", page: int = 1, pages: int = 1) -> str:
+        """构造帮助文档图的 HTML(与 render_help_html 实际渲染的内容一致)。
+
+        单独抽出来便于本地预览/测试(浏览器截图或用例断言)。
+        """
+        brand = f"{BRAND_FOOTER} × {game_name}"
+        title = f"{game_name} · 玩法帮助"
+        pgtag = f'<span class="pg">({page}/{pages})</span>' if pages > 1 else ""
+        rows = "".join(
+            f'<div class="row"><span class="k">{_esc(c)}</span>'
+            f'<span class="v">{_esc(d)}</span></div>' for c, d in commands)
+        ft = f'<div class="ft">{_esc(footer)}</div>' if footer and page == 1 else ""
+        return (
+            f'<!doctype html><html><head><meta charset="utf-8">'
+            f'<style>{self.HELP_HTML_CSS}</style></head><body>'
+            f'<div class="card"><div class="hd">{_esc(title)}{pgtag}</div>'
+            f'<div class="grid">{rows}</div>{ft}'
+            f'<div class="brand">{_esc(brand)}</div></div></body></html>'
+        )
+
+    async def render_help_html(self, game_name: str, commands: List[Tuple[str, str]],
+                               footer: str = "", per_page: int = 34) -> Optional[List[bytes]]:
+        """用内置浏览器(Playwright/Chromium)渲染帮助文档图。
+
+        与 PIL 版 render_help 同契约: 返回每页 PNG bytes; 环境无浏览器时返回 None,
+        调用方回退 PIL 版。HTML/CSS 排版比 PIL 绘制更精细(阴影/圆角/字距/自动换行)。
+        """
+        cmds = [(str(c[0]), str(c[1])) for c in (commands or [])
+                if isinstance(c, (list, tuple)) and len(c) >= 2]
+        if not cmds:
+            return None
+        chunks = [cmds[i:i + per_page] for i in range(0, len(cmds), per_page)] or [cmds]
+        pages: List[bytes] = []
+        for pi, chunk in enumerate(chunks):
+            html = self.build_help_html(game_name, chunk, footer,
+                                        page=pi + 1, pages=len(chunks))
+            png = await self.render_html(html, width=720, height=600, selector=".card")
+            if not png:
+                return None
+            pages.append(png)
+        return pages
+
     async def render_html(self, html: str, css: str = "", width: int = 720,
                           height: int = 600, game_name: str = "",
                           selector: str = "body", brand_footer: bool = False) -> Optional[bytes]:
@@ -386,26 +459,61 @@ class ImageRenderer:
             return None
 
     @staticmethod
-    def _find_chromium() -> Optional[str]:
-        """定位 N.E.K.O 内置的 Playwright Chromium 可执行文件。"""
-        import glob
-        browsers_dir = os.environ.get("PLAYWRIGHT_BROWSERS_PATH", "")
-        if not browsers_dir:
-            for root in (os.path.dirname(os.path.abspath(sys.argv[0])),
-                         os.path.dirname(os.path.abspath(__file__)),
-                         os.getcwd()):
-                c = os.path.join(root, "playwright_browsers")
-                if os.path.isdir(c):
-                    browsers_dir = c
+    def _browser_roots() -> List[str]:
+        """收集所有可能的 Playwright 浏览器根目录(按优先级)。
+
+        应用自带的 playwright_browsers 可能只有资源文件、缺 chrome.exe
+        (实测 0.9.0.2 安装包即如此)，因此同时扫描系统 Playwright 缓存
+        (%LOCALAPPDATA%\\ms-playwright 等)，找到能跑的那个。
+        """
+        roots: List[str] = []
+        env_dir = os.environ.get("PLAYWRIGHT_BROWSERS_PATH", "")
+        if env_dir:
+            roots.append(env_dir)
+        here = os.path.dirname(os.path.abspath(__file__))
+        starts = [os.path.dirname(os.path.abspath(sys.argv[0] or "")), here, os.getcwd()]
+        for start in starts:
+            cur = start
+            for _ in range(5):  # 应用布局: <app>/resources/bin/playwright_browsers
+                cur = os.path.dirname(cur)
+                if not cur or cur == os.path.dirname(cur):
                     break
-        if not browsers_dir or not os.path.isdir(browsers_dir):
-            return None
-        for pat in (os.path.join(browsers_dir, "chromium-*", "chrome-win64", "chrome.exe"),
-                    os.path.join(browsers_dir, "chromium-*", "chrome-win", "chrome.exe")):
-            ms = glob.glob(pat)
-            if ms:
-                ms.sort()
-                return ms[-1]
+                roots.append(os.path.join(cur, "playwright_browsers"))
+        local = os.environ.get("LOCALAPPDATA") or ""
+        roaming = os.environ.get("APPDATA") or ""
+        home = os.path.expanduser("~")
+        roots += [
+            os.path.join(local, "ms-playwright") if local else "",
+            os.path.join(roaming, "ms-playwright") if roaming else "",
+            os.path.join(home, ".cache", "ms-playwright"),
+            os.path.join(home, "Library", "Caches", "ms-playwright"),
+        ]
+        seen: List[str] = []
+        for r in roots:
+            if r and r not in seen:
+                seen.append(r)
+        return seen
+
+    @classmethod
+    def _find_chromium(cls) -> Optional[str]:
+        """定位可用的 Chromium/headless-shell 可执行文件(自带缺失时回退系统缓存)。"""
+        import glob
+        patterns = (
+            ("chromium-*", "chrome-win64", "chrome.exe"),
+            ("chromium-*", "chrome-win", "chrome.exe"),
+            ("chromium_headless_shell-*", "chrome-headless-shell-win64", "chrome-headless-shell.exe"),
+            ("chromium-*", "chrome-linux", "chrome"),
+            ("chromium_headless_shell-*", "chrome-headless-shell-linux64", "chrome-headless-shell"),
+            ("chromium-*", "chrome-mac", "Chromium.app", "Contents", "MacOS", "Chromium"),
+        )
+        for browsers_dir in cls._browser_roots():
+            if not os.path.isdir(browsers_dir):
+                continue
+            for pat in patterns:
+                matches = glob.glob(os.path.join(browsers_dir, *pat))
+                if matches:
+                    matches.sort()
+                    return matches[-1]  # 版本号最大的
         return None
 
     def _append_footer(self, png_bytes: bytes, game_name: str) -> Optional[bytes]:
