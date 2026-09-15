@@ -198,16 +198,18 @@ class NekoArcadePlugin(NekoPluginBase):
         return Ok({"game": game, "enabled": enabled})
 
     @plugin_entry(id="game_help", name="游戏帮助",
-                  description="查看并推送小游戏的帮助文档图。",
+                  description="查看并推送小游戏的帮助文档图。可只给 game 看目录页, 也可带 topic 看某个功能分组(如「战斗」「纳戒」)或单条指令。",
                   input_schema={"type": "object", "properties": {
                       "game": {"type": "string", "description": "游戏 id"},
+                      "topic": {"type": "string",
+                                "description": "可选功能主题: 分组名/别名(战斗、纳戒、宗门…)或指令名(装备 X)"},
                   }, "required": ["game"]},
                   metadata={"agent_hidden": True},
                   llm_result_fields=["message"])
-    async def entry_game_help(self, game: str = "", **_) -> Any:
+    async def entry_game_help(self, game: str = "", topic: str = "", **_) -> Any:
         if not self.rt or not self.rt.brain:
             return Err(SdkError("猫娘小游戏还没准备好"))
-        result = await self.rt.brain.show_help(game)
+        result = await self.rt.brain.show_help(game, topic=topic)
         return Ok(result)
 
     @plugin_entry(id="get_game_config", name="获取游戏配置",

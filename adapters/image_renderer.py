@@ -2,11 +2,20 @@
 
 帮助文档图另有一条浏览器(Playwright/Chromium)渲染通道 render_help_html，
 排版更精细；无浏览器环境回退本文件的 PIL 版 render_help。
+
+浏览器解析**优先走宿主内置**(见 _host_browser_hint / _find_chromium):
+1. 宿主自己的查找函数 ``brain.browser_use_adapter._find_chrome_path``(插件运行在宿主进程内,
+   与宿主浏览器完全同源)
+2. ``browser_use`` 自带的系统浏览器查找
+3. 宿主 Launcher 设置的 ``PLAYWRIGHT_BROWSERS_PATH`` 与应用自带的 playwright_browsers
+4. 系统 ms-playwright 缓存 / 系统已装 Chrome / Edge
 """
 
 from __future__ import annotations
 
+import glob
 import html as _html
+import importlib
 import importlib.util
 import io
 import logging
@@ -440,11 +449,22 @@ class ImageRenderer:
             if css:
                 html = f"<style>{css}</style>{html}"
             async with async_playwright() as p:
-                launch_kwargs: Dict[str, Any] = {"headless": True}
-                exe = self._find_chromium()
-                if exe:
-                    launch_kwargs["executable_path"] = exe
-                browser = await p.chromium.launch(**launch_kwargs)
+                # ① 宿主原生: 不指定 executable_path, 让宿主自己的 Playwright
+                #    按 PLAYWRIGHT_BROWSERS_PATH(Launcher 冻结时注入)找浏览器
+                # ② 宿主查找函数/自带目录/系统兜底给出的显式路径
+                browser = None
+                errors: List[str] = []
+                for kwargs in self._launch_kwargs_chain():
+                    try:
+                        browser = await p.chromium.launch(**kwargs)
+                        break
+                    except Exception as exc:
+                        errors.append(f"{kwargs.get('executable_path', '宿主自带')}: "
+                                      f"{str(exc)[:110]}")
+                if browser is None:
+                    log.warning("Playwright 启动失败(宿主/兜底都不可用): %s",
+                                " | ".join(errors))
+                    return None
                 try:
                     page = await browser.new_page(viewport={"width": width, "height": height})
                     await page.set_content(html, wait_until="networkidle")
@@ -457,6 +477,20 @@ class ImageRenderer:
         except Exception as exc:
             log.warning("Playwright HTML 渲染失败: %s", exc)
             return None
+
+    @classmethod
+    def _launch_kwargs_chain(cls) -> List[Dict[str, Any]]:
+        """启动参数链: 宿主浏览器环境优先, 显式路径兜底。
+
+        顺序即"尽量走宿主":
+        1. ``{"headless": True}`` —— Playwright 用宿主 Launcher 注入的浏览器目录
+        2. ``executable_path = _find_chromium()`` —— 宿主查找函数 / 自带目录 / 系统浏览器
+        """
+        chain: List[Dict[str, Any]] = [{"headless": True}]
+        exe = cls._find_chromium()
+        if exe:
+            chain.append({"headless": True, "executable_path": exe})
+        return chain
 
     @staticmethod
     def _browser_roots() -> List[str]:
@@ -523,17 +557,70 @@ class ImageRenderer:
                 "/usr/bin/microsoft-edge", "/snap/bin/chromium"]
 
     @classmethod
+    def _host_browser_hint(cls) -> Optional[str]:
+        """优先向宿主要浏览器(宿主内置)。
+
+        插件运行在宿主进程内, 因此可以直接复用宿主自己的浏览器定位逻辑,
+        避免"插件另装一个浏览器"或版本与宿主不一致。
+        """
+        # 1) 宿主 brain 的查找器: 与宿主自带 Chromium 完全同源
+        try:
+            mod = importlib.import_module("brain.browser_use_adapter")
+        except Exception:
+            mod = None
+        if mod is not None:
+            for attr in ("_find_chrome_path", "_find_bundled_chromium"):
+                finder = getattr(mod, attr, None)
+                if callable(finder):
+                    try:
+                        exe = finder()
+                    except Exception:
+                        continue
+                    if exe and os.path.isfile(exe):
+                        log.info("帮助图使用宿主内置浏览器: %s", exe)
+                        return exe
+        # 2) browser_use 自带的系统浏览器查找(宿主同一依赖)
+        try:
+            from browser_use.browser.watchdogs.local_browser_watchdog import (
+                LocalBrowserWatchdog,
+            )
+            exe = LocalBrowserWatchdog._find_installed_browser_path()
+            if exe and os.path.isfile(exe):
+                log.info("帮助图使用宿主依赖定位的浏览器: %s", exe)
+                return exe
+        except Exception:
+            pass
+        # 3) 宿主 Launcher 注入的 Playwright 浏览器目录
+        env_dir = os.environ.get("PLAYWRIGHT_BROWSERS_PATH", "")
+        if env_dir and os.path.isdir(env_dir):
+            for pat in (("chromium-*", "chrome-win64", "chrome.exe"),
+                        ("chromium-*", "chrome-win", "chrome.exe"),
+                        ("chromium-*", "chrome-linux*", "chrome"),
+                        ("chromium-*", "chrome-mac", "Chromium.app", "Contents",
+                         "MacOS", "Chromium")):
+                matches = [p for p in glob.glob(os.path.join(env_dir, *pat))
+                           if os.path.isfile(p)]
+                if matches:
+                    matches.sort()
+                    log.info("帮助图使用宿主 PLAYWRIGHT_BROWSERS_PATH: %s", matches[-1])
+                    return matches[-1]
+        return None
+
+    @classmethod
     def _find_chromium(cls) -> Optional[str]:
         """定位可用的 Chromium 可执行文件。
 
-        优先级(与宿主一致 + 额外兜底):
-        1. Playwright 浏览器目录(PLAYWRIGHT_BROWSERS_PATH / 应用自带 / 系统 ms-playwright 缓存)
-        2. 系统已装的 Chrome / Edge / Chromium
+        优先级(**宿主内置优先**, 与宿主 brain/browser_use_adapter 一致 + 额外兜底):
+        1. 宿主自己的查找函数 / browser_use 依赖 / 宿主注入的 PLAYWRIGHT_BROWSERS_PATH
+        2. Playwright 浏览器目录(应用自带 playwright_browsers / 系统 ms-playwright 缓存)
+        3. 系统已装的 Chrome / Edge / Chromium
         应用自带的 playwright_browsers 可能只有资源文件、缺 chrome.exe
         (实测 0.9.0.2 安装包如此, 且宿主启动检查只看目录非空 → 不会自动修复),
         因此必须逐个验证文件真实存在, 并保留系统回退。
         """
-        import glob
+        host = cls._host_browser_hint()
+        if host:
+            return host
         patterns = (
             ("chromium-*", "chrome-win64", "chrome.exe"),
             ("chromium-*", "chrome-win", "chrome.exe"),

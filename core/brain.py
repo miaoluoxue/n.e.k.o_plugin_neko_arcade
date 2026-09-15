@@ -9,6 +9,7 @@ import time
 from typing import Any, Dict, List, Optional
 
 from .emotion import EmotionRenderer
+from .help import HelpRenderer, normalize_help, resolve_topic, split_help_intent
 from .memory import GameMemory
 from .persona import Persona
 from .proactive import ProactiveEngine
@@ -51,6 +52,8 @@ class GameBrain:
         # 默认 15 分钟, 可用配置 background_active_window 调整。
         self._last_activity_ts = 0.0
         self._background_active_window = float(cfg.get("background_active_window", 900.0))
+        # 统一帮助渲染器(懒加载): 游戏只给 help.json 数据, 主题与排版由插件解决
+        self._help_rend: Optional[HelpRenderer] = None
 
     def _load_host_persona(self) -> Optional[Dict[str, Any]]:
         try:
@@ -173,8 +176,11 @@ class GameBrain:
 
         if not self._current_game:
             await self._start_session(game_id, user_id)
-        if "帮助" in (cmd or "") or (cmd or "").strip() in ("?", "help"):
-            return await self.show_help(game_id)
+
+        # 帮助意图统一由插件拦截(游戏无需实现): 「修仙帮助」「修仙帮助 战斗」都能定位
+        help_topic = split_help_intent(cmd, strip_words=self._help_strip_words(game))
+        if help_topic is not None and len((cmd or "").strip()) <= 14:
+            return await self.show_help(game_id, topic=help_topic)
 
         # 交互语义(确认词/催促词)由 LLM 判断并决定调用什么, 主插件不硬编码词表。
         # 游戏自身可通过 outcome 语义返回待选择提示, LLM 收到后决定下一步输入。
@@ -384,19 +390,83 @@ class GameBrain:
         mood = self.persona.mood.primary()
         return await self.img.render_card(game.name, "游戏结果", lines, outcome, mood)
 
-    async def show_help(self, game_id: str) -> Dict[str, Any]:
-        """渲染并推送游戏帮助文档图。任何失败都兜底推纯文本帮助。"""
+    # ── 统一帮助系统 ──────────────────────────────────────
+    def _help_renderer(self) -> HelpRenderer:
+        """懒加载统一帮助渲染器(素材与缓存都取自插件自身路径)。"""
+        if self._help_rend is None:
+            code_dir = str(getattr(self.plugin, "plugin_dir", "") or "")
+            cache_dir = ""
+            cache_path = getattr(self.plugin, "cache_path", None)
+            if callable(cache_path):
+                try:
+                    cache_dir = str(cache_path("help"))
+                except Exception as exc:      # 老宿主没有 cache_path → 不缓存
+                    log.debug("cache_path 不可用, 帮助图不缓存: %s", exc)
+            self._help_rend = HelpRenderer(self.img, code_dir, cache_dir)
+        return self._help_rend
+
+    @staticmethod
+    def _help_strip_words(game: Any) -> List[str]:
+        """帮助主题里要去掉的噪声词: 游戏名 + 该游戏触发关键词(长度 ≥2)。"""
+        words = {str(getattr(game, "name", "") or ""), str(getattr(game, "id", "") or "")}
+        try:
+            words.update(str(w) for w in (game.get_keywords() or []))
+        except Exception:
+            pass
+        return [w for w in words if len(w) >= 2]
+
+    def _help_theme(self) -> str:
+        """帮助图主题: 主配置 help.theme(light/dark), 缺省官方亮色。"""
+        try:
+            cfg = (self.cfg_mgr.load_main_config() or {}) if self.cfg_mgr else {}
+        except Exception:
+            cfg = {}
+        section = cfg.get("help") if isinstance(cfg.get("help"), dict) else {}
+        theme = str(section.get("theme") or cfg.get("help_theme") or "light").lower()
+        return theme if theme in ("light", "dark") else "light"
+
+    async def show_help(self, game_id: str, topic: str = "") -> Dict[str, Any]:
+        """渲染并推送游戏帮助图(支持功能主题)。
+
+        topic 为空 → 目录页(或老格式单页); topic 命中分组/指令 → 对应页;
+        未命中 → 目录页 + 近似建议。任何失败都逐级降级: 统一渲染器 → 旧 HTML 渲染
+        → PIL → 纯文本, 保证用户至少拿到可读的指令清单。
+        """
         game = self.registry.get(game_id)
         if not game:
             msg = f"没有找到游戏「{game_id}」喵"
             return {"message": msg, "summary": msg}
         try:
             help_data = await self.registry.get_help(game_id)
-            commands = (help_data or {}).get("commands", []) or []
-            text = (help_data or {}).get("text", "") or ""
+            doc = normalize_help(help_data or {}, game_id, game.name)
+            page = resolve_topic(doc, topic)
+
+            # ① 统一渲染器(官方 UI Kit 视觉 + 主题)
+            try:
+                renderer = self._help_renderer()
+                pages = await renderer.render(doc, page, theme=self._help_theme())
+            except Exception as exc:
+                log.warning("统一帮助渲染失败: %s", exc)
+                pages = []
+            if pages:
+                label = doc.title or game.name
+                if page.kind == "group" and page.group is not None:
+                    label = f"{label} · {page.group.name}"
+                elif page.kind == "command" and page.command is not None:
+                    label = f"{label} · {page.command.cmd}"
+                for i, page_bytes in enumerate(pages):
+                    title = f"{label} 帮助" + (f" ({i + 1}/{len(pages)})"
+                                             if len(pages) > 1 else "")
+                    await self.push.help_doc(title, page_bytes,
+                                             doc.text if i == 0 else None)
+                msg = f"已发送 {label} 的帮助喵"
+                return {"message": msg, "summary": msg, "image": True}
+
+            # ② 旧路径: 浏览器渲染扁平帮助 → PIL → 纯文本
+            commands = [c.as_pair() for c in (doc.all_commands() or doc.flat)]
+            text = doc.text
             if commands:
                 try:
-                    # 浏览器(HTML/CSS)渲染优先——排版更精细; 无浏览器环境回退 PIL 绘制
                     pages = None
                     html_render = getattr(self.img, "render_help_html", None)
                     if callable(html_render):

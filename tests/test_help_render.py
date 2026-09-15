@@ -68,3 +68,54 @@ def test_find_chromium_only_returns_real_files() -> None:
     """定位到的浏览器必须真实存在——不能是被剥空的目录(0.9.0.2 自带包就是这个坑)。"""
     exe = ImageRenderer()._find_chromium()
     assert exe is None or os.path.isfile(exe), exe
+
+
+def test_host_browser_is_preferred(monkeypatch) -> None:
+    """出图优先走宿主内置: 宿主自己的查找函数给出的浏览器必须排在最前。"""
+    import types
+
+    fake_exe = os.path.abspath(__file__)          # 任意真实文件充当"浏览器"
+
+    def fake_import(name: str, *a, **kw):
+        if name == "brain.browser_use_adapter":
+            return types.SimpleNamespace(_find_chrome_path=lambda: fake_exe)
+        raise ImportError(name)
+
+    monkeypatch.setattr("importlib.import_module", fake_import)
+    assert ImageRenderer._host_browser_hint() == fake_exe
+    assert ImageRenderer._find_chromium() == fake_exe
+
+
+def test_host_hint_ignores_missing_browser(monkeypatch) -> None:
+    """宿主给的路径不存在时必须继续往下找, 不能返回坏路径。"""
+    import types
+
+    def fake_import(name: str, *a, **kw):
+        if name == "brain.browser_use_adapter":
+            return types.SimpleNamespace(_find_chrome_path=lambda: r"Z:\nope\chrome.exe")
+        raise ImportError(name)
+
+    monkeypatch.setattr("importlib.import_module", fake_import)
+    monkeypatch.setattr(ImageRenderer, "_browser_roots", classmethod(lambda cls: []))
+    monkeypatch.setattr(ImageRenderer, "_system_browser_candidates",
+                        staticmethod(lambda: []))
+    assert ImageRenderer._host_browser_hint() is None
+    assert ImageRenderer._find_chromium() is None
+
+
+def test_launch_chain_prefers_host_environment(monkeypatch) -> None:
+    """渲染尽量走宿主: 首选"不指定 exe"(宿主 PLAYWRIGHT_BROWSERS_PATH), 显式路径兜底。"""
+    chain = ImageRenderer._launch_kwargs_chain()
+    assert chain[0] == {"headless": True}
+    assert "executable_path" not in chain[0]
+    monkeypatch.setattr(ImageRenderer, "_find_chromium",
+                        classmethod(lambda cls: r"C:\host\chrome.exe"))
+    chain2 = ImageRenderer._launch_kwargs_chain()
+    assert chain2[0] == {"headless": True}
+    assert chain2[1]["executable_path"] == r"C:\host\chrome.exe"
+
+
+def test_launch_chain_without_any_browser(monkeypatch) -> None:
+    """找不到任何浏览器时链上只有宿主环境一项(交给 Playwright 自己解析)。"""
+    monkeypatch.setattr(ImageRenderer, "_find_chromium", classmethod(lambda cls: None))
+    assert ImageRenderer._launch_kwargs_chain() == [{"headless": True}]
