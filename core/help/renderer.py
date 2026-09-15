@@ -26,7 +26,7 @@ from .themes import AssetResolver, icon_glyph, theme_tokens, theme_veil
 log = logging.getLogger(__name__)
 
 WIDTH = 740
-CATALOG_HEIGHT_BUDGET = 660    # 目录页卡片区高度预算(px): 按估高打包, 保持比例合适
+CATALOG_HEIGHT_BUDGET = 1400   # 总图每页高度预算(px): 装得下就一页给全, 装不下才分页
 GROUP_CMD_PER_PAGE = 22        # 分组页每页指令数
 FLAT_CMD_PER_PAGE = 26         # 扁平(老格式)帮助每页指令数
 
@@ -65,8 +65,8 @@ body { width:%(width)dpx; position:relative; color:var(--text); background:var(-
   background:var(--primary); }
 .badge[data-tone="info"]::before { background:var(--info); }
 .card-bd { padding:10px 13px 13px; }
-.chips { display:flex; flex-wrap:wrap; gap:6px; }
-.chip { border:1px solid var(--border); border-radius:999px; padding:3px 9px; font-size:12px;
+.chips { display:flex; flex-wrap:wrap; gap:5px; }
+.chip { border:1px solid var(--border); border-radius:999px; padding:2px 8px; font-size:11.5px;
   background:var(--surface-strong); }
 .chip.more { color:var(--muted); }
 .tip { border:1px solid rgba(230,162,60,0.28); border-radius:14px; padding:11px 12px;
@@ -76,9 +76,13 @@ body { width:%(width)dpx; position:relative; color:var(--text); background:var(-
   object-position:center 16%%; border:1px solid rgba(230,162,60,0.45); }
 .grid2 { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
 .grid1 { display:grid; grid-template-columns:1fr; gap:12px; }
-.subs { display:flex; flex-wrap:wrap; gap:6px; margin-top:8px; }
-.sub { display:inline-flex; align-items:center; gap:5px; border:1px solid var(--border);
-  border-radius:var(--radius-sm); background:var(--surface); padding:4px 8px; }
+/* 总图: 大类 → 子分组 → 逐条指令 */
+.subrows { display:grid; gap:10px; }
+.subrow { display:flex; flex-wrap:wrap; align-items:center; gap:6px; }
+.subico { font-size:14px; }
+.subnm { font-size:12.5px; font-weight:650; color:var(--text); }
+.subn { font-size:11px; color:var(--muted); background:rgba(148,163,184,0.12);
+  border-radius:999px; padding:1px 7px; margin-right:2px; }
 .sub-nm { font-size:12px; color:var(--text); }
 .sub-n { font-size:11px; color:var(--muted); }
 .table { width:100%%; border-collapse:separate; border-spacing:0; overflow:hidden;
@@ -302,45 +306,45 @@ class HelpRenderer:
 
     # ── 页面类型 ─────────────────────────────────────────
     def _group_card(self, group: Group, index: int, cols: int = 2) -> str:
-        """分组卡: 组名 + 总条数 + 代表指令; 有子分组时并列展示(二级收在父卡里)。"""
+        """分组卡: 组名 + 条数 + 代表指令(3 条 + "+N"); 有子分组时在卡内展开。"""
         own = [c.cmd for c in group.commands]
         total = len(group.all_commands())
-        badge_tone = ' data-tone="info"' if index % 2 else ""
+        tone = ' data-tone="info"' if index % 2 else ""
         chips = self._chips(own, limit=3 if cols == 2 else 6, total=len(own)) if own else ""
         subs = ""
         if group.groups:
             rows = "".join(
-                '<div class="sub"><span class="emoji">%s</span>'
-                '<span class="sub-nm">%s</span><span class="sub-n">%d</span></div>'
-                % (self._icon(s.icon), _esc(s.name), len(s.all_commands()))
+                f'<div class="subrow"><span class="subico emoji">{self._icon(s.icon)}</span>'
+                f'<span class="subnm">{_esc(s.name)}</span>'
+                f'<span class="subn">{len(s.all_commands())}</span></div>'
                 for s in group.groups)
-            subs = f'<div class="subs">{rows}</div>'
+            subs = f'<div class="subrows">{rows}</div>'
         return (f'<div class="card"><div class="card-hd"><span class="emoji">'
                 f'{self._icon(group.icon)}</span><span class="card-tt">{_esc(group.name)}'
-                f'</span><span class="badge"{badge_tone}>{total} 条</span></div>'
+                f'</span><span class="badge"{tone}>{total} 条</span></div>'
                 f'<div class="card-bd">{chips}{subs}</div></div>')
 
     @staticmethod
-    def _estimate_card(group: Group, cols: int) -> int:
-        """预估一张分组卡的高度(px): 用于按比例分页(避免半空页/挤压)。"""
+    def _estimate_card(group: Group, cols: int = 2) -> int:
+        """预估一张分组卡高度(px): 用于按比例分页(避免半空页/挤压)。"""
         per_row = 3 if cols == 2 else 6
-        n = len(group.commands)
-        chip_rows = max(1, (min(n, per_row) + per_row - 1) // per_row) if n else 0
-        return 62 + chip_rows * 30 + len(group.groups) * 30
+        n = min(len(group.commands), per_row)
+        chip_rows = max(1, (n + per_row - 1) // per_row) if group.commands else 0
+        return 62 + chip_rows * 30 + len(group.groups) * 26
 
     @classmethod
     def _pack_catalog(cls, groups: Sequence[Group], cols: int,
                       budget: int) -> List[List[Group]]:
-        """按预估高度把分组打包成页: 每页高度不超过预算, 保持行列整齐。"""
+        """按预估高度把分组打包成页: 两列成行, 每页不超过高度预算。"""
         pages: List[List[Group]] = []
         cur: List[Group] = []
         used = 0
         for g in groups:
             h = cls._estimate_card(g, cols)
             row_h = h
-            if cur and len(cur) % cols != 0:            # 与本行已有卡作伴
+            if cur and len(cur) % cols != 0:              # 与本行已有卡作伴
                 prev_h = cls._estimate_card(cur[-1], cols)
-                row_h = max(h, prev_h) - prev_h         # 只补差额
+                row_h = max(h, prev_h) - prev_h           # 只补差额
             if cur and used + row_h > budget:
                 pages.append(cur)
                 cur, used, row_h = [], 0, h
@@ -351,16 +355,16 @@ class HelpRenderer:
         return pages or [[]]
 
     def _catalog(self, doc: HelpDoc, page: Page) -> List[str]:
+        """总图: 功能分组一眼看全, 每张卡带代表指令; 分组多时按估高分页。"""
         groups = doc.groups
-        # 比例自适应: 分组少 → 单列大卡(舒展); 分组多 → 两列(紧凑); 分页按估高打包
         cols = 1 if len(groups) <= 4 else 2
         chunks = self._pack_catalog(groups, cols, CATALOG_HEIGHT_BUDGET)
         out: List[str] = []
         for pi, chunk in enumerate(chunks):
             cards = [self._group_card(g, i, cols) for i, g in enumerate(chunk)]
             grid_cls = "grid2" if cols == 2 else "grid1"
-            pairs = "".join(f'<div class="{grid_cls}">{"".join(cards[k:k + cols])}</div>'
-                            for k in range(0, len(cards), cols))
+            rows = "".join(f'<div class="{grid_cls}">{"".join(cards[k:k + cols])}</div>'
+                           for k in range(0, len(cards), cols))
             subtitle = doc.subtitle or (doc.text and doc.text[:60]) or ""
             if len(chunks) > 1:
                 subtitle = f"{subtitle} （{pi + 1}/{len(chunks)}）".strip()
@@ -375,7 +379,7 @@ class HelpRenderer:
                       f'<div class="v">{len(groups)}</div></div>'
                       f'<div class="stat"><div class="l">指令总数</div>'
                       f'<div class="v">{doc.command_count}</div></div></div>'
-                    + self._tip(tip_body) + pairs + self._foot())
+                    + self._tip(tip_body) + rows + self._foot())
             out.append(body)
         return out
 

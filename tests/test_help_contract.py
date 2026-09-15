@@ -189,8 +189,8 @@ def _xiuxian_doc():
 def test_xiuxian_help_covers_all_commands() -> None:
     doc = _xiuxian_doc()
     assert doc.grouped
-    assert len(doc.groups) == 6                      # 6 大类(父分组)
-    assert sum(len(g.groups) for g in doc.groups) == 12   # 12 子分组
+    assert len(doc.groups) == 11                     # 11 个功能分组直接可见
+    assert sum(len(g.groups) for g in doc.groups) == 0    # 修仙不需要再分二级
     assert doc.command_count == 61
     # 老字段保留(面板 get_game_config 仍读 commands/text)
     assert doc.flat and doc.text
@@ -198,22 +198,21 @@ def test_xiuxian_help_covers_all_commands() -> None:
 
 def test_xiuxian_topics_resolve() -> None:
     doc = _xiuxian_doc()
-    # 父分组
-    assert resolve_topic(doc, "装备道具").group.name == "装备道具"
-    assert resolve_topic(doc, "生活").group.name == "生活经营"
-    # 子分组(含别名)
+    # 功能分组(含别名)
     bag = resolve_topic(doc, "纳戒")
-    assert bag.kind == "group" and bag.group.name == "纳戒背包"
+    assert bag.kind == "group" and bag.group.name == "装备与道具"
+    assert bag.group.blocks                          # 分组页带版式块(装备栏/背包格)
     assert resolve_topic(doc, "战斗").group.name == "战斗挑战"
-    # 指令级: 「我的纳戒」有专属图, 命中指令而不是分组
+    assert resolve_topic(doc, "生活").group.name == "生活职业"
+    # 指令级: 「我的纳戒」有专属图 → 命中指令而不是分组
     cmd = resolve_topic(doc, "我的纳戒")
     assert cmd.kind == "command" and cmd.command.cmd == "我的纳戒"
     assert cmd.command.has_own_page
     assert cmd.command.blocks[0]["type"] == "bag"
+    assert resolve_topic(doc, "我的装备").command.has_own_page
     # 带参数指令仍可寻址
     param = resolve_topic(doc, "装备 X")
     assert param.kind == "command" and param.command.cmd == "装备 X"
-    assert resolve_topic(doc, "我的装备").command.has_own_page
 
 
 def test_xiuxian_parent_aliases_do_not_shadow_children() -> None:
