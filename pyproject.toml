@@ -1,6 +1,6 @@
 [project]
 name = "neko_arcade"
-version = "0.4.0"
+version = "0.5.6"
 description = "N.E.K.O mini-games hub: catgirl plays fishing, turtle-soup, coin-flip and more."
 requires-python = ">=3.11"
 license = "Apache-2.0"
@@ -15,6 +15,8 @@ exclude_dirs = [
     "tests",
     ".tmp_neko_photo_test",
     ".tmp_push_sender_test",
+    # 喵图相册图库: 用户上传/自建的图**绝不进包**(打包发布默认空图库)
+    "games/neko_photo/data",
 ]
 exclude_files = [
     ".gitignore",
