@@ -19,7 +19,6 @@ from __future__ import annotations
 import logging
 import os
 import random
-import shutil
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -90,34 +89,36 @@ class PhotoBridge:
 
     # ── 图库根目录 ─────────────────────────
 
-    def _legacy_root(self) -> Path:
-        """老位置: 插件代码目录下 games/neko_photo/data(会被打包, 仅用于一次性迁移)。"""
-        return Path(self.plugin.config_dir) / "games" / "neko_photo" / "data"
-
     def _img_root(self) -> Path:
-        """图库根目录 —— **宿主私有存储**, 绝不落在插件代码目录。
+        """图库根目录: ``games/neko_photo/data/``(与游戏资源同处, 便于用户直接丢图)。
 
-        优先级: 测试注入 > 显式 override > ``plugin.data_path("neko_photo")``
-        > 解析出的数据目录/neko_photo > 老位置(仅本地开发兜底)。
-
-        这样上传/自建的图不会被打进插件包, 打包发出去默认就是**空图库**。
+        该目录**不进 git**(.gitignore 已排除), 因此打包发布时保持为空;
+        只有当插件目录不可写(例如只读安装位置)时才退化到宿主私有存储。
         """
         override = getattr(self, "_local_scan_dir", None)
         if override:
             return Path(override)
         if self._img_root_override:
             return Path(self._img_root_override)
-        data_path = getattr(self.plugin, "data_path", None)
-        if callable(data_path):
-            try:
-                return Path(data_path("neko_photo"))
-            except Exception as exc:        # 老宿主没有 data_path → 继续往下退
-                log.debug("data_path 不可用, 图库退回数据目录: %s", exc)
+        root = Path(self.plugin.config_dir) / "games" / "neko_photo" / "data"
         try:
-            from ..core.config_manager import resolve_data_dir
-            return Path(resolve_data_dir(self.plugin)) / "neko_photo"
-        except Exception:
-            return self._legacy_root()
+            root.mkdir(parents=True, exist_ok=True)
+            probe = root / ".write_probe"
+            probe.touch()
+            probe.unlink()
+            return root
+        except OSError:
+            # 只读安装位置: 退到宿主私有存储, 保证发图/上传仍可用
+            data_path = getattr(self.plugin, "data_path", None)
+            if callable(data_path):
+                try:
+                    fallback = Path(data_path("neko_photo"))
+                    fallback.mkdir(parents=True, exist_ok=True)
+                    log.info("图库目录只读, 改用宿主私有存储: %s", fallback)
+                    return fallback
+                except Exception as exc:
+                    log.warning("私有存储也不可用: %s", exc)
+            return root
 
     def _ensure_root(self) -> Path:
         """确保图库根目录存在(默认空库, 用时才建)。"""
@@ -127,39 +128,6 @@ class PhotoBridge:
         except OSError as exc:
             log.warning("图库目录不可用 %s: %s", root, exc)
         return root
-
-    def migrate_legacy_gallery(self) -> int:
-        """把老代码目录里的图库**搬**到私有存储(只做一次, 目标非空则跳过)。
-
-        返回搬运的图片数; 迁移后代码目录不再作为工作图库, 打包自然为空。
-        """
-        legacy = self._legacy_root()
-        root = self._img_root()
-        if not legacy.is_dir() or legacy == root:
-            return 0
-        try:
-            if any(root.rglob("*")) and self.scan_images():
-                return 0
-        except OSError:
-            pass
-        moved = 0
-        for src in sorted(legacy.rglob("*")):
-            if not src.is_file() or src.suffix.lower() not in IMG_EXTS:
-                continue
-            rel = src.relative_to(legacy)
-            dst = root / rel
-            try:
-                dst.parent.mkdir(parents=True, exist_ok=True)
-                if not dst.exists():
-                    shutil.copy2(src, dst)
-                    moved += 1
-            except OSError as exc:
-                log.debug("图库迁移跳过 %s: %s", src, exc)
-        if moved:
-            log.info("喵图相册图库已迁移到私有存储: %d 张 → %s", moved, root)
-            self._img_cache = []
-            self._img_scan_ts = 0.0
-        return moved
 
     # ── 图库扫描 / 分类 ─────────────────────
 
@@ -174,17 +142,10 @@ class PhotoBridge:
         """递归扫描图库目录下所有分类的图片(带 10s 缓存)。
 
         每张图带 category(分类) + bytes(交 brain 统一推送)。
-        首次扫描顺带把老位置(代码目录)的图库迁移到私有存储。
         """
         now = time.time()
         if self._img_cache and now - self._img_scan_ts < 10.0:
             return self._img_cache
-        if not getattr(self, "_migrated", False):
-            self._migrated = True
-            try:
-                self.migrate_legacy_gallery()
-            except Exception as exc:
-                log.debug("图库迁移失败(忽略): %s", exc)
         self._img_cache = []
         self._img_scan_ts = now
         root = self._img_root()
