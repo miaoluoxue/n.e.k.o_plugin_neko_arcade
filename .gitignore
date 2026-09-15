@@ -3,6 +3,7 @@ __pycache__/
 .pytest_cache/
 pytest-cache-files-*/
 .tmp_*_test/
+tests/_photo_tmp/
 .mypy_cache/
 .ruff_cache/
 .venv/
@@ -16,3 +17,6 @@ store.db
 .DS_Store
 *.neko-plugin
 *.neko-bundle
+
+# 喵图相册图库: 用户上传/自建的图不进包(正式位置在宿主私有存储, 这里只是兜底)
+games/neko_photo/data/

@@ -104,6 +104,17 @@ def _make_game(tmp_path):
     return game, plugin
 
 
+def _clean_uploads(game, fname: str, category: str) -> None:
+    """删除共享 tmp 目录里上次运行残留的同名上传文件(测试隔离)。"""
+    cat_dir = game._photo._img_root() / category
+    target = cat_dir / fname
+    if target.exists():
+        target.unlink()
+    # 扫描缓存刷新
+    game._photo._img_cache = []
+    game._photo._img_scan_ts = 0.0
+
+
 def test_neko_photo_send_and_album():
     async def run():
         game, plugin = _make_game(_TMP)
@@ -164,13 +175,13 @@ def test_neko_photo_on_tick_auto_send():
     async def run():
         game, plugin = _make_game(_TMP)
         uid = "user_3"
-        # 清空推送记录
+        # 定时刷图默认关闭(频率交给 LLM), 本用例显式打开
+        game._config = {**CFG, "auto_send_enabled": True, "send_min_interval": 90}
         plugin.pushes.clear()
-        # 立即触发自动发图
         game._next_auto_ts = 0.0
         await game.on_tick(uid)
-        assert plugin.pushes, "on_tick 应自动推图"
-        # 再次调用应进入冷却(不推)
+        assert plugin.pushes, "on_tick 打开后应自动推图"
+        # 频率闸门生效: 紧接着再 tick 不应再推(受 _next_auto_ts 与冷却双重限制)
         before = len(plugin.pushes)
         await game.on_tick(uid)
         assert len(plugin.pushes) == before, "冷却期内不应重复发图"
@@ -178,14 +189,22 @@ def test_neko_photo_on_tick_auto_send():
     asyncio.run(run())
 
 
-def test_neko_photo_background_tick_flag():
-    """后台自动发图标记: 无会话时 brain.tick 也会调 neko_photo 的 on_tick。"""
+def test_neko_photo_timed_auto_send_is_off_by_default():
+    """默认不靠定时刷图: 频率由猫娘(LLM)自己判断, 插件只兜上限。"""
     async def run():
         game, plugin = _make_game(_TMP)
-        # 标记必须存在, brain._tick_background_games 靠它发现后台游戏
         assert getattr(game, "background_tick", False) is True, "neko_photo 需标记 background_tick"
-        # 默认自动发图开启
-        assert game._cfg("auto_send_enabled", True) is True
+        assert game._cfg("auto_send_enabled", False) is False, "定时刷图默认应关闭"
+        # 关着的时候 tick 不该推图
+        plugin.pushes.clear()
+        game._next_auto_ts = 0.0
+        await game.on_tick("user_3")
+        assert not plugin.pushes, "定时刷图关闭时 on_tick 不应推图"
+        # 但 LLM 主动调用仍然可用(想发就发), 且闸门有效
+        r = await game.send_random_photo("user_3")
+        assert r.get("ok"), r
+        r2 = await game.send_random_photo("user_3")
+        assert not r2.get("ok") and r2.get("limited"), "紧接着再发应被频率闸门拦下"
 
     asyncio.run(run())
 
@@ -196,6 +215,8 @@ def test_neko_photo_brain_background_tick():
         from plugin.plugins.neko_arcade.core.brain import GameBrain
 
         game, plugin = _make_game(_TMP)
+        game._config = {**CFG, "auto_send_enabled": True,
+                        "send_min_interval": 0}   # 本用例测后台触发, 关掉冷却干扰
         plugin.pushes.clear()
 
         class FakeRegistry:
@@ -229,6 +250,8 @@ def test_neko_photo_brain_background_tick_activity_gate():
         from plugin.plugins.neko_arcade.core.brain import GameBrain
 
         game, plugin = _make_game(_TMP)
+        game._config = {**CFG, "auto_send_enabled": True,
+                        "send_min_interval": 0}   # 本用例测活跃窗口, 关掉冷却干扰
         plugin.pushes.clear()
 
         class FakeRegistry:
@@ -267,6 +290,8 @@ def test_neko_photo_brain_on_owner_speak_refreshes_activity():
         from plugin.plugins.neko_arcade.core.brain import GameBrain
 
         game, plugin = _make_game(_TMP)
+        game._config = {**CFG, "auto_send_enabled": True,
+                        "send_min_interval": 0}   # 本用例测活跃窗口刷新, 关掉冷却干扰
         plugin.pushes.clear()
 
         class FakeProactive:
@@ -346,6 +371,8 @@ def test_neko_photo_upload_with_category():
         game, plugin = _make_game(_TMP)
         uid = "user_5"
         fake_b64 = base64.b64encode(_FAKE_IMG).decode()
+        _clean_uploads(game, "mypic.png", "我的图")
+        _clean_uploads(game, "y.png", "evil")
         r = await game.upload_photo(uid, name="mypic.png", data_b64=fake_b64,
                                     category="我的图")
         assert r["ok"] is True, r
@@ -376,6 +403,7 @@ def test_neko_photo_upload_to_existing_category():
         game, plugin = _make_game(_TMP)
         uid = "user_6"
         fake_b64 = base64.b64encode(_FAKE_IMG).decode()
+        _clean_uploads(game, "more_cute.png", "可爱")
         r = await game.upload_photo(uid, name="more_cute.png", data_b64=fake_b64,
                                     category="可爱")
         assert r["ok"] is True, r
@@ -388,6 +416,43 @@ def test_neko_photo_upload_to_existing_category():
     asyncio.run(run())
 
 
+def test_neko_photo_upload_duplicate_rejected():
+    """重复上传同名图片: 保留原名, 但提示重复并跳过, 不产生第二份。"""
+    import base64
+
+    async def run():
+        game, plugin = _make_game(_TMP)
+        uid = "user_8"
+        fake_b64 = base64.b64encode(_FAKE_IMG).decode()
+        # 清理共享 tmp 目录里上次运行的残留(测试隔离)
+        cat_dir = game._photo._img_root() / "可爱"
+        for p in list(cat_dir.iterdir()):
+            if p.name.startswith("dupkeep"):
+                p.unlink()
+        r1 = await game.upload_photo(uid, name="dupkeep.png", data_b64=fake_b64,
+                                     category="可爱")
+        assert r1["ok"] is True, r1
+        assert r1["filename"] == "dupkeep.png", r1  # 命名保持原样
+
+        # 重复上传同名 → 拒绝并提示, 不写入
+        r2 = await game.upload_photo(uid, name="dupkeep.png", data_b64=fake_b64,
+                                     category="可爱")
+        assert r2["ok"] is False, r2
+        assert r2.get("duplicate") is True, r2
+        assert "重复" in r2.get("message", ""), r2
+
+        # 图库里仍只有一份, 没有重复图共存
+        names = [p.name for p in cat_dir.iterdir() if p.name.startswith("dupkeep")]
+        assert names == ["dupkeep.png"], names
+
+        # 不同名字不误伤
+        r3 = await game.upload_photo(uid, name="dupkeep2.png", data_b64=fake_b64,
+                                     category="可爱")
+        assert r3["ok"] is True, r3
+
+    asyncio.run(run())
+
+
 def test_neko_photo_custom_category_command():
     """自创文件夹(分类)也要支持命令发图, 即使分类名含"图/照片"等词。"""
     import base64
@@ -396,6 +461,7 @@ def test_neko_photo_custom_category_command():
         game, plugin = _make_game(_TMP)
         uid = "user_7"
         fake_b64 = base64.b64encode(_FAKE_IMG).decode()
+        _clean_uploads(game, "my_cat.png", "我的猫图")
         # 自创分类「我的猫图」(含"图"字, 旧剥词逻辑会破坏)
         r = await game.upload_photo(uid, name="my_cat.png", data_b64=fake_b64,
                                     category="我的猫图")

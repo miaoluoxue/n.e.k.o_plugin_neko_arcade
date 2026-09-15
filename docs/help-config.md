@@ -221,3 +221,26 @@ weapon armor trinket herb pill book gem misc help
 - 素材（猫娘头像 / `yui竖` 背景 / 立绘 / 徽章）全部来自插件自身 `assets/`、
   `static/img/`，以 data URI 内联进图，**离线可用且随插件目录迁移不丢图**
 - 渲染结果按 HTML 哈希缓存在插件私有缓存目录，同内容不重复起浏览器
+
+## 9. 猫娘图库（喵图相册）
+
+图库属于**用户数据**，与插件包严格分开：
+
+| 项 | 位置 | 说明 |
+|---|---|---|
+| 图库根目录 | 宿主私有存储 `data_path()/neko_photo/` | **不在插件代码目录**，上传/自建的图不会被打进包 |
+| 打包默认 | **空图库** | 包里不带任何相册图片（`games/neko_photo/data/` 已在 .gitignore） |
+| 老图库 | 原来在 `games/neko_photo/data/` | 首次使用时**一次性迁移**到私有存储 |
+| 空库兜底 | 插件自带 `assets/icon.png` | 图库为空也照样能发图，不会出现"指令不出图" |
+
+**发图频率**：由猫娘（LLM）自己判断——想发就发，插件只兜上限：
+
+| 配置键 | 默认 | 作用 |
+|---|---|---|
+| `send_min_interval` | 90 | 两次发图最短间隔（秒），0 = 不限 |
+| `send_max_per_hour` | 6 | 每小时上限 |
+| `max_photos_per_day` | 50 | 每日上限 |
+| `auto_send_enabled` | false | 定时刷图开关（默认关，频率交给 LLM） |
+
+被闸门拦下时，`send_photo` 工具返回 `ok:false + limited:true + retry_after`，
+LLM 看到就知道"刚发过"，不会连续刷图。

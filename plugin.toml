@@ -2,9 +2,9 @@
 id = "neko_arcade"
 type = "plugin"
 name = "猫娘小游戏"
-description = "让猫娘陪你玩各种小游戏——钓鱼、海龟汤、猜硬币、修仙……一个插件，无限可能。"
-short_description = "Neko mini-games hub for N.E.K.O."
-keywords = ["game", "游戏", "小游戏", "mini-games", "fun", "play", "玩"]
+description = "让猫娘陪你玩各种小游戏——钓鱼、海龟汤、猜硬币、修仙、喵图相册(发图/看照片/自拍)……一个插件，无限可能。"
+short_description = "Neko mini-games hub (钓鱼/修仙/喵图相册发图等) for N.E.K.O."
+keywords = ["game", "游戏", "小游戏", "mini-games", "fun", "play", "玩", "喵图", "喵图相册", "发图", "看照片", "自拍", "图库"]
 version = "0.5.5"
 entry = "plugins.neko_arcade:NekoArcadePlugin"
 

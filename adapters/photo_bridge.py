@@ -16,11 +16,15 @@ markdown URL 通道显示(当前宿主唯一可靠的游戏图片显示通道)�
 
 from __future__ import annotations
 
+import logging
 import os
 import random
+import shutil
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+log = logging.getLogger("neko_arcade.photo")
 
 IMG_EXTS = (".png", ".jpg", ".jpeg", ".webp", ".gif")
 
@@ -86,16 +90,76 @@ class PhotoBridge:
 
     # ── 图库根目录 ─────────────────────────
 
+    def _legacy_root(self) -> Path:
+        """老位置: 插件代码目录下 games/neko_photo/data(会被打包, 仅用于一次性迁移)。"""
+        return Path(self.plugin.config_dir) / "games" / "neko_photo" / "data"
+
     def _img_root(self) -> Path:
-        """图库根目录: 默认 games/neko_photo/data/ (测试可注入 _local_scan_dir)。"""
+        """图库根目录 —— **宿主私有存储**, 绝不落在插件代码目录。
+
+        优先级: 测试注入 > 显式 override > ``plugin.data_path("neko_photo")``
+        > 解析出的数据目录/neko_photo > 老位置(仅本地开发兜底)。
+
+        这样上传/自建的图不会被打进插件包, 打包发出去默认就是**空图库**。
+        """
         override = getattr(self, "_local_scan_dir", None)
         if override:
             return Path(override)
         if self._img_root_override:
             return Path(self._img_root_override)
-        # 默认: 游戏资源目录 games/neko_photo/data/
-        game_dir = Path(self.plugin.config_dir) / "games" / "neko_photo" / "data"
-        return game_dir
+        data_path = getattr(self.plugin, "data_path", None)
+        if callable(data_path):
+            try:
+                return Path(data_path("neko_photo"))
+            except Exception as exc:        # 老宿主没有 data_path → 继续往下退
+                log.debug("data_path 不可用, 图库退回数据目录: %s", exc)
+        try:
+            from ..core.config_manager import resolve_data_dir
+            return Path(resolve_data_dir(self.plugin)) / "neko_photo"
+        except Exception:
+            return self._legacy_root()
+
+    def _ensure_root(self) -> Path:
+        """确保图库根目录存在(默认空库, 用时才建)。"""
+        root = self._img_root()
+        try:
+            root.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            log.warning("图库目录不可用 %s: %s", root, exc)
+        return root
+
+    def migrate_legacy_gallery(self) -> int:
+        """把老代码目录里的图库**搬**到私有存储(只做一次, 目标非空则跳过)。
+
+        返回搬运的图片数; 迁移后代码目录不再作为工作图库, 打包自然为空。
+        """
+        legacy = self._legacy_root()
+        root = self._img_root()
+        if not legacy.is_dir() or legacy == root:
+            return 0
+        try:
+            if any(root.rglob("*")) and self.scan_images():
+                return 0
+        except OSError:
+            pass
+        moved = 0
+        for src in sorted(legacy.rglob("*")):
+            if not src.is_file() or src.suffix.lower() not in IMG_EXTS:
+                continue
+            rel = src.relative_to(legacy)
+            dst = root / rel
+            try:
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                if not dst.exists():
+                    shutil.copy2(src, dst)
+                    moved += 1
+            except OSError as exc:
+                log.debug("图库迁移跳过 %s: %s", src, exc)
+        if moved:
+            log.info("喵图相册图库已迁移到私有存储: %d 张 → %s", moved, root)
+            self._img_cache = []
+            self._img_scan_ts = 0.0
+        return moved
 
     # ── 图库扫描 / 分类 ─────────────────────
 
@@ -110,10 +174,17 @@ class PhotoBridge:
         """递归扫描图库目录下所有分类的图片(带 10s 缓存)。
 
         每张图带 category(分类) + bytes(交 brain 统一推送)。
+        首次扫描顺带把老位置(代码目录)的图库迁移到私有存储。
         """
         now = time.time()
         if self._img_cache and now - self._img_scan_ts < 10.0:
             return self._img_cache
+        if not getattr(self, "_migrated", False):
+            self._migrated = True
+            try:
+                self.migrate_legacy_gallery()
+            except Exception as exc:
+                log.debug("图库迁移失败(忽略): %s", exc)
         self._img_cache = []
         self._img_scan_ts = now
         root = self._img_root()
@@ -145,16 +216,18 @@ class PhotoBridge:
 
     async def pick_photo(self, category: Optional[str] = None,
                          auto: bool = False) -> Optional[Dict[str, Any]]:
-        """随机挑一张图。
+        """随机挑一张图(永不返回 None, 保证指令/自动发图都有图可发)。
 
-        category 指定时只在该分类里挑(无图返回 None);
-        auto=True(后台自动发图)时优先本地图库, 动态表情仅兜底;
-        否则全库图片与动态渲染表情混合。
+        优先级: 本地图库 → 动态猫娘表情(PIL) → 插件自带默认图(assets/icon.png)。
+        最后一档让"默认空图库"也能发图——打包发出去是空库, 但猫娘照样能晒图。
         """
         local = self.scan_images()
         if category:
             in_cat = [i for i in local if i.get("category") == category]
-            return random.choice(in_cat) if in_cat else None
+            if in_cat:
+                return random.choice(in_cat)
+            # 指定分类为空 → 如实返回 None(不拿默认图冒充), 由调用方提示"该分类还没图"
+            return None
         if local:
             if auto:
                 return random.choice(local)
@@ -165,6 +238,24 @@ class PhotoBridge:
             return avatar
         if local:
             return random.choice(local)
+        return self._default_photo()
+
+    def _default_photo(self, prefer_category: str = "") -> Optional[Dict[str, Any]]:
+        """插件自带的默认图(猫娘图标) —— 不属于图库, 不随上传增长, 不进包之外的东西。"""
+        for rel in ("assets/icon.png", "static/img/yui-hero.webp", "static/img/logo-icon.png"):
+            path = Path(getattr(self.plugin, "config_dir", "") or "") / rel
+            if not path.is_file():
+                continue
+            try:
+                data = path.read_bytes()
+            except OSError:
+                continue
+            if not data:
+                continue
+            mime = "image/webp" if path.suffix.lower() == ".webp" else "image/png"
+            return {"bytes": data, "mime": mime, "style": "calm", "rarity": "common",
+                    "source": "default", "category": prefer_category or "默认",
+                    "path": str(path)}
         return None
 
     async def _render_avatar_photo(self) -> Optional[Dict[str, Any]]:
@@ -276,7 +367,7 @@ class PhotoBridge:
     async def upload_photo(self, user_id: str, name: str,
                            data_b64: str = "", data_bytes: bytes = b"",
                            category: str = "默认") -> Dict[str, Any]:
-        """保存用户上传的图片到 static/img/neko/<分类>/。
+        """保存用户上传的图片到图库目录 games/neko_photo/data/<分类>/。
 
         支持 base64 字符串或原始 bytes。分类不存在会自动创建。
         保存后立即刷新扫描缓存。
@@ -299,14 +390,19 @@ class PhotoBridge:
             return {"ok": False, "message": "图片超过 8MB 了喵"}
 
         cat = self._sanitize_category(category) or "默认"
-        base = self._img_root() / cat
+        base = self._ensure_root() / cat
         try:
             base.mkdir(parents=True, exist_ok=True)
         except OSError as exc:
             return {"ok": False, "message": f"无法创建分类目录: {exc}"}
 
         stem = os.path.splitext(os.path.basename(name or "photo"))[0] or "photo"
-        fname = f"{int(time.time() * 1000)}_{stem}{ext}"
+        # 文件名保持原样; 目标分类已有同名文件 → 提示重复上传, 跳过不写入(避免重复图共存)
+        fname = f"{stem}{ext}"
+        if (base / fname).exists():
+            return {"ok": False, "duplicate": True, "filename": fname,
+                    "category": cat,
+                    "message": f"「{fname}」已在「{cat}」分类里了, 重复上传已跳过喵"}
         path = base / fname
         try:
             path.write_bytes(raw)

@@ -1,6 +1,8 @@
 {
   "max_photos_per_day": 50,
-  "auto_send_enabled": true,
-  "auto_min_interval": 60,
-  "auto_max_interval": 180
+  "auto_send_enabled": false,
+  "auto_min_interval": 90,
+  "auto_max_interval": 240,
+  "send_min_interval": 90,
+  "send_max_per_hour": 6
 }

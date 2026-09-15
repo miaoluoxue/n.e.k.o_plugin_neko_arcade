@@ -55,10 +55,9 @@ class NekoPhotoGame(GameAdapter):
             return {"facts": [build_fact("stop")], "outcome": "stop",
                     "message": "相册先收起来啦, 想看了再喊我喵~"}
 
-        # 发图: 发图 / 来张图 / 照片 / 自拍 / 喵图 / 图片 / 来一张 / 看看
+        # 发图: 喵图/发图/来张图/照片/自拍(专属前缀, 避免泛化词误路由)
         # 支持分类: 「喵图 可爱」「发张 日常 的图」(发图优先于分类查看)
-        if any(k in c for k in ("发图", "来张", "来一张", "照片", "自拍",
-                                "喵图", "图片", "看看", "给我看", "晒")):
+        if any(k in c for k in ("喵图", "发图", "来张", "来一张", "照片", "自拍")):
             category = self._extract_category(c)
             return await self._send_photo(user_id, category=category)
 
@@ -159,14 +158,21 @@ class NekoPhotoGame(GameAdapter):
 
     async def send_random_photo(self, user_id: str,
                                 caption: str = "") -> Dict[str, Any]:
-        """LLM 工具入口: 猫娘聊天中自主随机发一张图(走桥接)。
+        """LLM 工具入口: 猫娘聊天中自主决定要不要发图(走桥接)。
 
-        工具/后台场景由主插件桥接直接推送(游戏通过 send_photo 桥接请求发图,
-        符合「游戏适配插件」——推送通道在主插件, 游戏不自己实现)。
+        **频率由 LLM 决定, 上限由插件兜底**: 想发就发, 但会被三个闸门拦住——
+        最小间隔、每小时张数、每日张数。被拦时返回 ok=False + 明确原因,
+        LLM 看到就知道"刚发过, 别再发了", 不会死循环刷图。
         """
+        gate = await self._check_send_gate(user_id)
+        if not gate.get("ok"):
+            return {"ok": False, "limited": True,
+                    "summary": gate.get("summary", "刚发过图, 过一会再发喵"),
+                    "retry_after": gate.get("retry_after", 0)}
         result = await self.send_photo(user_id, caption=caption)
         if not result.get("ok"):
             return {"ok": False, "summary": result.get("summary", "发图失败喵")}
+        await self._mark_sent(user_id)
         # 计入图鉴(与主动发图一致)
         data = await self._load_data(user_id)
         style = result.get("style", "unknown")
@@ -184,6 +190,55 @@ class NekoPhotoGame(GameAdapter):
         return {"ok": True, "summary": result.get("summary", ""),
                 "style": style, "rarity": rarity,
                 "category": result.get("category", "")}
+
+    # ── 发图频率闸门(LLM 想发就发, 插件封顶) ──
+
+    async def _check_send_gate(self, user_id: str) -> Dict[str, Any]:
+        """最小间隔 + 每小时上限 + 每日上限。返回 {ok, summary, retry_after}。
+
+        注意 0 是合法值(表示不限), 所以不能写成 ``cfg or default``。
+        """
+        def _num(key: str, default: float) -> float:
+            val = self._cfg(key, default)
+            if val is None or val == "":
+                return float(default)
+            try:
+                return float(val)
+            except (TypeError, ValueError):
+                return float(default)
+
+        data = await self._load_data(user_id)
+        now = time.time()
+        min_gap = _num("send_min_interval", 90)
+        per_hour = int(_num("send_max_per_hour", 6))
+        per_day = int(_num("max_photos_per_day", 50))
+
+        last = float(data.get("last_send_ts", 0) or 0)
+        if last and now - last < min_gap:
+            wait = int(min_gap - (now - last))
+            return {"ok": False, "retry_after": wait,
+                    "summary": f"刚发过图啦, {wait} 秒后再发喵"}
+        hour_ago = now - 3600
+        recent = [t for t in (data.get("send_ts_log") or []) if t >= hour_ago]
+        if per_hour > 0 and len(recent) >= per_hour:
+            return {"ok": False, "retry_after": int(3600 - (now - recent[0])),
+                    "summary": f"这一小时已经发了 {per_hour} 张啦, 歇一会再发喵"}
+        today = time.strftime("%Y-%m-%d")
+        day_count = int(data.get("today_count", 0) or 0) if data.get("day") == today else 0
+        if per_day > 0 and day_count >= per_day:
+            return {"ok": False, "retry_after": 0,
+                    "summary": f"今天已经发过 {per_day} 张图啦, 明天再来看喵~"}
+        return {"ok": True}
+
+    async def _mark_sent(self, user_id: str) -> None:
+        """记录本次发图时间(供频率闸门用)。"""
+        data = await self._load_data(user_id)
+        now = time.time()
+        log = [t for t in (data.get("send_ts_log") or []) if t >= now - 3600]
+        log.append(now)
+        data["send_ts_log"] = log[-50:]
+        data["last_send_ts"] = now
+        await self.save_user_data(user_id, data)
 
     # ── 用户上传图片(走桥接) ──────────────
 
@@ -230,21 +285,29 @@ class NekoPhotoGame(GameAdapter):
     # ── 后台自动发图(on_tick, 走桥接) ─────
 
     async def on_tick(self, user_id: str) -> None:
-        """由 brain 每秒调用(含无会话的后台 tick), 每隔随机间隔自动发一张图。"""
-        if not self._cfg("auto_send_enabled", True):
+        """定时自动发图(默认**关闭**)。
+
+        频率改由 LLM 决定: 猫娘通过 send_photo 工具自主想发就发, 插件只兜上限。
+        需要"纯定时刷图"的玩法可在 config.json 里把 auto_send_enabled 打开。
+        """
+        if not self._cfg("auto_send_enabled", False):
             return
         now = time.time()
         if now < self._next_auto_ts:
             return
-        # 随机间隔后下一次(可配置): 默认 60~180 秒, 避免刷屏
-        lo = int(self._cfg("auto_min_interval", 60) or 60)
-        hi = int(self._cfg("auto_max_interval", 180) or 180)
-        self._next_auto_ts = now + random.randint(max(10, lo), max(lo, hi))
+        # 随机间隔后下一次(可配置): 默认 90~240 秒, 避免刷屏
+        lo = int(self._cfg("auto_min_interval", 90) or 90)
+        hi = int(self._cfg("auto_max_interval", 240) or 240)
+        self._next_auto_ts = now + random.randint(max(30, lo), max(lo, hi))
 
-        # 走桥接自动发图: 只发本地图库, 配文随机
+        # 与 LLM 主动发图共用同一套闸门(最小间隔/每小时/每日上限)
+        gate = await self._check_send_gate(user_id)
+        if not gate.get("ok"):
+            return
         result = await self.send_auto_photo(user_id)
         if not result.get("ok"):
             return
+        await self._mark_sent(user_id)
 
         # 自动发图也计入图鉴(但不推送结算文本, 避免打扰)
         data = await self._load_data(user_id)
@@ -299,14 +362,19 @@ class NekoPhotoGame(GameAdapter):
         return {"schemas": [
             {"label": "发图设置", "component": "Group"},
             {"field": "max_photos_per_day", "label": "每日发图上限", "component": "InputNumber",
-             "props": {"min": 1, "max": 500}, "help": "每天最多主动发几张图"},
-            {"label": "聊途中随机发图", "component": "Group"},
-            {"field": "auto_send_enabled", "label": "启用随机发图", "component": "Switch",
-             "help": "会话激活时猫娘每隔随机时间主动发图"},
+             "props": {"min": 1, "max": 500}, "help": "每天最多发几张图(含猫娘主动发)"},
+            {"field": "send_min_interval", "label": "两次发图最短间隔(秒)",
+             "component": "InputNumber", "props": {"min": 0, "max": 1800},
+             "help": "猫娘想发图时的冷却, 防止连续刷图"},
+            {"field": "send_max_per_hour", "label": "每小时上限", "component": "InputNumber",
+             "props": {"min": 1, "max": 60}, "help": "猫娘一小时内最多主动发几张"},
+            {"label": "定时自动发图(可选)", "component": "Group"},
+            {"field": "auto_send_enabled", "label": "启用定时自动发图", "component": "Switch",
+             "help": "默认关闭——频率交给猫娘(LLM)自己判断; 打开后按下面间隔定时发"},
             {"field": "auto_min_interval", "label": "最短间隔(秒)", "component": "InputNumber",
-             "props": {"min": 10, "max": 600}, "help": "随机发图的最短间隔"},
+             "props": {"min": 30, "max": 1800}, "help": "定时发图的最短间隔"},
             {"field": "auto_max_interval", "label": "最长间隔(秒)", "component": "InputNumber",
-             "props": {"min": 10, "max": 600}, "help": "随机发图的最长间隔"},
+             "props": {"min": 30, "max": 3600}, "help": "定时发图的最长间隔"},
         ]}
 
     # ── 工具 ──────────────────────────────
