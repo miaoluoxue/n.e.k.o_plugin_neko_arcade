@@ -1,0 +1,92 @@
+# 给 GitHub Release 补正文（市场发布工作流没配 body，正文默认是空的）
+#
+# 正文来源优先级:
+#   1. release-notes/<tag>.md   —— 手写的详细版（推荐, 随仓库版本化）
+#   2. docs/CHANGELOG.md 里对应版本的小节 —— 兜底
+# 另外会从 release 资产里的 market-evidence.json 抽出版本/提交/包哈希,
+# 追加成"校验信息"表, 方便市场投稿与用户核对。
+name: Release Notes
+
+on:
+  release:
+    types: [created]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "要补正文的 tag（如 v0.5.6）"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  notes:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Compose and patch release body
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const tag = (context.payload.release && context.payload.release.tag_name)
+              || (context.payload.inputs && context.payload.inputs.tag);
+            if (!tag) { core.setFailed('no tag found'); return; }
+            const version = tag.replace(/^v/, '');
+            const owner = context.repo.owner, repo = context.repo.repo;
+
+            // ① 手写正文优先
+            let body = '';
+            const handWritten = `release-notes/${tag}.md`;
+            if (fs.existsSync(handWritten)) {
+              body = fs.readFileSync(handWritten, 'utf8');
+              core.info(`使用 ${handWritten}`);
+            } else {
+              // ② 退回 CHANGELOG 的对应小节
+              const md = fs.readFileSync('docs/CHANGELOG.md', 'utf8');
+              const lines = md.split(/\r?\n/);
+              const start = lines.findIndex(l => l.startsWith(`## ${version}`));
+              if (start >= 0) {
+                const rest = lines.slice(start + 1);
+                const end = rest.findIndex(l => l.startsWith('## '));
+                const section = (end >= 0 ? rest.slice(0, end) : rest).join('\n').trim();
+                body = `# 🎮 猫娘小游戏 ${tag}\n\n${section}\n`;
+                core.info('使用 CHANGELOG 小节');
+              } else {
+                body = `# 🎮 猫娘小游戏 ${tag}\n\n详见 [docs/CHANGELOG.md](docs/CHANGELOG.md)。\n`;
+                core.warning(`CHANGELOG 里没有 ${version} 小节, 用了兜底正文`);
+              }
+            }
+
+            // ③ 追加校验信息（从 release 资产的 market-evidence.json 抽）
+            try {
+              const rel = await github.rest.repos.getReleaseByTag({ owner, repo, tag });
+              const ev = (rel.data.assets || []).find(a => a.name === 'market-evidence.json');
+              if (ev) {
+                const asset = await github.rest.repos.getReleaseAsset({
+                  owner, repo, asset_id: ev.id, headers: { accept: 'application/octet-stream' },
+                });
+                const info = JSON.parse(Buffer.from(asset.data).toString('utf8'));
+                body += [
+                  '', '## 🔍 校验信息', '',
+                  '| 项 | 值 |', '|---|---|',
+                  `| 版本 | \`${info.version}\` |`,
+                  `| 源提交 | \`${info.source_commit}\` |`,
+                  `| 包 SHA-256 | \`${info.package && info.package.sha256}\` |`,
+                  `| payload hash | \`${info.package && info.package.payload_hash}\` |`,
+                  `| 包大小 | ${info.package && info.package.size} 字节 |`,
+                  '', '> 由 `neko-plugin check --release --market-release` 校验通过后发布。', '',
+                ].join('\n');
+              }
+            } catch (e) {
+              core.warning(`追加校验信息失败(忽略): ${e.message}`);
+            }
+
+            await github.rest.repos.updateRelease({
+              owner, repo, release_id: context.payload.release?.id
+                || (await github.rest.repos.getReleaseByTag({ owner, repo, tag })).data.id,
+              body,
+            });
+            core.info(`已更新 ${tag} 的发布正文 (${body.length} 字符)`);
