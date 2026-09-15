@@ -38,21 +38,28 @@ class StubImages:
 
 
 class StubPlugin:
-    def __init__(self, config_dir=None, has_images=True):
+    def __init__(self, config_dir=None, has_images=True, fail_inline=False):
         self.config_dir = str(config_dir) if config_dir else None
         self.ctx = type("Ctx", (), {"images": StubImages()})() if has_images \
             else type("Ctx", (), {})()
         self.pushed = []
+        self.fail_inline = fail_inline
 
     def push_message(self, **kw):
+        # 模拟宿主拒绝内联 data part(用于验证回退到 upload 路径)
+        if self.fail_inline:
+            parts = kw.get("parts") or []
+            if any(isinstance(p, dict) and "data" in p for p in parts):
+                raise RuntimeError("inline data part rejected")
         self.pushed.append(kw)
 
 
-def _sender(config_dir=None, has_images=True):
-    return PushSender(StubPlugin(config_dir, has_images))
+def _sender(config_dir=None, has_images=True, fail_inline=False):
+    return PushSender(StubPlugin(config_dir, has_images, fail_inline))
 
 
-def test_text_with_image_prefers_native_channel():
+def test_text_with_image_inlines_original_bytes_first():
+    """原生通道首选内联原始字节: 聊天投影不缩放不重编码(文字更清晰)。"""
     async def run():
         sender = _sender(has_images=True)
         await sender.text_with_image("配文", b"PNGDATA", "image/png")
@@ -62,9 +69,22 @@ def test_text_with_image_prefers_native_channel():
         assert msg["ai_behavior"] == "read"
         parts = msg["parts"]
         assert parts[0] == {"type": "text", "text": "配文"}
+        assert parts[1] == {"type": "image", "data": b"PNGDATA", "mime": "image/png"}
+        # 内联成功 → 不该再走 upload(避免 JPEG 重编码)
+        assert not sender.plugin.ctx.images.uploads, "内联可用时不应调用 upload"
+
+    asyncio.run(run())
+
+
+def test_inline_rejected_falls_back_to_upload():
+    """宿主拒绝内联 part → 退回 ctx.images.upload 的 URL part。"""
+    async def run():
+        sender = _sender(has_images=True, fail_inline=True)
+        await sender.text_with_image("配文", b"PNGDATA", "image/png")
+        assert len(sender.plugin.pushed) == 1
+        parts = sender.plugin.pushed[0]["parts"]
         assert parts[1]["type"] == "image" and parts[1]["url"] == "http://up/img.jpeg"
-        # 原生通道成功 → 不应落盘 static
-        assert sender.plugin.ctx.images.uploads, "应调用 ctx.images.upload"
+        assert sender.plugin.ctx.images.uploads, "回退时应调用 ctx.images.upload"
 
     asyncio.run(run())
 
@@ -102,7 +122,8 @@ def test_text_with_image_no_static_dir_pushes_text_only():
     asyncio.run(run())
 
 
-def test_help_doc_prefers_native_channel_with_blind():
+def test_help_doc_inlines_png_and_marks_blind():
+    """帮助图: 内联 PNG 原文 + blind(只给用户看, 不喂 LLM)。"""
     async def run():
         sender = _sender(has_images=True)
         await sender.help_doc("修仙 帮助", b"PNGDATA", "玩法说明")
@@ -113,7 +134,8 @@ def test_help_doc_prefers_native_channel_with_blind():
         assert msg["visibility"] == ["chat"]
         parts = msg["parts"]
         assert parts[0] == {"type": "text", "text": "玩法说明"}
-        assert parts[1]["type"] == "image"
+        assert parts[1] == {"type": "image", "data": b"PNGDATA", "mime": "image/png"}
+        assert not sender.plugin.ctx.images.uploads, "帮助图应优先内联, 不做 JPEG 重编码"
 
     asyncio.run(run())
 
@@ -136,13 +158,13 @@ def test_help_doc_fallback_uses_title_and_markdown_image():
 def test_text_with_image_url_prefers_native_channel():
     async def run():
         sender = _sender(has_images=True)
-        # url 已由 upload 产生 → 原生通道直接构造 part
+        # url 已由宿主产生 → 原生通道按 url part 推(不能同时带字节, 否则宿主会丢弃)
         await sender.text_with_image_url("看图", "http://up/img.jpeg")
         assert len(sender.plugin.pushed) == 1
         msg = sender.plugin.pushed[0]
         assert msg["ai_behavior"] == "read"
-        assert msg["parts"][1] == {"type": "image", "url": "http://up/img.jpeg",
-                                   "mime": "image/jpeg"}
+        assert msg["parts"][1] == {"type": "image", "url": "http://up/img.jpeg"}
+        assert "data" not in msg["parts"][1], "url 与内联字节不可混用"
 
     asyncio.run(run())
 

@@ -1,14 +1,19 @@
 """推送适配：通过主项目 push_message 发送文字/图片/音频。
 
 图片显示策略（重要）：
-- 旧宿主（未合并 #2835）：没有 ctx.images.upload，聊天窗前端
-  ReactMarkdown 只开 remark-gfm/rehype-katex，**不渲染 HTML 标签**——
-  `<img>` 会原样显示成代码。唯一用户可见图片方式是**标准 markdown
-  图片语法 `![alt](url)`**（ReactMarkdown 内置支持）。
-- 新宿主（#2835 合并后）：SDK 提供 ``ctx.images.upload()`` —— 上传图片
-  返回 canonical image part，配合 ``visibility=["chat"]`` 直接在聊天窗
-  渲染为原生图片气泡。本模块优先走原生通道，SDK 不支持时回退
+- 旧宿主（未合并 #2835）：没有 ctx.images，聊天窗前端 ReactMarkdown 只开
+  remark-gfm/rehype-katex，**不渲染 HTML 标签**——`<img>` 会原样显示成代码。
+  唯一用户可见图片方式是**标准 markdown 图片语法 `![alt](url)`**。
+- 新宿主（#2835 合并后，0.9.0.x）：`parts` + `visibility=["chat"]` 原生图片气泡。
+  宿主聊天投影（app/main_server/character_runtime.py::_build_plugin_chat_blocks）
+  对两种 part 的处理不同：
+    * `{"type":"image","data":bytes,"mime":"image/png"}` → 内联 data: URL，
+      **保留插件上传的原始分辨率、不重编码**；每推 ≤8 张、内联合计 ≤8 MiB；
+    * `ctx.images.upload()` → 归一化成 JPEG q88、最长边 ≤2048px，走 /media/<id>
+      URL（不吃内联预算，但文字边缘有压缩痕迹）。
+  因此文字密集的帮助图**优先内联原始字节**；不可用时退回上传路径；再退回
   markdown（兼容旧宿主）。
+  注意：同时带 url 和字节的 image part 会被宿主直接丢弃，别混用。
 
 注意：宿主不支持 audio/video parts(见 text_with_audio 注释)。
 """
@@ -119,13 +124,13 @@ class PushSender:
                               mime: str = "image/png") -> None:
         """推文本 + 图片。
 
-        优先走原生图片通道(#2835): ctx.images.upload() 上传 → canonical
-        image part + visibility=["chat"] → 聊天窗渲染原生图片气泡。
-        SDK 不支持(旧宿主)时回退 markdown 图片语法 `![alt](url)`——
-        注意旧宿主前端不渲染 <img> HTML 标签(ReactMarkdown 无 rehype-raw),
-        必须用标准 markdown 图片语法, 否则图片会显示成代码。
+        优先走原生图片通道(#2835): 内联原始字节 part + visibility=["chat"]
+        → 聊天窗原生图片气泡(原始分辨率、不重编码)；内联不可用时退回
+        ctx.images.upload()(JPEG 归一化)。SDK 不支持(旧宿主)时回退 markdown
+        图片语法 `![alt](url)`——旧宿主前端不渲染 <img> HTML 标签
+        (ReactMarkdown 无 rehype-raw), 必须用标准 markdown 图片语法。
         """
-        if await self._push_native_image(text, image_bytes):
+        if await self._push_native_image(text, image_bytes, mime=mime):
             return
         # 回退: 旧宿主 markdown 图片语法(![alt](url), 前端 ReactMarkdown 内置支持)
         url = await self.save_image(image_bytes, mime)
@@ -146,34 +151,9 @@ class PushSender:
         content = f"{text}\n\n![游戏图片]({url})" if url else text
         await self._push([{"type": "text", "text": content}])
 
-    async def _push_native_image(self, text: str, image_bytes: Optional[bytes] = None,
-                                 url: Optional[str] = None,
-                                 ai_behavior: str = "read") -> bool:
-        """尝试走原生图片通道(ctx.images.upload + canonical image part)。
-
-        返回 True 表示已推送(原生通道可用); False 表示 SDK 不支持, 调用方
-        应回退 markdown。visibility=["chat"] 让图片在用户聊天窗可见。
-
-        ai_behavior: "read" = 注入现有模型 session(结果图需要 LLM 解读);
-        "blind" = 仅用户可见, 不喂 LLM(帮助文档图等纯用户参考)。
-        """
+    async def _push_parts(self, parts: List[dict], ai_behavior: str) -> bool:
+        """按 v2 契约(parts + visibility)推送；失败返回 False 由调用方回退。"""
         try:
-            images_api = getattr(self.plugin.ctx, "images", None)
-            upload = getattr(images_api, "upload", None)
-            if not callable(upload):
-                return False
-            if url is None and not image_bytes:
-                return False
-            if url is None:
-                # 上传 bytes → canonical part
-                part = await upload(image_bytes or b"", timeout=8.0)
-            else:
-                # 已是 upload 产生的 URL, 直接构造 part
-                part = {"type": "image", "url": url, "mime": "image/jpeg"}
-            parts = []
-            if text:
-                parts.append({"type": "text", "text": text})
-            parts.append(part)
             self.plugin.push_message(
                 source=self.source,
                 parts=parts,
@@ -183,8 +163,47 @@ class PushSender:
             )
             return True
         except Exception:
-            # SDK 不支持/上传失败 → 回退 markdown
             return False
+
+    async def _push_native_image(self, text: str, image_bytes: Optional[bytes] = None,
+                                 url: Optional[str] = None,
+                                 ai_behavior: str = "read",
+                                 mime: str = "image/png") -> bool:
+        """原生图片通道：内联原始字节优先 → SDK 上传 → 都不行返回 False。
+
+        返回 True 表示已推送；False 表示这条通道不可用，调用方应回退 markdown。
+        visibility=["chat"] 让图片在用户聊天窗可见；ai_behavior="blind" 表示
+        只给用户看、不喂 LLM（帮助文档图）。
+
+        为什么内联优先：宿主聊天投影对 data 内联图**不缩放、不重编码**（官方
+        注释: 帮助/文档/代码图正是读者要放大看的材料），而 ctx.images.upload
+        会先把 PNG 压成 JPEG q88。帮助图是文字密集图，原始 PNG 明显更清晰。
+        """
+        images_api = getattr(getattr(self.plugin, "ctx", None), "images", None)
+        if images_api is None or not hasattr(self.plugin, "push_message"):
+            return False
+        if url is None and not image_bytes:
+            return False
+        head = [{"type": "text", "text": text}] if text else []
+        if url is not None:
+            # 已是宿主侧 URL(原生媒体/static) → 直接按 url part 推
+            return await self._push_parts(head + [{"type": "image", "url": url}], ai_behavior)
+        # 1) 内联原始字节：原始分辨率 + 不重编码
+        if await self._push_parts(
+            head + [{"type": "image", "data": image_bytes, "mime": mime}], ai_behavior
+        ):
+            return True
+        # 2) 退回 SDK 归一化上传(JPEG, ≤2048px) → url part
+        upload = getattr(images_api, "upload", None)
+        if not callable(upload):
+            return False
+        try:
+            part = await upload(image_bytes or b"", timeout=8.0)
+        except Exception:
+            return False
+        if not isinstance(part, dict):
+            return False
+        return await self._push_parts(head + [part], ai_behavior)
 
     def static_url(self, relative_path: str) -> str:
         """把 static 下的相对路径转成可访问的 http URL。
@@ -203,10 +222,10 @@ class PushSender:
                        text: Optional[str] = None) -> None:
         """推帮助文档图片。
 
-        优先走原生图片通道(#2835): ctx.images.upload() → canonical image
-        part + visibility=["chat"] → 聊天窗渲染原生图片气泡。
-        SDK 不支持(旧宿主)时回退 markdown 图片语法 `![alt](url)`
-        (前端 ReactMarkdown 内置支持, 旧宿主不渲染 <img> HTML 标签)。
+        优先原生通道: 内联 PNG(原始分辨率, 帮助图文字密集, 不做 JPEG 重编码)
+        + visibility=["chat"] + ai_behavior="blind"(只给用户看, 不喂 LLM)；
+        内联不可用 → ctx.images.upload()；SDK 不支持(旧宿主) → markdown
+        图片语法 `![alt](url)`(前端 ReactMarkdown 内置支持)。
         """
         caption = text or title
         if await self._push_native_image(caption, image_bytes, ai_behavior="blind"):
