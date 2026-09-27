@@ -62,15 +62,8 @@ class StubPlugin:
         return {"ok": True}
 
 
-def _sender(config_dir=None, has_images=True, fail_inline=False,
-            mode="native", width=0):
-    """默认 mode="native"：老用例都验证原生气泡那条路（内联/上传/markdown 回退）。
-
-    交付宽度 >280px 时插件会自动改走 markdown（宿主把原生气泡 CSS 锁在 280px），
-    相关用例见文件末尾 test_*markdown*。
-    """
-    return PushSender(StubPlugin(config_dir, has_images, fail_inline),
-                      chat_image_width=width, chat_image_mode=mode)
+def _sender(config_dir=None, has_images=True, fail_inline=False):
+    return PushSender(StubPlugin(config_dir, has_images, fail_inline))
 
 
 def test_text_with_image_inlines_original_bytes_first():
@@ -123,8 +116,7 @@ def test_large_image_skips_inline_and_uses_upload():
 def test_rejected_receipt_falls_back_to_upload():
     """宿主回 rejected 回执(不抛异常)也要回退 upload —— 否则用户那边就是没图。"""
     async def run():
-        sender = PushSender(StubPlugin(has_images=True, reject_receipt=True),
-                            chat_image_mode="native")
+        sender = PushSender(StubPlugin(has_images=True, reject_receipt=True))
         await sender.text_with_image("配文", b"PNGDATA", "image/png")
         assert sender.plugin.ctx.images.uploads, "rejected 回执必须触发 upload 回退"
         parts = sender.plugin.pushed[0]["parts"]
@@ -253,12 +245,12 @@ def test_save_image_resizes_large_png_to_jpeg():
         sender = _sender(config_dir=tmp, has_images=False)
         url = await sender.save_image(png_bytes, "image/png")
         assert url and url.endswith(".jpg"), f"缩放输出应为 jpg: {url}"
-        # 落盘文件是 JPEG, 最长边 ≤ chat_image_width(默认 480 = markdown 交付宽度)
+        # 落盘文件是 JPEG, 最长边 ≤720
         fname = Path(url).name
         saved = Path(tmp) / "static" / "cards" / fname
         assert saved.exists()
         im = Image.open(saved)
-        assert max(im.size) <= 480, f"应缩放到 ≤480: {im.size}"
+        assert max(im.size) <= 720, f"应缩放到 ≤720: {im.size}"
         assert im.format == "JPEG"
 
     asyncio.run(run())
@@ -277,68 +269,5 @@ def test_save_image_small_png_kept_as_is():
         sender = _sender(config_dir=tmp, has_images=False)
         url = await sender.save_image(buf.getvalue(), "image/png")
         assert url and url.endswith(".png"), f"小图应保持 png: {url}"
-
-    asyncio.run(run())
-
-
-# ── 交付宽度：宿主原生气泡 280px 死限 → 宽度更大时改走 markdown ──────────────
-
-def test_wide_image_auto_switches_to_markdown_channel():
-    """默认宽度 480 > 宿主原生气泡 280px → 自动走 markdown（唯一能放大的通路）。
-
-    0.9.0.2 打包 CSS: `.message-block-image{max-width:280px}`（气泡本身
-    `.message-stack{max-width:min(86%,320px)}`），而 markdown 图片无宽度规则。
-    """
-    async def run():
-        tmp = _tmp_dir()
-        sender = _sender(config_dir=tmp, has_images=True, mode="", width=480)  # 默认宽度
-        sender.plugin.ctx.images = StubImages()             # 原生通道可用也不走
-        assert sender._prefer_markdown() is True
-
-        await sender.text_with_image("配文", b"PNGDATA", "image/png")
-        assert len(sender.plugin.pushed) == 1
-        msg = sender.plugin.pushed[0]
-        assert msg["ai_behavior"] == "blind"
-        # 走的是文本+markdown 图片语法，不是原生 image part
-        assert all(p.get("type") == "text" for p in msg["parts"])
-        assert "![游戏图片](" in msg["parts"][0]["text"]
-        assert not sender.plugin.ctx.images.uploads, "markdown 通路不该再走上传"
-
-    asyncio.run(run())
-
-
-def test_native_mode_forces_native_bubble():
-    """显式 chat_image_mode="native" → 即使宽度很大也走原生气泡。"""
-    async def run():
-        sender = _sender(mode="native", width=900)
-        assert sender._prefer_markdown() is False
-        await sender.text_with_image("配文", b"PNGDATA", "image/png")
-        parts = sender.plugin.pushed[0]["parts"]
-        assert parts[1]["type"] == "image" and parts[1]["data"] == b"PNGDATA"
-
-    asyncio.run(run())
-
-
-def test_markdown_mode_forces_markdown():
-    """显式 chat_image_mode="markdown" → 即使宽度不大也走 markdown。"""
-    async def run():
-        tmp = _tmp_dir()
-        sender = _sender(config_dir=tmp, mode="markdown", width=280)
-        assert sender._prefer_markdown() is True
-        await sender.text_with_image("配文", b"PNGDATA", "image/png")
-        assert "![游戏图片](" in sender.plugin.pushed[0]["parts"][0]["text"]
-
-    asyncio.run(run())
-
-
-def test_help_doc_follows_width_channel_and_stays_blind():
-    """帮助图同样按宽度选通路，且始终 blind（只给用户看，不喂 LLM → 无双重回复）。"""
-    async def run():
-        tmp = _tmp_dir()
-        sender = _sender(config_dir=tmp, width=480, mode="")
-        await sender.help_doc("玩法帮助", b"PNGDATA", text="玩法帮助")
-        msg = sender.plugin.pushed[0]
-        assert msg["ai_behavior"] == "blind"
-        assert "![玩法帮助](" in msg["parts"][0]["text"]
 
     asyncio.run(run())

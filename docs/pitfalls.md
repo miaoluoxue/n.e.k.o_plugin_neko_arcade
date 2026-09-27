@@ -152,42 +152,22 @@ LLM 复述一遍；更糟的是那一轮 run 会**带着同一条旧输入**回�
 
 ---
 
-## 2.6 聊天窗图片宽度：原生 280px 死限 → 大图必须走 markdown
+## 2.6 聊天窗图片气泡 max-width≈280px（帮助图别按 740 画）
 
-**坑**：宿主把**原生图片气泡**的宽度写死在 CSS 里（0.9.0.2 打包
-`resources/bin/static/react/neko-chat/assets/style-*.css` 实测）：
+**坑**：帮助图按 740px 宽渲染，但宿主聊天窗 CSS 是
+`.message-block-image { max-width:280px }`、`.message-stack { max-width:min(86%,320px) }`
+（窄窗 84%）。740px 被缩到 ~38%，13px 正文实际只剩 ~5px —— 用户原话
+「图片渲染不适配聊天窗口，看不清晰帮助图」。
 
-```css
-.message-stack      { max-width: min(86%, 320px) }   /* 所有气泡上限 */
-.message-block-image{ max-width: 280px }            /* 原生图片气泡 = 死的 280px */
-.message-block-image img { width: 100%; height: auto }
-/* markdown 图片：没有任何宽度规则 → 按原始尺寸渲染 */
-```
+**解法（已落地）**：
 
-所以按 740px 画会被缩到 38%（13px 正文→约 5px，用户原话「看不清晰帮助图」）；
-按 320px 画、显示出来也只有 280px（用户 2026-09-27 原话「图片渲染太小了，
-才到聊天窗口的一半」）。`MessageBlockView.tsx` 的 `<figure>` 也**没有点击放大**，
-`aspectRatio` 由宿主接管 —— 原生气泡这条路没有可调的余地。
-
-**解法（v0.5.9 落地）**：
-
-- **交付通路跟着宽度走**（`PushSender._prefer_markdown()`）：
-  - `chat_image_width > 280`（默认 **480**）→ 走 **markdown**（`![alt](url)`，
-    落盘到 `static/cards/`，按 `chat_image_width` 缩放）——markdown 图片无 CSS
-    上限，这是唯一能把图放大的路；
-  - `chat_image_mode="native"` → 强制原生气泡（内联原始字节，清晰但不超 280px）；
-  - `chat_image_mode="markdown"` → 强制 markdown；留空 = 按宽度自动。
-- **渲染宽度与交付宽度一致**：`HelpRenderer` 默认宽度 320 → **480**
-  （`DEFAULT_WIDTH`），优先级 `[help] width` / `help_width` / `chat_image_width`
-  → `NEKO_ARCADE_HELP_WIDTH` → 480；`narrow = width < 520` 仍走单列窄版式。
-- **清晰度**：`ImageRenderer` 仍用 `device_scale_factor=2`
-  （`NEKO_ARCADE_IMAGE_SCALE` 可调），480px 版式输出 ~960px PNG。
-- **注意**：markdown 图片会**超出气泡背景**（气泡上限 320px，图 480px）——
-  这是宿主 CSS 决定的：图更大更清楚，但白底气泡比图窄。窗口很窄时把
-  `chat_image_width` 调小（如 360）即可。
-- 面板可改：`save_llm_config` 支持 `help_width`；主配置键
-  `chat_image_width` / `chat_image_mode` 同步生效（`runtime._apply_chat_image_cfg`）。
-- PIL 回退（`render_help`）与旧 HTML 通道（`render_help_html`）仍是 320/340px。
+- `HelpRenderer` 默认按 **320px CSS 宽 + 单列** 渲染（两列会挤压，改单列；
+  表格改成「指令在上、说明在下」）；可用 `NEKO_ARCADE_HELP_WIDTH` 或主配置
+  `[help] width` 调整；
+- `ImageRenderer` 用 **`device_scale_factor=2`** 截图（`NEKO_ARCADE_IMAGE_SCALE`
+  可调）→ 输出 ~640px 的清晰 PNG；气泡缩到 280px 时正文仍有 ~11px，清晰可读；
+- PIL 回退（`render_help`）和旧 HTML 通道（`render_help_html`）同步改成 320px 单列，
+  保证没有浏览器时也不糊。
 
 ---
 

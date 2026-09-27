@@ -11,14 +11,9 @@
       **保留插件上传的原始分辨率、不重编码**；每推 ≤8 张、内联合计 ≤8 MiB；
     * `ctx.images.upload()` → 归一化成 JPEG q88、最长边 ≤2048px，走 /media/<id>
       URL（不吃内联预算，但文字边缘有压缩痕迹）。
+  因此文字密集的帮助图**优先内联原始字节**；不可用时退回上传路径；再退回
+  markdown（兼容旧宿主）。
   注意：同时带 url 和字节的 image part 会被宿主直接丢弃，别混用。
-
-⚠️ 显示宽度（2026-09-27 实机量到，决定走哪条通路）：
-  0.9.0.2 打包 CSS 里 ``.message-block-image{max-width:280px}`` 把**原生图片
-  气泡死锁在 280px**（气泡本身 ``.message-stack{max-width:min(86%,320px)}``）；
-  而 **markdown 图片没有任何宽度规则**，按原始尺寸渲染 —— 所以想要大图
-  （帮助图 / 对局卡牌 / 状态图）必须走 markdown。规则见 ``_prefer_markdown()``：
-  交付宽度 >280px 时自动改用 markdown，图片本身也已按该宽度缩放落盘。
 
 注意：宿主不支持 audio/video parts(见 text_with_audio 注释)。
 """
@@ -32,31 +27,14 @@ from pathlib import Path
 from typing import Any, List, Optional
 
 DEFAULT_PLUGIN_SERVER_PORT = "48916"
-#: 宿主原生图片气泡的硬上限（0.9.0.2 打包 CSS 实测），超过就得换 markdown 通路
-HOST_NATIVE_IMAGE_MAX_WIDTH = 280
-#: markdown 交付时的默认图片宽度（与 HelpRenderer 默认宽度保持一致）
-DEFAULT_CHAT_IMAGE_WIDTH = 480
 
 
 class PushSender:
     """封装主项目 push_message，支持文本、图片、音频混合推送。"""
 
-    def __init__(self, plugin: Any, chat_image_width: int = 0,
-                 chat_image_mode: str = "") -> None:
+    def __init__(self, plugin: Any) -> None:
         self.plugin = plugin
         self.source = "neko_arcade"
-        #: 交付宽度(px)：>280 时自动走 markdown(宿主原生气泡只有 280)
-        self.chat_image_width = int(chat_image_width or DEFAULT_CHAT_IMAGE_WIDTH)
-        #: "markdown" 强制 markdown / "native" 强制原生气泡 / "" 按宽度自动
-        self.chat_image_mode = str(chat_image_mode or "").strip().lower()
-
-    def _prefer_markdown(self) -> bool:
-        """是否用 markdown 通路交付图片（唯一能突破宿主 280px 上限的路）。"""
-        if self.chat_image_mode == "markdown":
-            return True
-        if self.chat_image_mode == "native":
-            return False
-        return int(self.chat_image_width or 0) > HOST_NATIVE_IMAGE_MAX_WIDTH
 
     # ── 图片落盘 → markdown URL ─────────────────────────
 
@@ -107,15 +85,13 @@ class PushSender:
         except Exception:
             return None
 
-    def _resize_for_markdown(self, image_bytes: bytes,
-                             max_side: Optional[int] = None) -> Optional[bytes]:
-        """把图片缩放到最长边 ≤ max_side, 保持纵横比。
+    @staticmethod
+    def _resize_for_markdown(image_bytes: bytes, max_side: int = 720) -> Optional[bytes]:
+        """把图片缩放到最长边 ≤ max_side(默认 720px), 保持纵横比。
 
-        max_side 缺省用 ``self.chat_image_width``（默认 480）。markdown 图片
-        宿主不设宽度上限，按原始尺寸渲染 → 这里就是"用户实际看到多大"。
-        PNG 转 JPEG 压缩体积(RGBA 需转 RGB)。失败返回 None(调用方原样落盘)。
+        旧宿主 markdown 图片无 CSS 限制, 大图会溢出聊天窗; 这里在落盘前
+        缩放。PNG 转 JPEG 压缩体积(RGBA 需转 RGB)。失败返回 None(调用方原样落盘)。
         """
-        limit = int(max_side or self.chat_image_width or DEFAULT_CHAT_IMAGE_WIDTH)
         try:
             import io
 
@@ -124,9 +100,9 @@ class PushSender:
             img = Image.open(buf)
             w, h = img.size
             longest = max(w, h)
-            if longest <= limit:
+            if longest <= max_side:
                 return None  # 不需要缩放
-            ratio = limit / longest
+            ratio = max_side / longest
             new_w, new_h = max(1, int(w * ratio)), max(1, int(h * ratio))
             img = img.resize((new_w, new_h), Image.LANCZOS)
             if img.mode in ("RGBA", "LA", "P"):
@@ -156,15 +132,16 @@ class PushSender:
         "双重回复"（实测 2026-09-27 五子棋对局：正常落子后 8 秒又收到同一句，
         第二次落子被判非法 → 两份状态卡）。需要模型真的"看图"时才显式传 "read"。
 
-        通路选择见 ``_prefer_markdown()``：交付宽度 >280px 时走 markdown
-        （宿主原生气泡 CSS 死锁 280px，撑不大）；否则优先原生内联原始字节
-        （不重编码），失败退回 ctx.images.upload()，再退回 markdown。
+        优先走原生图片通道(#2835): 内联原始字节 part + visibility=["chat"]
+        → 聊天窗原生图片气泡(原始分辨率、不重编码)；内联不可用时退回
+        ctx.images.upload()(JPEG 归一化)。SDK 不支持(旧宿主)时回退 markdown
+        图片语法 `![alt](url)`——旧宿主前端不渲染 <img> HTML 标签
+        (ReactMarkdown 无 rehype-raw), 必须用标准 markdown 图片语法。
         """
-        if not self._prefer_markdown():
-            if await self._push_native_image(text, image_bytes, mime=mime,
-                                             ai_behavior=ai_behavior):
-                return
-        # 回退/主动选择: markdown 图片语法(![alt](url), 前端 ReactMarkdown 内置支持)
+        if await self._push_native_image(text, image_bytes, mime=mime,
+                                         ai_behavior=ai_behavior):
+            return
+        # 回退: 旧宿主 markdown 图片语法(![alt](url), 前端 ReactMarkdown 内置支持)
         url = await self.save_image(image_bytes, mime)
         if url:
             content = f"{text}\n\n![游戏图片]({url})"
@@ -179,9 +156,8 @@ class PushSender:
         优先原生通道(URL 已由 ctx.images.upload() 产生时); 否则 markdown
         图片语法 `![alt](url)`(旧宿主前端不渲染 <img> HTML)。
         """
-        if not self._prefer_markdown():
-            if await self._push_native_image(text, url=url, ai_behavior=ai_behavior):
-                return
+        if await self._push_native_image(text, url=url, ai_behavior=ai_behavior):
+            return
         content = f"{text}\n\n![游戏图片]({url})" if url else text
         await self._push([{"type": "text", "text": content}], ai_behavior=ai_behavior)
 
@@ -278,8 +254,7 @@ class PushSender:
         图片语法 `![alt](url)`(前端 ReactMarkdown 内置支持)。
         """
         caption = text or title
-        if not self._prefer_markdown() and await self._push_native_image(
-                caption, image_bytes, ai_behavior="blind"):
+        if await self._push_native_image(caption, image_bytes, ai_behavior="blind"):
             return
         # 回退: 旧宿主 markdown 图片语法
         url = await self.save_image(image_bytes, "image/png")

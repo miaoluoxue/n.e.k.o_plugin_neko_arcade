@@ -2,40 +2,6 @@
 
 > 完整迭代记录，供开发者查阅。插件市场门面 README.md 只保留最新版本。
 
-## v0.5.9 (2026-09)
-
-**一句话主题**：帮助图 / 对局卡牌图放大——图片交付通路跟着宽度走
-（原生气泡 280px 死限 → markdown），默认宽度 320 → 480。
-
-### 修复
-
-- **图片显示过小（用户原话「才到聊天窗口的一半」）** — 0.9.0.2 打包 CSS 把
-  **原生图片气泡**写死：`.message-block-image{max-width:280px}`（气泡本身
-  `.message-stack{max-width:min(86%,320px)}`），而 **markdown 图片没有任何宽度规则**
-  （按原始尺寸渲染）。插件原来无论渲染多宽都走原生气泡 → 永远被压到 280px；
-  `MessageBlockView.tsx` 的 `<figure>` 也没有点击放大，原生气泡没有任何可调余地。
-
-### 变更
-
-- **交付通路自动选择**（`adapters/push_sender.py`）：新增
-  `chat_image_width`（默认 **480**）与 `chat_image_mode`
-  （`""`=按宽度自动 / `"native"`=强制原生气泡 / `"markdown"`=强制 markdown）；
-  `_prefer_markdown()` 在宽度 >280px 时改走 markdown（唯一能突破上限的通路），
-  `_resize_for_markdown` 也按 `chat_image_width` 缩放（原固定 720）。
-- **渲染宽度同步**（`core/help/renderer.py`）：`DEFAULT_WIDTH` 320 → **480**；
-  宽度优先级 `[help] width` / `help_width` / `chat_image_width` →
-  `NEKO_ARCADE_HELP_WIDTH` → 480；`narrow = width < 520` 仍走单列窄版式，
-  清晰度仍靠 `device_scale_factor=2`（480px 版式 → ~960px PNG）。
-- **配置注入**（`core/runtime.py::_apply_chat_image_cfg`）：配置加载后把宽度/模式
-  注入 `PushSender`，并在日志里打印最终通路（排查"图还是小"时先看这行）。
-- 注意：markdown 图片会**略宽于气泡白底**（图 480 / 气泡上限 320）——宿主 CSS
-  决定；窗口很窄时把 `chat_image_width` 调到 360 左右即可。
-
-### 测试
-
-- `tests/test_push_sender.py` 新增 4 项：默认宽度自动切 markdown、`native` 强制
-  原生气泡、`markdown` 强制 markdown、`help_doc` 跟随通路且始终 `blind`。
-
 ## v0.5.8 (2026-09)
 
 **一句话主题**：修掉线上「一句两答」——用户可见推送不再走 `ai_behavior="read"`，

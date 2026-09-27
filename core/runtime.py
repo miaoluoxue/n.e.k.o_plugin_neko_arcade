@@ -41,27 +41,6 @@ class ArcadeRuntime:
         self.brain: Optional[GameBrain] = None
         self._tick_task: Optional[asyncio.Task] = None
 
-    def _apply_chat_image_cfg(self) -> None:
-        """把聊天图片交付配置注入适配器（配置在 start() 里才拿到）。
-
-        - ``chat_image_width``：交付宽度(px)，默认 480。>280 时自动改走 markdown
-          通路 —— 0.9.0.2 打包 CSS 把**原生图片气泡**死锁在
-          ``.message-block-image{max-width:280px}``，而 markdown 图片无宽度规则，
-          所以想放大只能走 markdown。
-        - ``chat_image_mode``：``"markdown"`` / ``"native"`` 强制指定，留空按宽度自动。
-        帮助渲染器读同一份配置（``[help] width`` / ``help_width`` /
-        ``chat_image_width``），两边宽度始终一致。
-        """
-        try:
-            width = int(self.cfg.get("chat_image_width") or 0)
-        except (TypeError, ValueError):
-            width = 0
-        self.push.chat_image_width = width or 480
-        self.push.chat_image_mode = str(self.cfg.get("chat_image_mode") or "").strip().lower()
-        log.info("聊天图片交付: width=%spx mode=%s → %s", self.push.chat_image_width,
-                 self.push.chat_image_mode or "auto",
-                 "markdown" if self.push._prefer_markdown() else "native")
-
     def _code_dir(self) -> str:
         """插件代码目录(只读, 放静态素材与默认配置)。"""
         return str(getattr(self.plugin, "plugin_dir", "") or "")
@@ -84,7 +63,6 @@ class ArcadeRuntime:
         else:
             self.cfg = {}
         self.llm = LLMProvider(self.cfg.get("llm_max_calls_per_minute", 15))
-        self._apply_chat_image_cfg()
         # token 统计落盘: 写插件自身 store(键 game_user_data:llm_stats), 供 UI 查询
         try:
             store = self.plugin.store
