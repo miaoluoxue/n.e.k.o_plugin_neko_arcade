@@ -26,6 +26,7 @@ from .themes import AssetResolver, icon_glyph, theme_tokens, theme_veil
 log = logging.getLogger(__name__)
 
 WIDTH = 740
+DEFAULT_WIDTH = 480            # 帮助/卡牌图默认渲染宽度(与 markdown 交付通路一致, 见 _refresh_layout)
 CATALOG_HEIGHT_BUDGET = 1400   # 总图每页高度预算(px): 装得下就一页给全, 装不下才分页
 GROUP_CMD_PER_PAGE = 22        # 分组页每页指令数
 FLAT_CMD_PER_PAGE = 26         # 扁平(老格式)帮助每页指令数
@@ -217,30 +218,38 @@ class HelpRenderer:
     def _refresh_layout(self) -> None:
         """刷新版式参数。**每次渲染前调用** → 面板改宽度立即生效，不用重启。
 
-        宽度来源优先级：构造时显式传入 → 主配置 ``[help] width`` →
-        环境变量 ``NEKO_ARCADE_HELP_WIDTH`` → 默认 320。
-        宿主聊天图片气泡 max-width≈280px，320 是窄版默认值；窗口/宿主不同
-        可以随时调大调小，这里不写死。
+        宽度来源优先级：构造时显式传入 → 主配置 ``[help] width`` /
+        ``help_width`` / ``chat_image_width`` → 环境变量 ``NEKO_ARCADE_HELP_WIDTH``
+        → 默认 480。
+
+        为什么默认从 320 提到 480（2026-09-27 实机）：
+        宿主**原生图片气泡**被 0.9.0.2 打包 CSS 死锁在 280px
+        （``.message-block-image{max-width:280px}``，气泡本身 ``min(86%,320px)``），
+        所以按 320 画、显示出来只有 280，用户原话「图片渲染太小了」。
+        而 **markdown 图片没有任何宽度规则**（按原始尺寸渲染）——``PushSender``
+        因此在宽度 >280 时改走 markdown 交付，这里默认宽度与它保持一致。
+        宿主窗口窄时可以往回调（面板里改，或 ``NEKO_ARCADE_HELP_WIDTH``）。
         """
         width = self._width_override
         if width is None and self._cfg_mgr is not None:
             try:
                 cfg = self._cfg_mgr.load_main_config() or {}
                 section = cfg.get("help") if isinstance(cfg.get("help"), dict) else {}
-                raw = section.get("width") or cfg.get("help_width")
+                raw = (section.get("width") or cfg.get("help_width")
+                       or cfg.get("chat_image_width"))
                 if raw is not None:
                     width = int(raw)
             except Exception:  # noqa: BLE001 - 配置坏值不影响默认宽度
                 width = None
         if width is None:
             try:
-                width = int(os.environ.get("NEKO_ARCADE_HELP_WIDTH") or 320)
+                width = int(os.environ.get("NEKO_ARCADE_HELP_WIDTH") or DEFAULT_WIDTH)
             except (TypeError, ValueError):
-                width = 320
+                width = DEFAULT_WIDTH
         try:
             w = int(width)
         except (TypeError, ValueError):
-            w = 320
+            w = DEFAULT_WIDTH
         self.width = max(240, min(900, w))
         self.narrow = self.width < 520
         self.catalog_budget = 900 if self.narrow else CATALOG_HEIGHT_BUDGET

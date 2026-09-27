@@ -1,6 +1,6 @@
 [project]
 name = "neko_arcade"
-version = "0.5.8"
+version = "0.5.9"
 description = "N.E.K.O mini-games hub: catgirl plays fishing, turtle-soup, coin-flip and more."
 requires-python = ">=3.11"
 license = "Apache-2.0"
