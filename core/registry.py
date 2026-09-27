@@ -27,6 +27,8 @@ class GameRegistry:
         self._llm: Any = None
         self._photo: Any = None
         self._render: Any = None          # 渲染桥接(插件主体提供, 游戏只给数据)
+        self._companion: Any = None       # 陪伴层(带宿主猫娘人格)
+        self._llm_gateway: Any = None     # 统一 LLM 入口(场景/缓存/统计)
 
     # ── 注册与发现 ────────────────────────────
 
@@ -49,7 +51,8 @@ class GameRegistry:
         if isinstance(states, dict) and game.id in states:
             game.enabled = bool(states.get(game.id, True))
         game.bind_services(self._push, self._img, self._tts, self._llm, self._photo,
-                           render=self._render)
+                           render=self._render, companion=self._companion,
+                           llm_gateway=self._llm_gateway)
         self._games[game.id] = game
         log.info("已注册游戏: %s (%s)%s", game.name, game.id,
                  "" if game.enabled else " [停用]")

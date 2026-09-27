@@ -244,12 +244,11 @@ class SoupBubbleGame(GameAdapter):
         if now - last >= game_timeout:
             sess["state"] = "ended"
             await self._save_session(user_id, sess)
-            await self.push_text(await self._reveal_line(sess))
-            return
+            return await self._reveal_line(sess)      # 推送交本体(brain.tick)
         if not sess.get("nudged") and now - last >= nudge_after:
             sess["nudged"] = True
             await self._save_session(user_id, sess)
-            await self.push_text(await self._nudge_line(sess))
+            return await self._nudge_line(sess)       # 同上
 
     # ── LLM 桥接 ─────────────────────────
 
@@ -262,7 +261,7 @@ class SoupBubbleGame(GameAdapter):
             if category:
                 user_text += f"\n\n本局指定谜题类型/范围为「{category}」，请围绕此类型生成。"
             prompt += f"\n\n{user_text}\n\n只返回 JSON 对象，字段：soup（汤面）、bottom（汤底）、difficulty（简单/中等/困难）。不要解释。"
-            text = await self.call_llm(prompt)
+            text = await self.call_llm(prompt, scene="soup.puzzle")
             if text:
                 obj = self._parse_json(text)
                 if obj and obj.get("soup") and obj.get("bottom"):
@@ -278,7 +277,8 @@ class SoupBubbleGame(GameAdapter):
         prompt = str(self._cfg("prompts", {}).get("nudge", ""))
         if prompt:
             text = await self.call_llm(
-                f"{prompt}\n\n汤面：{sess['soup']}\n请用一句话问主人要不要公布答案。")
+                f"{prompt}\n\n汤面：{sess['soup']}\n请用一句话问主人要不要公布答案。",
+                scene="soup.nudge")
             if text and text.strip():
                 return text.strip()
         return str(self._cfg("nudge_fallback", "都猜这么久了，要公布答案吗喵？"))
@@ -287,7 +287,8 @@ class SoupBubbleGame(GameAdapter):
         prompt = str(self._cfg("prompts", {}).get("reveal", ""))
         if prompt:
             text = await self.call_llm(
-                f"{prompt}\n\n汤面：{sess['soup']}\n汤底：{sess['bottom']}\n请用一句话公布答案。")
+                f"{prompt}\n\n汤面：{sess['soup']}\n汤底：{sess['bottom']}\n请用一句话公布答案。",
+                scene="soup.reveal")
             if text and text.strip():
                 return text.strip()
         return f"好久没动静啦，汤底公布~\n汤底：{sess['bottom']}"

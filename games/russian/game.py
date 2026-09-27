@@ -112,7 +112,8 @@ class RussianGame(GameAdapter):
             save["food"] += bet
             save["duel"] = None
             await self._save(user_id, save)
-            await self.push_text(
+            # 局中提醒: 只返回文字, 推送统一由本体 brain 做(契约要求)
+            return (
                 f"（轮盘对决超时喵，{bet} 猫粮已退回。"
                 f"猫娘嘟囔：『主人装完弹就跑，害人家白紧张！』）")
 

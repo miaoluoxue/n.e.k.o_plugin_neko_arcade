@@ -131,12 +131,46 @@ class PhotoBridge:
 
     # ── 图库扫描 / 分类 ─────────────────────
 
+    def _user_gallery_root(self) -> Optional[Path]:
+        """宿主私有存储里的图库根(0.9.0.2 代码在 .neko-plugin-installations，
+        用户可能把图丢在旧根或私有存储 —— 两个都要扫)。"""
+        data_path = getattr(self.plugin, "data_path", None)
+        if callable(data_path):
+            try:
+                return Path(data_path("neko_photo"))
+            except Exception:  # noqa: BLE001 - 老的/不完整的宿主没有 data_path
+                return None
+        return None
+
+    def _scan_roots(self) -> List[Path]:
+        """所有可能放图的根目录(去重, 只保留存在的)。"""
+        roots: List[Path] = []
+        candidates = [self._img_root(), self._user_gallery_root()]
+        storage = getattr(self.plugin, "storage_dir", None)
+        if storage:
+            try:
+                candidates.append(Path(storage) / "games" / "neko_photo" / "data")
+            except TypeError:
+                pass
+        for p in candidates:
+            if p is None:
+                continue
+            try:
+                if p not in roots and p.is_dir():
+                    roots.append(p)
+            except OSError:
+                continue
+        return roots
+
     def get_categories(self) -> List[str]:
         """返回图库分类名列表(子文件夹名)。"""
-        root = self._img_root()
-        if not root.is_dir():
-            return []
-        return sorted(d.name for d in root.iterdir() if d.is_dir())
+        names: set = set()
+        for root in self._scan_roots():
+            try:
+                names.update(d.name for d in root.iterdir() if d.is_dir())
+            except OSError:
+                continue
+        return sorted(names)
 
     def scan_images(self) -> List[Dict[str, Any]]:
         """递归扫描图库目录下所有分类的图片(带 10s 缓存)。
@@ -148,29 +182,40 @@ class PhotoBridge:
             return self._img_cache
         self._img_cache = []
         self._img_scan_ts = now
-        root = self._img_root()
-        if not root.is_dir():
-            return self._img_cache
-        for cat_dir in sorted(root.iterdir()):
-            if not cat_dir.is_dir():
+        seen: set = set()
+        for root in self._scan_roots():
+            try:
+                cat_dirs = sorted(root.iterdir())
+            except OSError:
                 continue
-            cat = cat_dir.name
-            for fname in sorted(os.listdir(str(cat_dir))):
-                ext = os.path.splitext(fname)[1].lower()
-                if ext not in IMG_EXTS:
+            for cat_dir in cat_dirs:
+                if not cat_dir.is_dir():
                     continue
-                path = cat_dir / fname
+                cat = cat_dir.name
                 try:
-                    self._img_cache.append({
-                        "bytes": path.read_bytes(),
-                        "mime": _img_ext(str(path)),
-                        "style": os.path.splitext(fname)[0],
-                        "rarity": "rare",
-                        "source": "local",
-                        "category": cat,
-                    })
+                    fnames = sorted(os.listdir(str(cat_dir)))
                 except OSError:
                     continue
+                for fname in fnames:
+                    key = (cat, fname)
+                    if key in seen:
+                        continue
+                    ext = os.path.splitext(fname)[1].lower()
+                    if ext not in IMG_EXTS:
+                        continue
+                    path = cat_dir / fname
+                    try:
+                        self._img_cache.append({
+                            "bytes": path.read_bytes(),
+                            "mime": _img_ext(str(path)),
+                            "style": os.path.splitext(fname)[0],
+                            "rarity": "rare",
+                            "source": "local",
+                            "category": cat,
+                        })
+                        seen.add(key)
+                    except OSError:
+                        continue
         return self._img_cache
 
     # ── 挑图 ──────────────────────────────

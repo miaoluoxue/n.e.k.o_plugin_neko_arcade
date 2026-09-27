@@ -9,6 +9,10 @@
   鱼竿 / 换竿 [名称]  —— 查看/切换鱼竿
   鱼饵 / 换饵 [名称]  —— 查看/切换鱼饵
   商店 / 购买 [名称]  —— 购买鱼竿/鱼饵/钓鱼券
+
+鱼竿的 failProtection 是"空竿保护": 上鱼失败时按该概率变成干净的"空竿"
+(不掉垃圾、不触发倒霉事件)。fishdata.json 里带 seasonal 的鱼只在活动窗口内
+可钓, requiredBaitIds 指定了饵的鱼必须挂对应鱼饵(否则永远钓不到)。
   帮助                —— 玩法说明
 """
 
@@ -18,7 +22,7 @@ import json
 import os
 import random
 from datetime import date
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from ...core.contracts import GameAdapter
 from .data import (
@@ -60,16 +64,59 @@ def _roll_rarity(rarity_bias: Optional[Dict[str, float]] = None) -> str:
     return "common"
 
 
-def _generate_fish(rarity: str) -> Dict[str, Any]:
-    """从对应稀有度的鱼池生成一条鱼（随机尺寸/重量）。"""
+def _season_ok(meta: Dict[str, Any], today: Any) -> bool:
+    """活动窗口判定: startDate <= today < endDateExclusive。
+
+    窗口字段写坏(缺字段/日期不合法) → 当成普通鱼放行: 一条脏数据不该让整池消失。
+    """
+    try:
+        start = date.fromisoformat(str(meta.get("startDate")))
+        end = date.fromisoformat(str(meta.get("endDateExclusive")))
+    except (TypeError, ValueError):
+        return True
+    return start <= today < end
+
+
+def _eligible_pool(rarity: str, bait_id: str = "plain",
+                   today: Optional[Any] = None) -> List[Dict[str, Any]]:
+    """按活动窗口 + 指定鱼饵过滤鱼池。
+
+    fishdata.json 里的 seasonal / requiredBaitIds 以前**被引擎完全忽略** —— 节日鱼
+    全年都能钓上来、指定饵也不起作用(线上表现为"非节日钓到节日限定鱼")。
+    过滤后池子为空 → 退回原始池子，保证永远有鱼可出(不会冒"未知生物")。
+    """
     data = _load_fishdata()
     pool = data["fishTypes"].get(rarity) or []
+    if not pool:
+        return []
+    day = today or date.today()
+    ok: List[Dict[str, Any]] = []
+    for tpl in pool:
+        season = tpl.get("seasonal")
+        if isinstance(season, dict) and not _season_ok(season, day):
+            continue
+        need = tpl.get("requiredBaitIds")
+        if isinstance(need, list) and need and bait_id not in need:
+            continue
+        ok.append(tpl)
+    return ok or pool
+
+
+def _generate_fish(rarity: str, bait_id: str = "plain",
+                   today: Optional[Any] = None) -> Dict[str, Any]:
+    """从对应稀有度的鱼池生成一条鱼（随机尺寸/重量）。"""
+    pool = _eligible_pool(rarity, bait_id, today)
     if not pool:
         return {"name": "未知生物", "rarity": rarity, "length": 10, "weight": 0.1}
     template = random.choice(pool)
     length = round(random.uniform(template["size"]["min"], template["size"]["max"]), 1)
     weight = round(random.uniform(template["weight"]["min"], template["weight"]["max"]), 2)
-    return {"name": template["name"], "rarity": rarity, "length": length, "weight": weight}
+    return {
+        "name": template["name"], "rarity": rarity,
+        "length": length, "weight": weight,
+        "seasonal": bool(template.get("seasonal")),
+        "event": str((template.get("seasonal") or {}).get("eventId") or ""),
+    }
 
 
 def _fish_sell_value(fish: Dict[str, Any]) -> int:
@@ -209,14 +256,15 @@ class FishingGame(GameAdapter):
         lines = []
         for r in results:
             if r["kind"] == "fish":
+                mark = "✨" if r.get("seasonal") else "🐟"
                 lines.append(
-                    f"🐟 {r['name']}（{RARITY_LABELS[r['rarity']]}）{r['length']}cm {r['weight']}kg"
+                    f"{mark} {r['name']}（{RARITY_LABELS[r['rarity']]}）{r['length']}cm {r['weight']}kg"
                     + (f"，价值 {r['value']} 鱼蛋" if r["value"] else "")
                 )
             elif r["kind"] == "trash":
                 lines.append(f"🗑️ 钓上来一个「{r['name']}」……")
             else:
-                lines.append(f"💨 {r['message']}")
+                lines.append(f"💨 {r.get('message') or '什么都没咬钩……'}")
 
         left_after = daily_casts - data["casts_used"]
         # 结构化结果（facts + outcome，供大脑情感渲染）
@@ -226,11 +274,14 @@ class FishingGame(GameAdapter):
                 facts.append({
                     "kind": "catch", "name": r["name"], "rarity": r["rarity"],
                     "size": r["length"], "weight": r["weight"], "value": r.get("value", 0),
+                    "seasonal": bool(r.get("seasonal")),
                 })
             elif r["kind"] == "trash":
                 facts.append({"kind": "trash", "item": r["name"]})
+            elif r["kind"] == "event":
+                facts.append({"kind": "event", "message": r.get("message", "")})
             else:
-                facts.append({"kind": "event", "message": r["message"]})
+                facts.append({"kind": "empty"})
         if not facts:
             facts = [{"kind": "empty"}]
         caught = [f for f in facts if f["kind"] == "catch"]
@@ -255,6 +306,12 @@ class FishingGame(GameAdapter):
         data_pool = _load_fishdata()
         rate = float(self._cfg("base_catch_rate", 0.2)) + rod.get("catchRateBonus", 0) + bait.get("catchRateBonus", 0)
         if random.random() > rate:
+            # 空竿保护: 鱼竿的 failProtection 以前是**死配置**(「稳钓重竿」写着
+            # 0.16 保护却一点用没有，比新手竿还差)。空竿保护命中时，这一竿既不
+            # 掉垃圾也不触发倒霉事件，就是干干净净什么都没咬钩。
+            protect = float(rod.get("failProtection", 0) or 0)
+            if random.random() < protect:
+                return {"kind": "empty"}
             # 上鱼失败：垃圾 / 随机事件
             if random.random() < 0.5:
                 name = random.choice(data_pool["trashItems"])
@@ -265,7 +322,7 @@ class FishingGame(GameAdapter):
             **(rod.get("rarityBias") or {}),
             **(bait.get("rarityBias") or {}),
         })
-        fish = _generate_fish(rarity)
+        fish = _generate_fish(rarity, bait_id=str(bait.get("id") or "plain"))
         fish["value"] = _fish_sell_value(fish)
 
         # 入缸（传说/彩蛋必入；其他先看容量）
@@ -294,16 +351,24 @@ class FishingGame(GameAdapter):
         tank = data["tank"]
         cap = int(self._cfg("tank.default_capacity", 5)) + tank["level"] * int(self._cfg("tank.upgrade_size", 5))
         fishes = tank["fishes"]
+        # 图鉴进度: stats.species 一直在记, 但以前从不展示(玩家看不到自己收集了多少种)
+        total_species = sum(len(v) for v in _load_fishdata()["fishTypes"].values())
+        species = (data.get("stats") or {}).get("species") or []
+        head = (f"🏺 鱼缸（Lv.{tank['level']}，{len(fishes)}/{cap}）"
+                f"｜图鉴 {len(species)}/{total_species} 种")
+        view_fact = {"kind": "tank_view", "level": tank["level"], "count": len(fishes),
+                     "capacity": cap, "species": len(species), "species_total": total_species}
         if not fishes:
-            return {"message": f"鱼缸还是空的喵（容量 {cap}）……先去「钓鱼」吧！"}
+            return {"message": f"{head}\n鱼缸还是空的喵……先去「钓鱼」吧！",
+                    "facts": [view_fact], "outcome": "tank"}
         lines = []
         for i, f in enumerate(fishes, 1):
             value = f.get("value", _fish_sell_value(f))
             value_txt = f" +{value}蛋" if value else " 收藏"
-            lines.append(f"{i}. {f['name']}（{RARITY_LABELS[f['rarity']]}）{f['length']}cm {f['weight']}kg{value_txt}")
-        return {"message": f"🏺 鱼缸（Lv.{tank['level']}，{len(fishes)}/{cap}）\n" + "\n".join(lines),
-                "facts": [{"kind": "tank_view", "level": tank["level"], "count": len(fishes), "capacity": cap}],
-                "outcome": "tank"}
+            mark = "✨" if f.get("seasonal") else ""
+            lines.append(f"{i}. {mark}{f['name']}（{RARITY_LABELS[f['rarity']]}）{f['length']}cm {f['weight']}kg{value_txt}")
+        return {"message": head + "\n" + "\n".join(lines),
+                "facts": [view_fact], "outcome": "tank"}
 
     async def _upgrade_tank(self, user_id: str) -> Dict[str, Any]:
         data = await self._load_player(user_id)

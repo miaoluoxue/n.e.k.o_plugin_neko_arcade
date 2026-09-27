@@ -165,10 +165,12 @@ async def main():
     await game.handle_action(t, "轮盘签到")
     await game.handle_action(t, "装弹")
     game._cache[t]["duel"]["started_at"] = time.time() - 9999
-    await game.on_tick(t)
+    said = await game.on_tick(t)
     check("超时退回赌注", game._cache[t]["duel"] is None and game._cache[t]["food"] > 0,
           (game._cache[t]["duel"], game._cache[t]["food"]))
-    check("超时推送", any("超时" in p for p in plugin.pushes), plugin.pushes)
+    check("超时提醒(on_tick 返回, 推送归本体)",
+          any("超时" in p for p in plugin.pushes) or (isinstance(said, str) and "超时" in said),
+          (said, plugin.pushes))
 
     # 14. 关键词覆盖
     kw_need = ["轮盘签到", "装弹", "开枪", "逃跑", "我的猫粮", "我的战绩",

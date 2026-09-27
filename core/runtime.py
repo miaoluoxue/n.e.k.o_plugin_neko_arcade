@@ -26,6 +26,7 @@ class ArcadeRuntime:
         self.cfg_mgr = ConfigManager(self.data_dir)
         self.registry = GameRegistry(plugin, self.cfg_mgr)
         self.llm = LLMProvider(15)
+        self.llm_gateway: Any = None
         self.push = PushSender(plugin)
         self.img = ImageRenderer()
         self.tts = TTSClient(plugin)
@@ -34,7 +35,8 @@ class ArcadeRuntime:
         # 渲染桥接: 插件主体统一的图片渲染能力(帮助图/面板图/结果卡)。
         # 「游戏适配插件」——游戏只给数据, HTML/CSS/主题/浏览器全在插件侧。
         self.render_bridge = RenderBridge(
-            renderer=HelpRenderer(self.img, self._code_dir(), self._help_cache_dir()),
+            renderer=HelpRenderer(self.img, self._code_dir(), self._help_cache_dir(),
+                                  config_manager=self.cfg_mgr),
             config_manager=self.cfg_mgr, push_sender=self.push)
         self.brain: Optional[GameBrain] = None
         self._tick_task: Optional[asyncio.Task] = None
@@ -78,6 +80,12 @@ class ArcadeRuntime:
         self.brain = GameBrain(self.plugin, self.registry, self.cfg,
                                self.llm, self.push, self.img, self.cfg_mgr, self.tts)
         self._wire_llm()
+        # 陪伴层(带宿主猫娘人格)注入注册表 → 游戏注册时拿到
+        self.registry._companion = getattr(self.brain, "companion", None)
+        # 统一 LLM 入口: 所有游戏的 call_llm 都走它(场景缓存/限流/token 统计)
+        from .llm_gateway import LLMGateway
+        self.llm_gateway = LLMGateway(self.llm)
+        self.registry._llm_gateway = self.llm_gateway
         # 将插件服务注入注册表，游戏注册后可调用
         self.registry._push = self.push
         self.registry._img = self.img

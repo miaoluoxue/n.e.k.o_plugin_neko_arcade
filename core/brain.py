@@ -11,7 +11,7 @@ from typing import Any, Dict, List, Optional
 from .emotion import EmotionRenderer
 from .help import HelpRenderer, normalize_help, resolve_topic, split_help_intent
 from .memory import GameMemory
-from .persona import Persona
+from .persona import Persona, apply_persona, load_host_persona
 from .proactive import ProactiveEngine
 from .registry import GameRegistry
 
@@ -52,8 +52,36 @@ class GameBrain:
         # 默认 15 分钟, 可用配置 background_active_window 调整。
         self._last_activity_ts = 0.0
         self._background_active_window = float(cfg.get("background_active_window", 900.0))
+        # 交互式换游戏：会话进行中用户点名别的游戏时不静默切走——先让 LLM
+        # 用猫娘口吻确认，用户确认后再切。pending 由 handle_action 维护，
+        # 超时自动作废（避免旧的确认一直挂在上下文里）。
+        self._pending_switch: Optional[Dict[str, Any]] = None
+        self._switch_confirm_ttl = float(cfg.get("game_switch_confirm_ttl", 180.0))
         # 统一帮助渲染器(懒加载): 游戏只给 help.json 数据, 主题与排版由插件解决
         self._help_rend: Optional[HelpRenderer] = None
+        self._persona_raw: Optional[Dict[str, Any]] = None
+
+    def _maybe_refresh_persona(self) -> bool:
+        """宿主随时可能换猫娘: 每次 tick 检查一次(带签名+TTL, 平时不开销)。
+
+        一旦人设变了: 就地更新 persona + 清掉台词缓存(旧人格生成的台词不能再用)。
+        """
+        try:
+            raw = load_host_persona(self.cfg)
+        except Exception as exc:
+            log.debug("读取宿主人设失败: %s", exc)
+            return False
+        if not raw:
+            return False
+        changed = apply_persona(self.persona, raw)
+        if changed:
+            self._persona_raw = dict(raw)
+            comp = getattr(self, "companion", None)
+            cache = getattr(comp, "_cache", None)
+            if isinstance(cache, dict):
+                cache.clear()
+            log.info("检测到猫娘人设变化, 已刷新: %s", raw.get("name"))
+        return changed
 
     def _load_host_persona(self) -> Optional[Dict[str, Any]]:
         try:
@@ -121,8 +149,9 @@ class GameBrain:
         game = self.registry.get(game_id)
         if not game:
             return {"message": f"没有找到游戏「{game_id}」喵"}
-        if self._current_game:
-            await self._end_session()
+        # 面板直接开新游戏：旧会话要完整收尾（含 on_stop），不能只清字段。
+        await self._end_current_game(user_id)
+        self._pending_switch = None
         self._current_game = game_id
         self._current_user = user_id
         self._session_start = time.time()
@@ -144,19 +173,107 @@ class GameBrain:
         game = self.registry.get(self._current_game)
         game_id = self._current_game
         game_name = game.name if game else "游戏"
-        if game and hasattr(game, "on_stop"):
-            try:
-                await game.on_stop(user_id)
-            except Exception as exc:
-                log.warning("on_stop 异常: %s", exc)
-        await self._end_session()
+        await self._end_current_game(user_id)
+        self._pending_switch = None
         return {"game": game_id, "game_name": game_name, "stopped": True,
                 "mood": self.persona.mood.snapshot()}
 
     async def _end_session(self) -> None:
         self._current_game = None
+        self._current_user = None
         self._session_start = 0.0
         self._last_anchor_ts = 0.0
+
+    async def _end_current_game(self, user_id: str = "default") -> Optional[str]:
+        """结束当前会话（含旧游戏的 on_stop），返回被结束的 game_id。"""
+        old_id = self._current_game
+        if not old_id:
+            await self._end_session()
+            return None
+        old = self.registry.get(old_id)
+        if old is not None and hasattr(old, "on_stop"):
+            try:
+                await old.on_stop(user_id)
+            except Exception as exc:
+                log.warning("游戏 %s on_stop 异常: %s", old_id, exc)
+        await self._end_session()
+        return old_id
+
+    async def _ask_switch(self, game, cmd: str, user_id: str) -> Dict[str, Any]:
+        """会话中用户点名别的游戏 → 返回「确认切换」语义，交给 LLM 生成对话。
+
+        这里**不推送任何固定话术**：只给 LLM 一条 summary 指令，让它用猫娘
+        自己的口吻问「要换吗」。用户确认后 LLM 再调 play_game 并填 switch_to，
+        才真正切换（见 :meth:`_switch_confirmed`）。
+        """
+        old = self.registry.get(self._current_game) if self._current_game else None
+        old_name = old.name if old else str(self._current_game or "")
+        self._pending_switch = {"from": self._current_game, "to": game.id,
+                                "cmd": cmd, "ts": time.time()}
+        # 让下一次 tick 立刻注入「切换待确认」状态锚（不等 20s 节流）。
+        self._last_anchor_ts = 0.0
+        summary = (
+            f"[游戏切换确认] 主人现在还在玩「{old_name}」，刚提到想玩「{game.name}」。"
+            "请用猫娘自己的口吻问他要不要换过去（撒娇/在意/吐槽都行，语气随你），"
+            "不要直接开始新游戏、不要自己扮演切换、不要输出固定模板句。"
+            f"如果他确认要换，再调用 play_game：input 传他的原话，"
+            f"并填 switch_to=\"{game.name}\"；"
+            "如果他说不换或要继续原来的游戏，就不要填 switch_to。"
+        )
+        return {
+            "game": game.id, "game_name": game.name, "game_icon": game.icon,
+            "outcome": "switch_confirm", "level": "routine", "facts": [],
+            "game_result": "", "emotion_suggestion": "",
+            "summary": summary, "mood": self.persona.mood.snapshot(),
+            "pending_switch": {"from": self._current_game, "to": game.id},
+            "game_commands": [],
+        }
+
+    async def _switch_confirmed(self, switch_to: str, cmd: str, user_id: str,
+                                args: Dict[str, Any]) -> Dict[str, Any]:
+        """用户已确认换游戏：完整收尾旧会话 → 开始新会话 → 执行新游戏。"""
+        target = self.registry.get(switch_to) or self.registry.get_by_name(switch_to)
+        if target is None:
+            self._pending_switch = None
+            return {"facts": [], "outcome": "unknown",
+                    "message": f"没有找到游戏「{switch_to}」喵"}
+        if not target.enabled:
+            self._pending_switch = None
+            return {"facts": [], "outcome": "unknown",
+                    "message": f"「{target.name}」已经停用了喵，去面板把它打开吧"}
+
+        pending = self._pending_switch or {}
+        pending_to = str(pending.get("to") or "")
+        if pending_to not in (target.id, target.name):
+            # 没有待确认的切换（LLM 抢跑/或用户又换了个目标）→ 仍然先问一次。
+            return await self._ask_switch(target, cmd, user_id)
+        target_cmd = str(pending.get("cmd") or "").strip()
+        if not target_cmd:
+            kws = target.get_keywords() or []
+            target_cmd = kws[0] if kws else target.name
+
+        from_id = self._current_game
+        from_name = ""
+        if from_id:
+            old = self.registry.get(from_id)
+            from_name = old.name if old else from_id
+
+        if from_id != target.id:
+            await self._end_current_game(user_id)   # 旧游戏 on_stop + 清会话
+            await self._start_session(target.id, user_id)  # 新游戏 on_start
+        self._pending_switch = None
+
+        inner_args = {k: v for k, v in args.items() if k != "switch_to"}
+        result = await self.handle_action(target.id, target_cmd, inner_args, user_id)
+        if isinstance(result, dict) and from_id and from_id != target.id:
+            note = (
+                f"[切换完成] 已从「{from_name}」切到「{target.name}」。"
+                "请用猫娘自己的口吻确认一下切换完成（措辞随你），再接着新游戏的"
+                "内容；不要输出固定模板句，也不要复述本条指令。"
+            )
+            result["summary"] = note + str(result.get("summary") or "")
+            result["switched_from"] = from_id
+        return result
 
     @property
     def last_game(self) -> Optional[str]:
@@ -165,11 +282,30 @@ class GameBrain:
 
     async def handle_action(self, game_id: str, cmd: str, args: Optional[Dict] = None,
                             user_id: str = "default") -> Dict[str, Any]:
+        args = dict(args or {})
+        switch_to = str(args.get("switch_to") or "").strip()
+
+        # ① 用户已确认换游戏（LLM 填了 switch_to）→ 先完整切会话，再执行新游戏。
+        if switch_to:
+            return await self._switch_confirmed(switch_to, cmd, user_id, args)
+
         game = self.registry.get(game_id)
         if not game:
             return {"message": f"没有找到游戏「{game_id}」喵"}
         if not game.enabled:
             return {"message": f"「{game.name}」已经停用了喵，去面板把它打开吧"}
+
+        # ② 会话进行中用户点名别的游戏：先看是不是「XX帮助」——帮助直接出图，
+        #    不算换游戏；否则返回确认语义，由 LLM 用猫娘口吻问「要换吗」。
+        if self._current_game and game_id != self._current_game:
+            help_topic = split_help_intent(cmd, strip_words=self._help_strip_words(game))
+            if help_topic is not None and len((cmd or "").strip()) <= 14:
+                return await self.show_help(game_id, topic=help_topic)
+            return await self._ask_switch(game, cmd, user_id)
+
+        # ③ 记下进来时有没有待确认的切换：等会儿按当前游戏认不认这条输入决定
+        #    是「放弃切换」还是「把切换确认再交给 LLM」。
+        pending_before = self._pending_switch is not None
 
         if not cmd or not cmd.strip():
             return await self._invite_game(game, user_id)
@@ -193,6 +329,18 @@ class GameBrain:
         # 记录最近玩过的游戏(供「继续」类输入路由回当前游戏)
         if outcome not in ("unknown", "idle", "error"):
             self._last_game = game_id
+
+        if self._current_game and game_id == self._current_game:
+            if outcome == "unknown" and pending_before and self._pending_switch:
+                # 有换游戏待确认，这条输入当前游戏又不认 → 不当成放弃切换，
+                # 重新把「要不要换到 X」交给 LLM（不硬编码确认词）。
+                pending_game = self.registry.get(
+                    str(self._pending_switch.get("to") or ""))
+                if pending_game is not None:
+                    return await self._ask_switch(
+                        pending_game,
+                        str(self._pending_switch.get("cmd") or ""), user_id)
+            self._pending_switch = None
 
         # 游戏不认识指令 → 短提示（不再甩一长串玩法说明，避免刷屏）
         if outcome == "unknown":
@@ -402,7 +550,8 @@ class GameBrain:
                     cache_dir = str(cache_path("help"))
                 except Exception as exc:      # 老宿主没有 cache_path → 不缓存
                     log.debug("cache_path 不可用, 帮助图不缓存: %s", exc)
-            self._help_rend = HelpRenderer(self.img, code_dir, cache_dir)
+            self._help_rend = HelpRenderer(self.img, code_dir, cache_dir,
+                                           config_manager=self.cfg_mgr)
         return self._help_rend
 
     @staticmethod
@@ -468,12 +617,16 @@ class GameBrain:
                     label = f"{label} · {page.group.name}"
                 elif page.kind == "command" and page.command is not None:
                     label = f"{label} · {page.command.cmd}"
-                for i, page_bytes in enumerate(pages):
-                    title = f"{label} 帮助" + (f" ({i + 1}/{len(pages)})"
-                                             if len(pages) > 1 else "")
-                    await self.push.help_doc(title, page_bytes,
-                                             doc.text if i == 0 else None)
-                msg = f"已发送 {label} 的帮助喵"
+                # ☠ 指令分级: 一次只发**第一页**(目录 / 分组 / 单指令各一级)，
+                #   绝不把多页一次刷给用户；被截断时在配文里给下钻方法。
+                extra = ""
+                if len(pages) > 1:
+                    extra = (f"（还有 {len(pages) - 1} 页没展开："
+                             f"发「{game.name}帮助 <功能名>」逐级查看）")
+                text = ((doc.text or "") + extra).strip() or None
+                await self.push.help_doc(f"{label} 帮助", pages[0], text)
+                msg = (f"已发送 {label} 的帮助喵" if len(pages) == 1
+                       else f"已发送 {label} 的帮助目录喵（共 {len(pages)} 页，按功能分级查看）")
                 return {"message": msg, "summary": msg, "image": True}
 
             # ② 旧路径: 浏览器渲染扁平帮助 → PIL → 纯文本
@@ -491,14 +644,12 @@ class GameBrain:
                     if not pages:
                         pages = await self.img.render_help(game.name, commands, text)
                     if pages:
-                        # 多页帮助依次推送, 每页高度 ≤ ~600px 避免截断
-                        for i, page_bytes in enumerate(pages):
-                            title = f"{game.name} 帮助"
-                            if len(pages) > 1:
-                                title += f" ({i + 1}/{len(pages)})"
-                            # 只有第一页带文字说明, 避免重复
-                            await self.push.help_doc(title, page_bytes,
-                                                     text if i == 0 else None)
+                        # 指令分级: 旧通道也只发第一页, 其余靠分组下钻
+                        extra = (f"（还有 {len(pages) - 1} 页没展开："
+                                 f"发「{game.name}帮助 <功能名>」逐级查看）"
+                                 if len(pages) > 1 else "")
+                        await self.push.help_doc(f"{game.name} 帮助", pages[0],
+                                                 ((text or "") + extra).strip() or None)
                         msg = f"已发送 {game.name} 的帮助文档喵"
                         return {"message": msg, "summary": msg, "image": True}
                 except Exception as exc:
@@ -525,8 +676,14 @@ class GameBrain:
         self._last_activity_ts = time.time()
 
     async def tick(self) -> Optional[str]:
+        self._maybe_refresh_persona()          # 猫娘可换: 每秒轻量检查一次
         self.persona.mood.decay_all()
         self.proactive.tick()
+        # 换游戏确认会过期：用户半天不回就不再提，避免旧的确认一直挂在上下文里。
+        if self._pending_switch and (
+                time.time() - float(self._pending_switch.get("ts") or 0)
+                > self._switch_confirm_ttl):
+            self._pending_switch = None
         # 后台自动发图: 不依赖游戏会话, 聊天过程中猫娘也会随机发图。
         # neko_photo 开启 auto_send 时, 无论当前在不在玩它都定期触发。
         await self._tick_background_games()
@@ -535,7 +692,10 @@ class GameBrain:
             game = self.registry.get(self._current_game)
             if game is not None and hasattr(game, "on_tick"):
                 try:
-                    await game.on_tick(self._current_user or "default")
+                    said = await game.on_tick(self._current_user or "default")
+                    # 局中主动搭话: 游戏只返回文字, 推送统一由本体做
+                    if isinstance(said, str) and said.strip():
+                        await self.push.text(said)
                 except Exception as exc:
                     log.warning("游戏 %s on_tick 异常: %s", self._current_game, exc)
             # 状态锚：游戏进行中且 LLM 长时间没调工具(脱节) → 注入只含当前游戏的
@@ -595,6 +755,22 @@ class GameBrain:
         game = self.registry.get(game_id)
         if game is None:
             return
+        if self._pending_switch:
+            target = self.registry.get(str(self._pending_switch.get("to") or ""))
+            to_name = target.name if target else str(self._pending_switch.get("to") or "")
+            anchor = (
+                f"[游戏切换待确认] 主人提出想玩「{to_name}」，你刚问了他要不要换，"
+                "正在等他回答。他确认后请调用 play_game 并填 "
+                f"switch_to=\"{to_name}\"；他说不换就继续当前游戏，不要自己切换，"
+                "也不要输出固定模板句。"
+            )
+            self._last_anchor_ts = time.time()
+            try:
+                await self.push.text(anchor, visibility=[], ai_behavior="read")
+                log.info("已注入换游戏确认锚(%s)", to_name)
+            except Exception as exc:
+                log.warning("注入换游戏确认锚失败: %s", exc)
+            return
         try:
             help_data = await self.registry.get_help(game_id)
             commands = (help_data or {}).get("commands", []) or []
@@ -642,6 +818,7 @@ class GameBrain:
             "persona": self.persona.snapshot(),
             "session": {"active": bool(self._current_game), "game": self._current_game,
                         "elapsed": round(time.time() - self._session_start, 1) if self._session_start else 0},
+            "pending_switch": self._pending_switch,
             "proactive": self.proactive.snapshot(),
             "memory": await self.memory.snapshot(),
         }

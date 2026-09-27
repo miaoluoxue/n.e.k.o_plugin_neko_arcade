@@ -117,6 +117,30 @@ body { width:%(width)dpx; position:relative; color:var(--text); background:var(-
   background:var(--surface-strong); display:flex; align-items:center;
   justify-content:center; font-size:14px; }
 .cell.on { border-color:var(--primary); background:rgba(64,158,255,0.10); }
+/* 棋盘块(棋类游戏): 交叉点/格心两种摆法 + 坐标 + 最后一手标记 */
+.board { display:grid; gap:0; padding:5px; background:var(--surface-strong);
+  border:1px solid var(--border); border-radius:var(--radius-sm); }
+.bcell { position:relative; aspect-ratio:1/1; display:flex; align-items:center;
+  justify-content:center; }
+.bcell.box { border:1px solid var(--border); }
+.ln { position:absolute; background:var(--border); }
+.ln.h { left:0; right:0; height:1px; top:50%%; }
+.ln.v { top:0; bottom:0; width:1px; left:50%%; }
+.bcell.el .ln.h { left:50%%; }
+.bcell.er .ln.h { right:50%%; }
+.bcell.et .ln.v { top:50%%; }
+.bcell.eb .ln.v { bottom:50%%; }
+.pc { position:relative; z-index:2; width:80%%; height:80%%; border-radius:50%%;
+  display:flex; align-items:center; justify-content:center; font-size:11px;
+  font-weight:700; border:1px solid rgba(0,0,0,.35); }
+.pc-b { background:#2f3038; color:#fff; }
+.pc-w { background:#fbfbf6; color:#2f3038; }
+.pc-r { background:#c8443c; color:#fff; }
+.pc.last { box-shadow:0 0 0 2px var(--primary); }
+.star { position:absolute; width:18%%; height:18%%; border-radius:50%%;
+  background:var(--border); z-index:1; }
+.blab { display:flex; align-items:center; justify-content:center;
+  font-size:9px; color:var(--muted); }
 .block-tt { font-size:12.5px; font-weight:650; color:var(--muted); margin-bottom:8px; }
 /* 卡片组(天赋/成就这类) */
 .cardgrid { display:grid; gap:10px; }
@@ -136,6 +160,35 @@ body { width:%(width)dpx; position:relative; color:var(--text); background:var(-
 .statvl { font-size:12.5px; font-weight:650; color:var(--text); min-width:26px;
   text-align:right; }
 .statnt { font-size:11.5px; color:var(--muted); min-width:48px; }
+/* 目录页(一级帮助): 只列功能分组, 不下钻明细 —— 指令分级的第一步 */
+.dirrow { padding:9px 13px; border-bottom:1px solid var(--border); }
+.dirrow:last-child { border-bottom:none; }
+.dirtop { display:flex; align-items:center; gap:7px; }
+.dirn { font-size:13.5px; font-weight:720; color:var(--text); }
+.dirb { margin-left:auto; font-size:11.5px; color:var(--muted); }
+.dirc { display:flex; flex-wrap:wrap; gap:4px; margin-top:5px; }
+"""
+
+# 聊天窗友好(窄版): 宿主图片气泡 max-width≈280px, 所以正文按 320px 渲染;
+# 两列会挤压 → 统一单列, 表格改成"指令在上、说明在下"。
+NARROW_CSS = """
+.grid2 { grid-template-columns:1fr; }
+.stats { flex-direction:column; gap:8px; }
+.page { padding:14px; }
+.page-title { font-size:19px; }
+.ava { width:46px; height:46px; flex:0 0 46px; }
+.mascot { width:84px; }
+.table { border:none; border-radius:0; }
+.table th { display:none; }
+.table tr { display:block; padding:8px 2px; border-bottom:1px solid var(--border); }
+.table tr:last-child { border-bottom:none; }
+.table td { display:block; width:auto !important; white-space:normal !important;
+  padding:0; border:none; }
+.table td.k { font-size:13.5px; margin-bottom:2px; }
+.table td.d { color:var(--muted); font-size:12.5px; line-height:1.5; }
+.steps { flex-direction:column; align-items:stretch; }
+.step { min-width:0; }
+.slots { flex-direction:column; }
 """
 
 
@@ -146,16 +199,65 @@ def _esc(text: Any) -> str:
 class HelpRenderer:
     """帮助图渲染器(统一入口)。"""
 
-    def __init__(self, img_renderer: Any, code_dir: str = "", cache_dir: str = ""):
+    def __init__(self, img_renderer: Any, code_dir: str = "", cache_dir: str = "",
+                 width: Optional[int] = None, config_manager: Any = None):
         self.img = img_renderer
         self.assets = AssetResolver(code_dir, cache_dir)
         self.cache_dir = cache_dir or ""
         self._icon_override: Dict[str, str] = {}
+        self._cfg_mgr = config_manager
+        self._width_override = width
+        self.width = 320
+        self.narrow = True
+        self.catalog_budget = CATALOG_HEIGHT_BUDGET
+        self.group_cmds = GROUP_CMD_PER_PAGE
+        self.flat_cmds = FLAT_CMD_PER_PAGE
+        self._refresh_layout()
+
+    def _refresh_layout(self) -> None:
+        """刷新版式参数。**每次渲染前调用** → 面板改宽度立即生效，不用重启。
+
+        宽度来源优先级：构造时显式传入 → 主配置 ``[help] width`` →
+        环境变量 ``NEKO_ARCADE_HELP_WIDTH`` → 默认 320。
+        宿主聊天图片气泡 max-width≈280px，320 是窄版默认值；窗口/宿主不同
+        可以随时调大调小，这里不写死。
+        """
+        width = self._width_override
+        if width is None and self._cfg_mgr is not None:
+            try:
+                cfg = self._cfg_mgr.load_main_config() or {}
+                section = cfg.get("help") if isinstance(cfg.get("help"), dict) else {}
+                raw = section.get("width") or cfg.get("help_width")
+                if raw is not None:
+                    width = int(raw)
+            except Exception:  # noqa: BLE001 - 配置坏值不影响默认宽度
+                width = None
+        if width is None:
+            try:
+                width = int(os.environ.get("NEKO_ARCADE_HELP_WIDTH") or 320)
+            except (TypeError, ValueError):
+                width = 320
+        try:
+            w = int(width)
+        except (TypeError, ValueError):
+            w = 320
+        self.width = max(240, min(900, w))
+        self.narrow = self.width < 520
+        self.catalog_budget = 900 if self.narrow else CATALOG_HEIGHT_BUDGET
+        self.group_cmds = 10 if self.narrow else GROUP_CMD_PER_PAGE
+        self.flat_cmds = 12 if self.narrow else FLAT_CMD_PER_PAGE
+
+    def layout(self) -> Dict[str, Any]:
+        """当前版式参数(供面板/日志查看)。"""
+        return {"width": self.width, "narrow": self.narrow,
+                "catalog_budget": self.catalog_budget,
+                "group_cmds": self.group_cmds, "flat_cmds": self.flat_cmds}
 
     # ── 对外主入口 ────────────────────────────────────────
     async def render(self, doc: HelpDoc, page: Page, theme: str = "light",
                      use_cache: bool = True) -> List[bytes]:
         """渲染一个寻址结果(可能多页)。无浏览器/失败时返回空列表。"""
+        self._refresh_layout()
         theme = self._pick_theme(doc, theme)
         payloads = self._build_pages(doc, page)
         out: List[bytes] = []
@@ -172,6 +274,7 @@ class HelpRenderer:
 
         这是渲染桥接的底座: 游戏永远不写 HTML/CSS, 只描述要展示什么。
         """
+        self._refresh_layout()
         theme_name = self._pick_theme(HelpDoc(theme=str(spec.get("theme") or "")), theme)
         png = await self._render_one(self._spec_page(spec), theme_name, use_cache)
         return [png] if png else []
@@ -179,6 +282,7 @@ class HelpRenderer:
     def build_html(self, doc: HelpDoc, page: Page, theme: str = "light",
                    page_index: int = 0) -> str:
         """公开给测试/预览用: 直接拿到某一页的 HTML。"""
+        self._refresh_layout()
         payloads = self._build_pages(doc, page)
         if not payloads:
             return ""
@@ -211,7 +315,7 @@ class HelpRenderer:
         render_html = getattr(self.img, "render_html", None)
         if not callable(render_html):
             return None
-        png = await render_html(html, "", WIDTH, 800, selector="body")
+        png = await render_html(html, "", self.width, 800, selector="body")
         if not png:
             return None
         if cache_path:
@@ -224,7 +328,9 @@ class HelpRenderer:
 
     # ── 内部: 页面组装 ────────────────────────────────────
     def _wrap(self, body: str, theme: str) -> str:
-        css = BASE_CSS % {"width": WIDTH, "veil": theme_veil(theme)}
+        css = BASE_CSS % {"width": self.width, "veil": theme_veil(theme)}
+        if self.narrow:
+            css += NARROW_CSS
         bg = self.assets.uri("bg")
         mascot = self.assets.uri("mascot")
         bg_layer = (f'<div class="bgart" style="background-image:url({bg})"></div>'
@@ -272,6 +378,70 @@ class HelpRenderer:
             f'<tr><td class="k">{_esc(r[0])}</td><td class="d">{_esc(r[1])}</td></tr>'
             for r in rows if len(r) >= 2)
         return f'<table class="table"><tr>{head}</tr>{body}</table>'
+
+    def _board(self, block: Dict[str, Any]) -> str:
+        """棋盘块: 行列数据 + 坐标标签 + 标记(最后一手/星位)。
+
+        rows:     [[单元格, ...], ...]；单元格 = "" | "汉字/符号" | {"g":.., "c":..}
+        placement: cross(交叉点, 围棋/五子棋/象棋) | cell(格心, 黑白棋/国际象棋)
+        col_labels/row_labels: 坐标(A..O / 1..15), 给了就在左侧/上方画格子外的标签
+        marks:    {"r,c": "last" | "star"}
+        """
+        rows = [list(x) for x in (block.get("rows") or []) if isinstance(x, (list, tuple))]
+        if not rows:
+            return ""
+        cols = max(len(x) for x in rows)
+        placement = str(block.get("placement") or "cross").lower()
+        col_labels = [str(x) for x in (block.get("col_labels") or [])]
+        row_labels = [str(x) for x in (block.get("row_labels") or [])]
+        marks = block.get("marks") if isinstance(block.get("marks"), dict) else {}
+        has_left, has_top = bool(row_labels), bool(col_labels)
+        grid_cols = cols + (1 if has_left else 0)
+        out: List[str] = []
+        if has_top:
+            if has_left:
+                out.append('<div class="blab"></div>')
+            for c in range(cols):
+                lab = col_labels[c] if c < len(col_labels) else ""
+                out.append(f'<div class="blab">{_esc(lab)}</div>')
+        for ri, row in enumerate(rows):
+            if has_left:
+                lab = row_labels[ri] if ri < len(row_labels) else ""
+                out.append(f'<div class="blab">{_esc(lab)}</div>')
+            for ci in range(cols):
+                raw = row[ci] if ci < len(row) else ""
+                glyph, colour = "", ""
+                if isinstance(raw, dict):
+                    glyph = str(raw.get("g") or "")
+                    colour = str(raw.get("c") or "")
+                elif raw:
+                    glyph = str(raw)
+                cls = ["bcell"]
+                if placement != "cross":
+                    cls.append("box")
+                else:
+                    if ci == 0:
+                        cls.append("el")
+                    if ci == cols - 1:
+                        cls.append("er")
+                    if ri == 0:
+                        cls.append("et")
+                    if ri == len(rows) - 1:
+                        cls.append("eb")
+                mark = str(marks.get(f"{ri},{ci}") or "")
+                inner = ""
+                if placement == "cross":
+                    inner = '<span class="ln h"></span><span class="ln v"></span>'
+                if glyph:
+                    pcls = {"white": "pc-w", "red": "pc-r"}.get(colour, "pc-b")
+                    if mark == "last":
+                        pcls += " last"
+                    inner += f'<span class="pc {pcls}">{_esc(glyph)}</span>'
+                elif mark == "star":
+                    inner += '<span class="star"></span>'
+                out.append(f'<div class="{" ".join(cls)}">{inner}</div>')
+        style = f"grid-template-columns:repeat({grid_cols},1fr)"
+        return f'<div class="board" style="{style}">{"".join(out)}</div>'
 
     def _block(self, block: Dict[str, Any]) -> str:
         """版式块: chips / table / steps / flow / slots / bag / text。"""
@@ -322,6 +492,8 @@ class HelpRenderer:
                              % (" on" if i in filled else "", glyph))
             return (head + f'<div class="bag" style="grid-template-columns:repeat({cols},1fr)">'
                     f'{"".join(cells)}</div>')
+        if kind == "board":
+            return head + self._board(block)
         if kind == "cards":
             cols = max(1, min(int(block.get("cols") or 3), 4))
             items_html = []
@@ -381,26 +553,24 @@ class HelpRenderer:
                 f'</span><span class="badge"{tone}>{total} 条</span></div>'
                 f'<div class="card-bd">{chips}{subs}</div></div>')
 
-    @staticmethod
-    def _estimate_card(group: Group, cols: int = 2) -> int:
+    def _estimate_card(self, group: Group, cols: int = 2) -> int:
         """预估一张分组卡高度(px): 用于按比例分页(避免半空页/挤压)。"""
-        per_row = 3 if cols == 2 else 6
+        per_row = 2 if self.narrow else (3 if cols == 2 else 6)
         n = min(len(group.commands), per_row)
         chip_rows = max(1, (n + per_row - 1) // per_row) if group.commands else 0
         return 62 + chip_rows * 30 + len(group.groups) * 26
 
-    @classmethod
-    def _pack_catalog(cls, groups: Sequence[Group], cols: int,
+    def _pack_catalog(self, groups: Sequence[Group], cols: int,
                       budget: int) -> List[List[Group]]:
         """按预估高度把分组打包成页: 两列成行, 每页不超过高度预算。"""
         pages: List[List[Group]] = []
         cur: List[Group] = []
         used = 0
         for g in groups:
-            h = cls._estimate_card(g, cols)
+            h = self._estimate_card(g, cols)
             row_h = h
             if cur and len(cur) % cols != 0:              # 与本行已有卡作伴
-                prev_h = cls._estimate_card(cur[-1], cols)
+                prev_h = self._estimate_card(cur[-1], cols)
                 row_h = max(h, prev_h) - prev_h           # 只补差额
             if cur and used + row_h > budget:
                 pages.append(cur)
@@ -412,23 +582,36 @@ class HelpRenderer:
         return pages or [[]]
 
     def _catalog(self, doc: HelpDoc, page: Page) -> List[str]:
-        """总图: 功能分组一眼看全, 每张卡带代表指令; 分组多时按估高分页。"""
+        """一级帮助(目录): 只列功能分组 + 条数 + 代表指令, **一页给全**。
+
+        ⚠️ 指令分级: 目录页不下钻指令明细 —— 想看某一类发「<游戏>帮助 <分组名>」。
+        11 个分组也能收在一页(分组特别多才分页, 每页 14 组)。
+        """
         groups = doc.groups
-        cols = 1 if len(groups) <= 4 else 2
-        chunks = self._pack_catalog(groups, cols, CATALOG_HEIGHT_BUDGET)
+        per_page = 14
+        chunks = [groups[i:i + per_page]
+                  for i in range(0, len(groups), per_page)] or [groups]
         out: List[str] = []
         for pi, chunk in enumerate(chunks):
-            cards = [self._group_card(g, i, cols) for i, g in enumerate(chunk)]
-            grid_cls = "grid2" if cols == 2 else "grid1"
-            rows = "".join(f'<div class="{grid_cls}">{"".join(cards[k:k + cols])}</div>'
-                           for k in range(0, len(cards), cols))
+            rows = []
+            for g in chunk:
+                own = [c.cmd for c in g.commands]
+                chips = self._chips(own, limit=2, total=len(own)) if own else ""
+                rows.append(
+                    f'<div class="dirrow"><div class="dirtop">'
+                    f'<span class="diri emoji">{self._icon(g.icon)}</span>'
+                    f'<span class="dirn">{_esc(g.name)}</span>'
+                    f'<span class="badge" style="margin-left:auto">'
+                    f'{len(g.all_commands())} 条</span></div>'
+                    + (f'<div class="dirc">{chips}</div>' if chips else "")
+                    + '</div>')
             subtitle = doc.subtitle or (doc.text and doc.text[:60]) or ""
             if len(chunks) > 1:
                 subtitle = f"{subtitle} （{pi + 1}/{len(chunks)}）".strip()
             gname = doc.title or doc.game_name
             sample = groups[0].name if groups else "功能名"
-            tip_body = (f'想看某类指令的详细用法 → 发「<b>{_esc(gname)}帮助 功能名</b>」，'
-                        f'例如「{_esc(gname)}帮助 {_esc(sample)}」；直接发指令名也可以。')
+            tip_body = (f'想看某一类的详细指令 → 发「<b>{_esc(gname)}帮助 功能名</b>」，'
+                        f'例如「{_esc(gname)}帮助 {_esc(sample)}」。')
             if page.miss and pi == 0:
                 guess = "、".join(page.suggestions) if page.suggestions else "上面的功能分组"
                 tip_body = f'没找到「{_esc(getattr(page, "topic", "") or "")}」这个分类喵，' \
@@ -438,7 +621,10 @@ class HelpRenderer:
                       f'<div class="v">{len(groups)}</div></div>'
                       f'<div class="stat"><div class="l">指令总数</div>'
                       f'<div class="v">{doc.command_count}</div></div></div>'
-                    + self._tip(tip_body) + rows + self._foot())
+                    + self._tip(tip_body)
+                    + f'<div class="card"><div class="card-bd" style="padding:0">'
+                      f'{"".join(rows)}</div></div>'
+                    + self._foot())
             out.append(body)
         return out
 
@@ -460,8 +646,8 @@ class HelpRenderer:
                        f'{len(sub.commands)} 条</span></div>'
                        f'<div class="card-bd">{sub_rows}</div></div>{sub_blocks}')
         cmds = group.commands
-        chunks = [cmds[i:i + GROUP_CMD_PER_PAGE]
-                  for i in range(0, len(cmds), GROUP_CMD_PER_PAGE)] or [cmds]
+        chunks = [cmds[i:i + self.group_cmds]
+                  for i in range(0, len(cmds), self.group_cmds)] or [cmds]
         out: List[str] = []
         for pi, chunk in enumerate(chunks):
             subtitle = doc.title or doc.game_name
@@ -523,8 +709,8 @@ class HelpRenderer:
 
     def _flat(self, doc: HelpDoc, page: Page) -> List[str]:
         cmds = doc.flat
-        chunks = [cmds[i:i + FLAT_CMD_PER_PAGE]
-                  for i in range(0, len(cmds), FLAT_CMD_PER_PAGE)] or [cmds]
+        chunks = [cmds[i:i + self.flat_cmds]
+                  for i in range(0, len(cmds), self.flat_cmds)] or [cmds]
         out: List[str] = []
         for pi, chunk in enumerate(chunks):
             subtitle = (doc.text or "")[:78]

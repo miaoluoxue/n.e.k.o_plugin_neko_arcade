@@ -153,6 +153,38 @@ def test_neko_photo_category_send():
     asyncio.run(run())
 
 
+def test_neko_photo_game_name_is_not_a_category():
+    """「喵图相册」/「我要玩喵图相册」不能被当成分类「相册」。
+
+    线上坑: 图库目录里明明有「猫娘博士」等分类, 发「我要玩喵图相册」却报
+    「分类「相册」里还没有图」—— 因为「喵图相册」含「喵图」, 旧路由把
+    剩下的「相册」当成了分类名。
+    """
+    async def run():
+        game, plugin = _make_game(_TMP)
+        uid = "user_photo_name"
+        for cmd in ("我要玩喵图相册", "喵图相册", "喵图"):
+            r = await game.handle_action(uid, cmd)
+            msg = str(r.get("message") or "")
+            assert "分类「相册」" not in msg, (cmd, r)
+            assert r.get("images") or r["outcome"] in ("album", "categories"), (cmd, r)
+            assert r["outcome"] != "unknown", (cmd, r)
+        # 「相册」单独仍是图鉴(已收集)
+        assert (await game.handle_action(uid, "相册"))["outcome"] == "album"
+
+    asyncio.run(run())
+
+
+def test_photo_category_reserved_words_are_not_categories():
+    """玩法词(相册/图库/图鉴/分类)不能当分类名返回。"""
+    game, _ = _make_game(_TMP)
+    assert game._extract_category("喵图相册") is None
+    assert game._extract_category("喵图 分类") is None
+    assert game._extract_category("喵图 图库") is None
+    assert game._extract_category("喵图 可爱") == "可爱"
+    assert game._extract_category("喵图 日常") == "日常"
+
+
 def test_neko_photo_daily_limit():
     async def run():
         game, plugin = _make_game(_TMP)
@@ -189,22 +221,20 @@ def test_neko_photo_on_tick_auto_send():
     asyncio.run(run())
 
 
-def test_neko_photo_timed_auto_send_is_off_by_default():
-    """默认不靠定时刷图: 频率由猫娘(LLM)自己判断, 插件只兜上限。"""
+def test_neko_photo_timed_auto_send_is_on_by_default():
+    """默认开定时随机发图(用户点名"随机发图"), 频率仍由闸门兜底。"""
     async def run():
         game, plugin = _make_game(_TMP)
         assert getattr(game, "background_tick", False) is True, "neko_photo 需标记 background_tick"
-        assert game._cfg("auto_send_enabled", False) is False, "定时刷图默认应关闭"
-        # 关着的时候 tick 不该推图
+        assert game._cfg("auto_send_enabled", False) is True, "定时随机发图默认应开启"
+        # 开着的时候 tick 会推图
         plugin.pushes.clear()
         game._next_auto_ts = 0.0
         await game.on_tick("user_3")
-        assert not plugin.pushes, "定时刷图关闭时 on_tick 不应推图"
-        # 但 LLM 主动调用仍然可用(想发就发), 且闸门有效
+        assert plugin.pushes, "定时随机发图开启时 on_tick 应推图"
+        # LLM 主动调用仍受同一套闸门约束(刚自动发过 → limited)
         r = await game.send_random_photo("user_3")
-        assert r.get("ok"), r
-        r2 = await game.send_random_photo("user_3")
-        assert not r2.get("ok") and r2.get("limited"), "紧接着再发应被频率闸门拦下"
+        assert not r.get("ok") and r.get("limited"), "刚自动发过, 紧接着再发应被频率闸门拦下"
 
     asyncio.run(run())
 

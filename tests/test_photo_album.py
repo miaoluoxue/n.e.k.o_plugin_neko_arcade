@@ -230,12 +230,13 @@ def test_zero_interval_means_unlimited() -> None:
 
 
 def test_default_config_is_llm_driven() -> None:
-    """默认不开定时刷图(频率交给 LLM), 但闸门参数要有默认值。"""
+    """默认开定时随机发图(用户点名"随机发图"), 闸门参数要有默认值。"""
     cfg = json.loads((REPO / "data" / "config" / "neko_photo" / "config.json")
                      .read_text(encoding="utf-8"))
-    assert cfg.get("auto_send_enabled") is False
+    assert cfg.get("auto_send_enabled") is True
     assert cfg.get("send_max_per_hour", 0) > 0
     assert cfg.get("send_min_interval", 0) > 0
+    assert cfg.get("auto_min_interval", 0) > 0
 
 
 @pytest.mark.parametrize("bad", ["../evil", "a/b", "a\\b", ".."])

@@ -193,8 +193,11 @@ class HistoryGame(GameAdapter):
         # 渲染图片卡片(游戏负责生成数据, brain 负责推送)
         lines = [(f"{e['year']} · {TYPE_LABELS.get(e.get('type',''),'大事')}",
                   self._rarity(e)) for e in entries[:8]]
-        card = await self.render_card(self.name, f"历史上的今天 {today.month}月{today.day}日",
-                                      lines, f"共 {len(entries)} 条大事", "curiosity")
+        # 渲染归本体: 只给数据块(render_page), 出图失败就不带图
+        card = await self.render_page(
+            title=f"历史上的今天 {today.month}月{today.day}日",
+            subtitle=f"共 {len(entries)} 条大事",
+            rows=[[left, right] for left, right in lines], theme="light")
         neko = self._pick_emotion("start", name=str(len(entries)), year="")
         images = []
         if card:
@@ -225,8 +228,10 @@ class HistoryGame(GameAdapter):
             return {"outcome": "empty_filter", "facts": [], "message": msg}
         lines = [(f"{e['year']} · {TYPE_LABELS.get(e.get('type',''),'大事')}", self._rarity(e))
                  for e in filtered[:8]]
-        card = await self.render_card(self.name, f"筛选结果 {year or TYPE_LABELS.get(ftype or '', '')}",
-                                      lines, f"共 {len(filtered)} 条", "curiosity")
+        card = await self.render_page(
+            title=f"筛选结果 {year or TYPE_LABELS.get(ftype or '', '')}",
+            subtitle=f"共 {len(filtered)} 条",
+            rows=[[left, right] for left, right in lines], theme="light")
         neko = self._pick_emotion("year_result", year=year or TYPE_LABELS.get(ftype or "", ""),
                                   count=str(len(filtered)))
         images = []

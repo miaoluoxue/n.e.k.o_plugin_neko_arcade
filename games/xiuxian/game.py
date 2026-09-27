@@ -270,8 +270,9 @@ class XiuxianGame(GameAdapter):
                 (f"灵石 ×{save.lingshi_low}", "gold"),
                 (f"猫娘 {self.neko.name} 与你同行", "epic"),
             ]
-            img = await self.render_card(self.name, "踏入仙途", lines,
-                                         subtitle=f"道友 {save.name}", mood="excitement")
+            img = await self.render_page(title="踏入仙途",
+                                         subtitle=f"道友 {save.name}",
+                                         rows=[[a, b] for a, b in lines], theme="light")
             if img:
                 images.append(self.build_image(msg, img, "image/png"))
                 msg = ""
@@ -744,6 +745,7 @@ class XiuxianGame(GameAdapter):
                 "summary": "开始闭关"}
 
     async def on_tick(self, user_id: str) -> None:
+        lines: List[str] = []          # 收集本 tick 要说的话, 统一返回
         """每秒 tick：闭关到期/仙宠寻宝/每日任务提醒(注意: 不能用 return 提前退出)。"""
         # 闭关到期结算(猫娘喊出关)
         try:
@@ -757,7 +759,7 @@ class XiuxianGame(GameAdapter):
                 save.extra.pop("seclusion", None)
                 await self.store.save(save)
                 neko_line = _pick(SCENE_TEMPLATES.get("seclusion_done", []))
-                await self.push_text(
+                lines.append(
                     f"【出关】主人闭关结束,修为 +{gain}!\n{neko_line}")
         except Exception:
             pass
@@ -770,7 +772,7 @@ class XiuxianGame(GameAdapter):
                 if r and r.get("ready"):
                     save.bag[r["item"]] = save.bag.get(r["item"], 0) + r["count"]
                     await self.store.save(save)
-                    await self.push_text(
+                    lines.append(
                         f"【寻宝】{name}寻宝归来,带回 {r['item']} ×{r['count']} 喵!")
         except Exception:
             pass
@@ -784,7 +786,7 @@ class XiuxianGame(GameAdapter):
                         and save.extra.get("task_remind") != today):
                     save.extra["task_remind"] = today
                     await self.store.save(save)
-                    await self.push_text(
+                    lines.append(
                         "喵~主人,今天的每日任务还没做完哦,发「每日任务」看看喵!")
         except Exception:
             pass
@@ -798,25 +800,26 @@ class XiuxianGame(GameAdapter):
                 if stats.get("cultivate", 0) == 0 and save.extra.get("invite_cultivate") != today:
                     save.extra["invite_cultivate"] = today
                     await self.store.save(save)
-                    await self.push_text(
+                    lines.append(
                         "主人,今天还没修炼喵~和喵喵一起闭关/修炼,离飞升更进一步喵!")
-                    return
+                    return "\n".join(lines)
                 # 2. 亲密度撒娇: 亲密度低且没结道侣
                 if save.qinmidu < 300 and save.daolv != NEKO_ID and save.extra.get("invite_gift") != today:
                     save.extra["invite_gift"] = today
                     await self.store.save(save)
-                    await self.push_text(
+                    lines.append(
                         "主人…喵喵想要个「百合花篮」喵,商店里就有,亲密度会涨哦~")
-                    return
+                    return "\n".join(lines)
                 # 3. 突破预告: 修为接近突破线
                 need = RealmSystem.realm_require(save.realm_idx)
                 if need > 0 and save.exp >= need * 0.8 and save.extra.get("invite_break") != today:
                     save.extra["invite_break"] = today
                     await self.store.save(save)
-                    await self.push_text(
+                    lines.append(
                         "主人修为快到突破线啦喵!再修炼一下就能突破,喵喵给你护法!")
         except Exception:
             pass
+        return "\n".join(lines) if lines else None   # 推送统一交本体
 
     # ── 猫娘闲聊 ───────────────────────────
 
@@ -825,7 +828,7 @@ class XiuxianGame(GameAdapter):
         ctx = self._ctx(save)
         ctx["event"] = f"主人说：{cmd}"
         # 走主插件统一 LLM 接口(配置的新 LLM → 宿主)
-        result = await self.call_llm(build_neko_prompt("chat", ctx))
+        result = await self.call_llm(build_neko_prompt("chat", ctx), scene="xiuxian.chat")
         if result and result.strip():
             return {"message": result.strip(), "outcome": "chat",
                     "summary": f"猫娘回应:{result.strip()[:20]}"}

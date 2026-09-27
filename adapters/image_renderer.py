@@ -76,6 +76,12 @@ class ImageRenderer:
 
     def __init__(self) -> None:
         self._pil_ok = self._check_pil()
+        # 聊天窗图片气泡 max-width≈280px；2x DPR 渲染后缩回去仍清晰。
+        try:
+            self.device_scale = float(os.environ.get("NEKO_ARCADE_IMAGE_SCALE") or 2.0)
+        except (TypeError, ValueError):
+            self.device_scale = 2.0
+        self.device_scale = max(1.0, min(3.0, self.device_scale))
 
     @staticmethod
     def _check_pil() -> bool:
@@ -244,7 +250,7 @@ class ImageRenderer:
             return None
         try:
             from PIL import Image, ImageDraw
-            font_title = _load_cjk_font(20)
+            font_title = _load_cjk_font(18)
             font_cmd = _load_cjk_font(13)
             font = _load_cjk_font(12)
             font_footer = _load_cjk_font(11)
@@ -252,15 +258,13 @@ class ImageRenderer:
             cmds = list(commands or [])
             n = len(cmds)
 
-            # 分页: 每页最多 34 条(两列 × 17 行), 单页高度 ≤ ~600px
-            per_page = 34
+            # 聊天窗友好: 单列, 指令在上、说明在下; 单页 ~12 条
+            per_page = 12
             pages = [cmds[i:i + per_page] for i in range(0, n, per_page)] or [[]]
 
-            W = 720
-            HEADER_H = 64
-            col_gap = 20
-            col_w = (W - 28 * 2 - col_gap) // 2
-            line_h = 26
+            W = 340
+            HEADER_H = 56
+            line_h = 46
 
             # 顶部标题条 + 页脚渐变色
             header_top, header_bot = (96, 74, 60), (158, 118, 84)
@@ -268,7 +272,7 @@ class ImageRenderer:
 
             results: List[bytes] = []
             for pi, page in enumerate(pages):
-                rows = max(1, (len(page) + 1) // 2)
+                rows = max(1, len(page))
                 extra = (30 if footer else 0) + 34
                 h = HEADER_H + 16 + rows * line_h + extra
                 img = Image.new("RGB", (W, h), body_top)
@@ -288,42 +292,36 @@ class ImageRenderer:
                     tw = draw.textlength(title, font=font_title)
                 except Exception:
                     tw = len(title) * 20
-                draw.text(((W - tw) // 2, (HEADER_H - 20) // 2), title,
+                draw.text(((W - tw) // 2, (HEADER_H - 18) // 2), title,
                           fill=(255, 250, 240), font=font_title)
                 # 标题条下沿细高光线
                 draw.line([(0, HEADER_H - 1), (W, HEADER_H - 1)], fill=(120, 88, 62), width=1)
 
                 # 指令两列: 指令名圆角标签 + 描述
-                y = HEADER_H + 14
-                for i in range(rows):
-                    for col in range(2):
-                        idx = i * 2 + col
-                        if idx >= len(page):
-                            continue
-                        cmd, desc = page[idx]
-                        x = 28 + col * (col_w + col_gap)
-                        # 指令名标签(圆角浅金底)
-                        cmd_s = str(cmd)
-                        try:
-                            cw = draw.textlength(cmd_s, font=font_cmd) + 14
-                        except Exception:
-                            cw = len(cmd_s) * 13 + 14
-                        draw.rounded_rectangle(
-                            [x, y + 2, x + cw, y + line_h - 4],
-                            radius=9, fill=(241, 201, 148), outline=(224, 178, 118), width=1)
-                        draw.text((x + 7, y + 4), cmd_s, fill=(110, 74, 42), font=font_cmd)
-                        # 描述文字(超宽截断)
-                        dx = x + cw + 10
-                        desc_s = str(desc)
-                        try:
-                            maxw = col_w - cw - 16
-                            if draw.textlength(desc_s, font=font) > maxw:
-                                while desc_s and draw.textlength(desc_s + "…", font=font) > maxw:
-                                    desc_s = desc_s[:-1]
-                                desc_s += "…"
-                        except Exception:
-                            pass
-                        draw.text((dx, y + 5), desc_s, fill=(70, 58, 46), font=font)
+                y = HEADER_H + 12
+                for cmd, desc in page:
+                    x = 18
+                    # 指令名标签(圆角浅金底)
+                    cmd_s = str(cmd)
+                    try:
+                        cw = draw.textlength(cmd_s, font=font_cmd) + 14
+                    except Exception:
+                        cw = len(cmd_s) * 13 + 14
+                    draw.rounded_rectangle(
+                        [x, y, x + cw, y + line_h - 18],
+                        radius=9, fill=(241, 201, 148), outline=(224, 178, 118), width=1)
+                    draw.text((x + 7, y + 2), cmd_s, fill=(110, 74, 42), font=font_cmd)
+                    # 描述文字(下一行, 超宽截断)
+                    desc_s = str(desc)
+                    try:
+                        maxw = W - 36
+                        if draw.textlength(desc_s, font=font) > maxw:
+                            while desc_s and draw.textlength(desc_s + "…", font=font) > maxw:
+                                desc_s = desc_s[:-1]
+                            desc_s += "…"
+                    except Exception:
+                        pass
+                    draw.text((x + 2, y + 24), desc_s, fill=(70, 58, 46), font=font)
                     y += line_h
                 if footer:
                     draw.text((28, y), footer, fill=(138, 122, 102), font=font)
@@ -363,19 +361,19 @@ class ImageRenderer:
     HELP_HTML_CSS = """
     * { margin:0; padding:0; box-sizing:border-box; }
     html, body { background:#FCF9F3; }
-    body { width:720px; font-family:"Microsoft YaHei","PingFang SC","Noto Sans CJK SC",sans-serif; }
-    .card { width:720px; background:linear-gradient(180deg,#FCF9F3 0%,#F4EDE1 100%); }
+    body { width:340px; font-family:"Microsoft YaHei","PingFang SC","Noto Sans CJK SC",sans-serif; }
+    .card { width:340px; background:linear-gradient(180deg,#FCF9F3 0%,#F4EDE1 100%); }
     .hd { background:linear-gradient(135deg,#604A3C 0%,#9E7654 100%); color:#FFFAF0;
-          font-size:20px; font-weight:600; letter-spacing:1px; text-align:center;
-          padding:20px 0; }
+          font-size:17px; font-weight:600; letter-spacing:1px; text-align:center;
+          padding:16px 8px; }
     .hd .pg { font-size:14px; font-weight:400; opacity:.85; margin-left:8px; }
-    .grid { display:grid; grid-template-columns:1fr 1fr; gap:7px 18px; padding:16px 28px 6px; }
-    .row { display:flex; align-items:center; gap:9px; min-height:25px; }
+    .grid { display:grid; grid-template-columns:1fr; gap:8px; padding:14px 16px 6px; }
+    .row { display:flex; flex-direction:column; align-items:flex-start; gap:3px; min-height:25px; }
     .k { flex:0 0 auto; background:#F1C994; border:1px solid #E0B276; color:#6E4A2A;
          border-radius:9px; padding:2px 8px; font-size:13px; white-space:nowrap; }
     .v { color:#463A2E; font-size:12px; overflow:hidden; text-overflow:ellipsis;
          white-space:nowrap; }
-    .ft { color:#8A7A66; font-size:12px; line-height:1.7; padding:10px 28px 0; }
+    .ft { color:#8A7A66; font-size:12px; line-height:1.7; padding:10px 16px 0; }
     .brand { color:#968470; font-size:11px; text-align:center; padding:14px 0 16px; }
     """
 
@@ -416,7 +414,7 @@ class ImageRenderer:
         for pi, chunk in enumerate(chunks):
             html = self.build_help_html(game_name, chunk, footer,
                                         page=pi + 1, pages=len(chunks))
-            png = await self.render_html(html, width=720, height=600, selector=".card")
+            png = await self.render_html(html, width=340, height=600, selector=".card")
             if not png:
                 return None
             pages.append(png)
@@ -466,7 +464,9 @@ class ImageRenderer:
                                 " | ".join(errors))
                     return None
                 try:
-                    page = await browser.new_page(viewport={"width": width, "height": height})
+                    page = await browser.new_page(
+                        viewport={"width": width, "height": height},
+                        device_scale_factor=self.device_scale)
                     await page.set_content(html, wait_until="networkidle")
                     el = await page.query_selector(selector)
                     if el:

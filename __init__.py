@@ -127,24 +127,50 @@ class NekoArcadePlugin(NekoPluginBase):
                   # 都已 agent_hidden(宿主评估器会把"玩钓鱼"错路由成"先查列表/状态")。
                   llm_result_fields=["summary"])
     async def entry_play_game(self, input: str = "", game: str = "", cmd: str = "",
-                              args: dict = None, **_) -> Any:
+                              switch_to: str = "", args: dict = None, **_) -> Any:
         if not self.rt or not self.rt.brain:
             return Err(SdkError("猫娘小游戏还没准备好"))
+        args = dict(args or {})
+        switch_to = str(switch_to or args.get("switch_to") or "").strip()
+        if switch_to:
+            args["switch_to"] = switch_to
         # 兼容两种调用: 新面板/内部传 input(原话) → parse_input 自动匹配;
         # 旧面板传 game+cmd → 直接定位。LLM 走动态 play_game 工具 → tool_play_game
         # → entry_play_game(input=...) → 这里 parse_input 路由(含弱指令兜底)。
-        if game or cmd:
-            game_obj = self.rt.registry.get(game) or self.rt.registry.get_by_name(game)
-            if not game_obj:
-                return Err(SdkError(f"没有找到游戏「{game}」喵"))
-            game_id, cmd = game_obj.id, (cmd or "")
+        # ⚠️ 防呆: 宿主任务路由偶尔会把 schema 的**参数名**当值传进来
+        #    （实测日志 `没有找到游戏「input」喵` = game 收到了字符串 "input"）。
+        #    这时只要 input 原话在，就忽略坏的 game，继续按原话路由。
+        if switch_to:
+            # 已确认换游戏：不需要 route 当前输入，目标由 switch_to 指定。
+            game_id, cmd = "", (input or "")
+        elif game:
+            game_obj = self.rt.registry.get(str(game)) or self.rt.registry.get_by_name(str(game))
+            if game_obj is None:
+                # 宿主有时把用户原话塞在 cmd 里、game 里塞了参数名 → 两个都试。
+                raw = str(input or cmd or "").strip()
+                if not raw:
+                    return Err(SdkError(f"没有找到游戏「{game}」喵"))
+                self.logger.warning(
+                    "[play_game] game=%r 不是已知游戏，改用 input=%r 路由", game, raw)
+                game_id, cmd = self.rt.parse_input(raw)
+                if not game_id:
+                    return Err(SdkError(
+                        f"没有找到匹配的游戏喵，试试：{self.rt.registry.game_names()}"))
+            else:
+                game_id, cmd = game_obj.id, (cmd or "")
+        elif cmd:
+            # 只给了 cmd（没有 game）：按原话路由
+            game_id, cmd = self.rt.parse_input(str(cmd))
+            if not game_id:
+                return Err(SdkError(
+                    f"没有找到匹配的游戏喵，试试：{self.rt.registry.game_names()}"))
         else:
             game_id, cmd = self.rt.parse_input(input or "")
             if not game_id:
                 return Err(SdkError(
                     f"没有找到匹配的游戏喵，试试：{self.rt.registry.game_names()}"))
         user_id = getattr(self.ctx, "user_id", "default") or "default"
-        result = await self.rt.brain.handle_action(game_id, cmd, args or {}, user_id)
+        result = await self.rt.brain.handle_action(game_id, cmd, args, user_id)
         # 兜底：确保返回给宿主的 dict 一定带可读 summary（宿主按 llm_result_fields 提取）
         if isinstance(result, dict):
             result.setdefault("summary",
@@ -267,25 +293,31 @@ class NekoArcadePlugin(NekoPluginBase):
         """读取主插件配置 data/config/main/config.json 的 llm 段。"""
         cfg = self.rt.cfg_mgr.load_main_config() if self.rt else {}
         llm = cfg.get("llm", {}) if isinstance(cfg, dict) else {}
+        help_sec = cfg.get("help", {}) if isinstance(cfg, dict) else {}
         return Ok({"config": {
             "provider": llm.get("provider", ""),
             "model": llm.get("model", ""),
             "api_key": llm.get("api_key", ""),
             "base_url": llm.get("base_url", ""),
             "max_calls_per_minute": llm.get("max_calls_per_minute", 15),
+            "help_width": help_sec.get("width", ""),
         }})
 
     @plugin_entry(id="save_llm_config", name="保存LLM配置",
                   description="保存插件级 LLM 配置。留空则降级宿主/本地。",
                   input_schema={"type": "object", "properties": {
                       "config": {"type": "object", "description": "{provider,model,api_key,base_url}"},
+                      "help_width": {"type": "integer", "description": "帮助图渲染宽度(px, 240–900)；不填保持原值"},
                   }, "required": ["config"]},
                   metadata={"agent_hidden": True})
-    async def entry_save_llm_config(self, config: dict = None, **_) -> Any:
+    async def entry_save_llm_config(self, config: dict = None,
+                                    help_width: Any = None, **_) -> Any:
         """写入主插件配置 data/config/main/config.json 的 llm 段。"""
         if not self.rt:
             return Err(SdkError("猫娘小游戏还没准备好"))
-        cfg = config or {}
+        cfg = dict(config or {})
+        if help_width is not None:
+            cfg["help_width"] = help_width
         main_cfg = self.rt.cfg_mgr.load_main_config()
         if not isinstance(main_cfg, dict):
             main_cfg = {}
@@ -301,6 +333,15 @@ class NekoArcadePlugin(NekoPluginBase):
             except (TypeError, ValueError):
                 pass
         main_cfg["llm"] = llm
+        hw = cfg.get("help_width")
+        if hw not in (None, ""):
+            try:
+                width = max(240, min(900, int(hw)))
+                help_sec = main_cfg.get("help") if isinstance(main_cfg.get("help"), dict) else {}
+                help_sec["width"] = width
+                main_cfg["help"] = help_sec
+            except (TypeError, ValueError):
+                pass
         self.rt.cfg_mgr.save_main_config(main_cfg)
         # 热更新 LLM 客户端
         self.rt._wire_llm()
@@ -398,6 +439,10 @@ class NekoArcadePlugin(NekoPluginBase):
             "表示继续或让 AI 决定时，同样调用本工具并传「随机」或用户原话。\n"
             "- 若当前有进行中的游戏（上下文可能出现 [游戏状态] 提示），用户说的原话"
             "都应传给本工具，不要自己扮演游戏流程。\n"
+            "- 若上下文出现 [游戏切换确认]（你刚问过他还在玩 X、要不要换到 Y）："
+            "他表示同意换时，调用本工具并填 switch_to=目标游戏名，input 传他的原话；"
+            "他表示不换或要继续原来的游戏时，不要填 switch_to。切换与否由他的意思决定，"
+            "不要自己替他决定。\n"
             "- 用户没提到任何游戏玩法时不要调用。调用后直接基于工具结果回应，不要重复调用。"
         ),
         parameters={
@@ -405,11 +450,13 @@ class NekoArcadePlugin(NekoPluginBase):
             "properties": {
                 "input": {"type": "string",
                           "description": "用户说的原话，如「塔罗牌」「占卜」「钓鱼」「抛竿」「人生重开」"},
+                "switch_to": {"type": "string",
+                              "description": "仅当上下文出现 [游戏切换确认] 且用户同意换游戏时填写：目标游戏名/id（如「修仙」）。不要在其他时候填写。"},
             },
             "required": ["input"],
         },
     )
-    async def tool_play_game(self, input: str) -> Any:
+    async def tool_play_game(self, input: str, switch_to: str = "") -> Any:
         """play_game LLM 工具处理器（@llm_tool 静态注册, SDK 启动自动注册）。
 
         auto=True: 多轮状态机游戏(如人生重开)由 AI 代玩时一次调用走完随机流程,
@@ -417,7 +464,8 @@ class NekoArcadePlugin(NekoPluginBase):
         """
         if not self.rt:
             return {"error": "猫娘小游戏还没准备好"}
-        result = await self.entry_play_game(input=input, args={"auto": True})
+        result = await self.entry_play_game(
+            input=input, switch_to=switch_to, args={"auto": True})
         # 从 Ok/Err 包装中解出数据（SDK v2: Ok.value；旧版: Ok.data）
         return self.unwrap_result(result, default={"error": "游戏执行失败喵"})
 

@@ -77,3 +77,45 @@ def test_existing_user_data_is_not_overwritten(tmp_path: Path) -> None:
     cm = ConfigManager(str(data_dir))
     gc = cm.load("xiuxian")
     assert gc.config["breakthrough"]["base_rate"] == 0.33
+
+
+def test_partial_user_data_gets_missing_content_seeded(tmp_path: Path) -> None:
+    """用户数据目录已存在、但缺 help/keywords → 升级时必须补齐(修「帮助不渲染」)。"""
+    data_dir = tmp_path / "data"
+    game_dir = data_dir / "config" / "xiuxian"
+    game_dir.mkdir(parents=True)
+    (game_dir / "config.json").write_text('{"mine": 1}', encoding="utf-8")
+    cm = ConfigManager(str(data_dir))
+    gc = cm.load("xiuxian")
+    assert gc.config["mine"] == 1, "用户 config.json 必须保留"
+    assert gc.help.get("commands"), "缺失的 help.json 必须被补上"
+    assert gc.get_keywords(), "缺失的 keywords.json 必须被补上"
+    assert gc.emotion_templates, "缺失的 emotion.json 必须被补上"
+
+
+def test_stale_shipped_metadata_is_refreshed_config_kept(tmp_path: Path) -> None:
+    """出厂内容(help/keywords/emotion)随升级刷新；用户 config.json 不动。"""
+    data_dir = tmp_path / "data"
+    game_dir = data_dir / "config" / "xiuxian"
+    game_dir.mkdir(parents=True)
+    (game_dir / "config.json").write_text('{"mine": 1}', encoding="utf-8")
+    (game_dir / "help.json").write_text('{"text": "old", "commands": []}', encoding="utf-8")
+    cm = ConfigManager(str(data_dir))
+    gc = cm.load("xiuxian")
+    assert gc.config["mine"] == 1, "config.json 不能被出厂内容覆盖"
+    assert len(gc.help.get("commands") or []) > 5, "旧 help.json 必须被出厂版刷新"
+
+
+def test_empty_local_help_does_not_blank_the_game(tmp_path: Path) -> None:
+    """即使本地 help/keywords 是空文件, 也要回读出厂版, 不能给用户空白帮助。"""
+    data_dir = tmp_path / "data"
+    game_dir = data_dir / "config" / "xiuxian"
+    game_dir.mkdir(parents=True)
+    (game_dir / "config.json").write_text('{"mine": 1}', encoding="utf-8")
+    (game_dir / "help.json").write_text('{}', encoding="utf-8")
+    (game_dir / "keywords.json").write_text('[]', encoding="utf-8")
+    cm = ConfigManager(str(data_dir))
+    gc = cm.load("xiuxian")
+    assert gc.config["mine"] == 1
+    assert gc.help.get("commands"), "空 help.json 不能导致帮助为空"
+    assert gc.get_keywords(), "空 keywords.json 不能导致路由关键词为空"

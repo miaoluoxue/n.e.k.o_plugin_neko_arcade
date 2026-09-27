@@ -35,18 +35,47 @@ def resolve_data_dir(plugin: Any = None) -> str:
     return os.path.join(base, "data")
 
 
+#: 出厂内容文件(随插件升级刷新)。config.json 是**用户设置**, 永不覆盖。
+_REFRESH_NAMES = ("help.json", "keywords.json", "emotion.json")
+
+
+def _same_bytes(a: str, b: str) -> bool:
+    try:
+        with open(a, "rb") as fa, open(b, "rb") as fb:
+            return fa.read() == fb.read()
+    except OSError:
+        return False
+
+
 def _seed_defaults(data_dir: str) -> None:
-    """数据目录缺 config/ 时, 从代码目录旁 data/ 播种默认配置(仅首次, 不覆盖已有)。"""
-    target = os.path.join(data_dir, "config")
-    if os.path.isdir(target):
-        return
+    """把出厂 ``data/config`` 同步进用户数据目录。
+
+    ⚠️ 旧实现只在 ``config/`` 目录**不存在**时整体拷贝 —— 一旦用户数据目录
+    已有 ``config/``（哪怕只存过一次面板设置），升级带来的新 help/keywords/
+    emotion 就**永远不会补**，表现为「帮助图不渲染、只有一句『X 玩法帮助：』」。
+
+    现在的规则：
+      · 缺的文件 → 从出厂目录补；
+      · ``help.json`` / ``keywords.json`` / ``emotion.json``（出厂内容）→ 有变化就刷新；
+      · ``config.json``（用户设置）→ **永不覆盖**，用户改过的值保留。
+    """
     source = CONFIG_DIR
+    target = os.path.join(data_dir, "config")
     if not os.path.isdir(source) or os.path.abspath(source) == os.path.abspath(target):
         return
-    try:
-        shutil.copytree(source, target)
-    except Exception:
-        pass
+    for root, _dirs, files in os.walk(source):
+        rel = os.path.relpath(root, source)
+        for name in files:
+            src = os.path.join(root, name)
+            dst = os.path.join(target, "" if rel == "." else rel, name)
+            try:
+                os.makedirs(os.path.dirname(dst), exist_ok=True)
+                if not os.path.exists(dst):
+                    shutil.copy2(src, dst)
+                elif name in _REFRESH_NAMES and not _same_bytes(src, dst):
+                    shutil.copy2(src, dst)
+            except Exception:
+                continue
 
 
 
@@ -131,14 +160,28 @@ class ConfigManager:
     # ── 游戏配置 ────────────────────────────
 
     def load(self, game_id: str) -> GameConfig:
-        """加载（或创建默认）一个游戏的配置。"""
+        """加载（或创建默认）一个游戏的配置。
+
+        读不到/空文件时**回读出厂 data/config**（不写盘）：即使播种被跳过、
+        用户目录只读、或旧数据目录缺文件，help/keywords/emotion 也不会变空。
+        ``config.json`` 是用户设置：存在就用用户的，不存在才用出厂默认。
+        """
         if game_id in self._cache:
             return self._cache[game_id]
         gdir = self._game_dir(game_id)
-        config = self._read_json(os.path.join(gdir, "config.json"), {})
-        help_data = self._read_json(os.path.join(gdir, "help.json"), {})
-        emotion_templates = self._read_json(os.path.join(gdir, "emotion.json"), {})
-        keywords = self._read_json(os.path.join(gdir, "keywords.json"), [])
+        sdir = os.path.join(CONFIG_DIR, game_id)
+
+        def _local_or_shipped(name: str, empty: Any, *, keep_empty: bool = False) -> Any:
+            local = self._read_json(os.path.join(gdir, name), None)
+            if local is None or (not keep_empty and not local):
+                shipped = self._read_json(os.path.join(sdir, name), None)
+                return shipped if shipped is not None else empty
+            return local
+
+        config = _local_or_shipped("config.json", {}, keep_empty=True)
+        help_data = _local_or_shipped("help.json", {})
+        emotion_templates = _local_or_shipped("emotion.json", {})
+        keywords = _local_or_shipped("keywords.json", [])
         gc = GameConfig(game_id, config, help_data, emotion_templates, keywords)
         self._cache[game_id] = gc
         return gc

@@ -2,6 +2,60 @@
 
 > 完整迭代记录，供开发者查阅。插件市场门面 README.md 只保留最新版本。
 
+## v0.5.7 (2026-09)
+
+**一句话主题**：新增棋类对弈（六种棋），并把「陪伴 / LLM / 渲染」三条通道彻底收归插件本体。
+
+### 新增
+
+- **棋类对弈（`boardgame`）** — 一个游戏入口挂六种棋：五子棋(15×15)、黑白棋(8×8)、
+  中国象棋、四子棋(7×6)、围棋(9×9)、国际象棋。规则各自独立在 `boards/<棋种>.py`，
+  `game.py` 只做「模式路由 + 状态搬运 + 调本体陪伴」。支持三档难度（随手/正常/认真）、
+  悔棋（默认 3 次）、认输、换棋种、棋盘重发；**落子后由渲染桥的 `board` 版式块出棋盘图**
+  （交叉点 / 格心两种摆法 + 坐标标签 + 最后一手标记 + 星位）。六种棋的落子报法按棋种区分
+  （坐标 / 起点终点 / 列号）。
+- **统一陪伴层（`core/companion.py`）** — 台词、心情、闲聊回应、局中主动搭话全部归本体：
+  台词三级降级（LRU 缓存 → LLM → 游戏 `emotion.json` 模板）；心情由事件键驱动
+  （highlight/lose/chat…）；`should_nudge()` 把静默阈值、次数上限、节流策略收在一处，
+  游戏只报"我在等他动作 + 上次活动时间"。台词模型可用句尾 JSON（`{"mood":…}`）控制情绪延续。
+- **LLM 网关（`core/llm_gateway.py`）** — 游戏要"生成内容"（出题 / 剧情 / 文案）时只声明
+  场景名，网关统一做缓存（场景 + 内容哈希 + TTL）、失败兜底与按场景用量统计；
+  调用失败不抛异常，退回 fallback。
+- **人格热更新（`core/persona.py`）** — 猫娘人设从宿主角色配置读取，带文件签名
+  （mtime/size）+ TTL 缓存：宿主换角色后台词立即跟着换；新增 `apply_persona()`
+  供热重载，换角色时清空台词缓存，不再挂着上一位的口吻。
+- **出厂内容随升级刷新（`core/config_manager.py`）** — `help / keywords / emotion`
+  属于出厂内容，升级时按字节比对同步进用户数据目录；`config.json` 是用户设置，
+  永不覆盖。修掉旧实现"用户目录只要存在过 `config/`，升级带来的新 help/keywords
+  就永远不补 → 帮助图只剩一句文本"的问题。
+- **契约测试** — `tests/test_adapter_contract.py` 静态扫描 `games/**`：出现
+  `self.push_text*` / `self.send_page(` / `self.render_card(` / `self._llm` / `_QUIPS =`
+  即判违规（白名单只留图库本体 neko_photo）；`tests/test_keyword_style.py` 审计
+  keywords 跨游戏重复/子串截胡与单字词；另新增 `test_all_games_smoke` /
+  `test_game_switch` / `test_persona_refresh` / `test_llm_gateway` / `test_boardgame`。
+
+### 修复
+
+- **陪伴层心情映射写错 id（静默失效）** — `MOOD_BY_EVENT` 原写成 `excited/curious`，
+  而 `persona.EMOTION_POOL` 的规范 id 是 `excitement/curiosity`；`Mood.trigger`
+  对未知 id 静默忽略，表现为"赢了猫娘也不兴奋、提示词里的心情永远是平静"。
+  现改为规范 id + 别名归一（`excited` / `兴奋` → `excitement`），`apply_control`
+  同时加异常护栏；新增 `tests/test_companion.py`（14 项）覆盖映射、三级降级与搭话策略。
+- **推送被宿主拒绝却当成成功** — `push_message` 对超限内联图**不抛异常**，只回一条
+  `rejected: reason=payload_too_large` 回执；`push_sender` 现在把 rejected 回执当失败，
+  继续走下一档通道（原生 → 上传 → markdown），不再出现"以为发了其实没图"。
+- **棋类关键词覆盖不全** — 补齐 `西洋棋 / 翻转棋 / 奥赛罗 / 五连 / 四连棋 / 对弈` 等别名。
+- **棋类帮助内容不全** — `help.json` 的 `text` 原只写 4 种棋，现补齐六种；
+  分组由"两种棋硬凑一对"改为 `选棋种 / 六种棋 / 对局操作`，并补 `title` / `subtitle`。
+
+### 变更 / 升级注意
+
+- 版本号 0.5.6 → **0.5.7**；`plugin.toml` 描述与关键词补齐棋类（现共 11 款游戏）。
+- 游戏侧**不得**自绘图片、不得直接摸 LLM provider（`self._llm`）、不得内嵌台词表
+  `_QUIPS`：统一走渲染桥 / LLM 网关 / `emotion.json`（契约测试会拦）。
+- 老用户升级后 `help / keywords / emotion` 会自动刷新，个人 `config.json` 不受影响。
+- 塔罗牌面图仍为原图（包体约 252 MB），压缩优化留待后续版本。
+
 ## v0.5.6 (2026-08)
 
 **统一帮助系统**：帮助图的渲染、配色、排版、图标全部收归插件端，游戏只写

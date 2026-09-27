@@ -154,13 +154,24 @@ class PushSender:
     async def _push_parts(self, parts: List[dict], ai_behavior: str) -> bool:
         """按 v2 契约(parts + visibility)推送；失败返回 False 由调用方回退。"""
         try:
-            self.plugin.push_message(
+            receipt = self.plugin.push_message(
                 source=self.source,
                 parts=parts,
                 visibility=["chat"],
                 ai_behavior=ai_behavior,
                 target_lanlan=self._resolve_target_lanlan() or None,
             )
+            # ⚠️ 宿主对超限的内联图**不抛异常**，只回一条 rejected 回执：
+            #    `push_message rejected: reason=payload_too_large ...`
+            # 不检查回执就会误判成"推送成功"，既不回退也不换通道，
+            # 用户那边就是"没有图"。这里把 rejected 回执当失败。
+            if isinstance(receipt, dict):
+                if receipt.get("ok") is False or receipt.get("accepted") is False:
+                    return False
+                reason = str(receipt.get("reason") or receipt.get("error") or "")
+                if "reject" in reason.lower() or "too_large" in reason.lower() \
+                        or "payload" in reason.lower():
+                    return False
             return True
         except Exception:
             return False
@@ -189,10 +200,14 @@ class PushSender:
             # 已是宿主侧 URL(原生媒体/static) → 直接按 url part 推
             return await self._push_parts(head + [{"type": "image", "url": url}], ai_behavior)
         # 1) 内联原始字节：原始分辨率 + 不重编码
-        if await self._push_parts(
-            head + [{"type": "image", "data": image_bytes, "mime": mime}], ai_behavior
-        ):
-            return True
+        #    ⚠️ 宿主内联预算：单条 part 原始字节上限约 393045B(524061B / 1.33)。
+        #    帮助图动辄 500KB+，内联必被 rejected —— 大图直接跳过内联走上传通道。
+        inline_max = 360_000
+        if image_bytes and len(image_bytes) <= inline_max:
+            if await self._push_parts(
+                head + [{"type": "image", "data": image_bytes, "mime": mime}], ai_behavior
+            ):
+                return True
         # 2) 退回 SDK 归一化上传(JPEG, ≤2048px) → url part
         upload = getattr(images_api, "upload", None)
         if not callable(upload):

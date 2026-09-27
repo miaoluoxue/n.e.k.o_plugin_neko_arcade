@@ -38,12 +38,14 @@ class StubImages:
 
 
 class StubPlugin:
-    def __init__(self, config_dir=None, has_images=True, fail_inline=False):
+    def __init__(self, config_dir=None, has_images=True, fail_inline=False,
+                 reject_receipt=False):
         self.config_dir = str(config_dir) if config_dir else None
         self.ctx = type("Ctx", (), {"images": StubImages()})() if has_images \
             else type("Ctx", (), {})()
         self.pushed = []
         self.fail_inline = fail_inline
+        self.reject_receipt = reject_receipt
 
     def push_message(self, **kw):
         # 模拟宿主拒绝内联 data part(用于验证回退到 upload 路径)
@@ -51,7 +53,13 @@ class StubPlugin:
             parts = kw.get("parts") or []
             if any(isinstance(p, dict) and "data" in p for p in parts):
                 raise RuntimeError("inline data part rejected")
+        # 模拟"不抛异常、只回 rejected 回执"的宿主(线上 payload_too_large 就是这种)
+        if self.reject_receipt:
+            parts = kw.get("parts") or []
+            if any(isinstance(p, dict) and "data" in p for p in parts):
+                return {"ok": False, "reason": "payload_too_large"}
         self.pushed.append(kw)
+        return {"ok": True}
 
 
 def _sender(config_dir=None, has_images=True, fail_inline=False):
@@ -85,6 +93,32 @@ def test_inline_rejected_falls_back_to_upload():
         parts = sender.plugin.pushed[0]["parts"]
         assert parts[1]["type"] == "image" and parts[1]["url"] == "http://up/img.jpeg"
         assert sender.plugin.ctx.images.uploads, "回退时应调用 ctx.images.upload"
+
+    asyncio.run(run())
+
+
+def test_large_image_skips_inline_and_uses_upload():
+    """超过宿主内联预算的图直接走 upload，避免被 payload_too_large 拒掉后没图。"""
+    async def run():
+        sender = _sender(has_images=True)
+        big = b"x" * 500_000
+        await sender.text_with_image("配文", big, "image/png")
+        assert sender.plugin.ctx.images.uploads, "大图应直接走 upload(JPEG/URL)"
+        parts = sender.plugin.pushed[0]["parts"]
+        assert parts[1].get("type") == "image" and "url" in parts[1]
+        assert "data" not in parts[1]
+
+    asyncio.run(run())
+
+
+def test_rejected_receipt_falls_back_to_upload():
+    """宿主回 rejected 回执(不抛异常)也要回退 upload —— 否则用户那边就是没图。"""
+    async def run():
+        sender = PushSender(StubPlugin(has_images=True, reject_receipt=True))
+        await sender.text_with_image("配文", b"PNGDATA", "image/png")
+        assert sender.plugin.ctx.images.uploads, "rejected 回执必须触发 upload 回退"
+        parts = sender.plugin.pushed[0]["parts"]
+        assert parts[1]["type"] == "image" and parts[1].get("url") == "http://up/img.jpeg"
 
     asyncio.run(run())
 

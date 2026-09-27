@@ -135,6 +135,16 @@ def test_miss_hint_on_catalog() -> None:
     assert "没找到" in html and "你是想看" in html
 
 
+def test_help_follows_command_hierarchy_single_page() -> None:
+    """指令分级: 一级目录一页给全, 分组页一页; 不能一次刷一堆图。"""
+    r = _renderer()
+    doc = _doc()
+    catalog = r._build_pages(doc, resolve_topic(doc, ""))
+    assert len(catalog) == 1, f"目录页应单页, got {len(catalog)}"
+    group = r._build_pages(doc, resolve_topic(doc, "纳戒"))
+    assert len(group) == 1, f"分组页应单页, got {len(group)}"
+
+
 def test_flat_page_for_old_format() -> None:
     doc = normalize_help({"text": "老帮助", "commands": [["开始", "开始游戏"]]},
                          "fishing", "钓鱼")

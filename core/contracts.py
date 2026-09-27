@@ -35,7 +35,8 @@ class GameAdapter(abc.ABC):
         self._render: Any = None
 
     def bind_services(self, push=None, img=None, tts=None, llm=None,
-                      photo=None, render=None) -> None:
+                      photo=None, render=None, companion=None,
+                      llm_gateway=None) -> None:
         """绑定插件服务（由注册表在注册时调用），游戏可通过 self 调用。
 
         photo: PhotoBridge 实例(插件主体通用发图桥接), 游戏可用 self.send_photo
@@ -58,6 +59,12 @@ class GameAdapter(abc.ABC):
             self._photo = photo
         if render is not None:
             self._render = render
+        if companion is not None:
+            #: 本体统一的陪伴层(带宿主猫娘人格) —— 游戏台词一律用它
+            self._companion_svc = companion
+        if llm_gateway is not None:
+            #: 本体统一的 LLM 入口(场景缓存/限流/统计), 由 call_llm 内部使用
+            self._llm_gateway = llm_gateway
 
     # ── 发图桥接(插件主体通用能力) ─────────
 
@@ -244,8 +251,16 @@ class GameAdapter(abc.ABC):
         if self._tts:
             self._tts.note_tts_line(text)
 
-    async def call_llm(self, prompt: str) -> Optional[str]:
-        """调用 LLM。"""
+    async def call_llm(self, prompt: str, scene: str = "") -> Optional[str]:
+        """统一的 LLM 入口(游戏只调这里, 不碰 provider)。
+
+        内部走 `core/llm_gateway.py`: 场景标签 + 按 key 缓存 + 限流 + token 统计。
+        传 scene 便于统计里分清用途(如 "soup.puzzle"/"xiuxian.story"),
+        不传就用 "<游戏id>.llm" 兜底。
+        """
+        gateway = getattr(self, "_llm_gateway", None)
+        if gateway is not None:
+            return await gateway.scene(scene or f"{self.id or 'game'}.llm", prompt) or None
         if self._llm:
             return await self._llm.call(prompt)
         return None

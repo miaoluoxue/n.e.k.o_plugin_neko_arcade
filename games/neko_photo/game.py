@@ -55,23 +55,29 @@ class NekoPhotoGame(GameAdapter):
             return {"facts": [build_fact("stop")], "outcome": "stop",
                     "message": "相册先收起来啦, 想看了再喊我喵~"}
 
+        # ⚠️ 游戏名/纯启动词必须在「喵图」发图分支**之前**处理：
+        #   「喵图相册」里含「喵图」，旧顺序会把它当成分类「相册」，
+        #   于是明明有「猫娘博士」等分类却报「分类「相册」里还没有图」。
+        if (not c) or c in (self.name, self.id, "喵图相册", "喵图"):
+            if self.photo_categories():
+                return await self._send_photo(user_id)
+            return await self._categories(user_id)
+
         # 发图: 喵图/发图/来张图/照片/自拍(专属前缀, 避免泛化词误路由)
-        # 支持分类: 「喵图 可爱」「发张 日常 的图」(发图优先于分类查看)
+        # 支持分类: 「喵图 可爱」「发张 日常 的图」
         if any(k in c for k in ("喵图", "发图", "来张", "来一张", "照片", "自拍")):
             category = self._extract_category(c)
+            if category is None and any(k in c for k in ("图库", "分类", "有哪些图")):
+                return await self._categories(user_id)
             return await self._send_photo(user_id, category=category)
 
         # 图库 / 分类列表
         if any(k in c for k in ("图库", "分类", "有哪些图")):
             return await self._categories(user_id)
 
-        # 图鉴 / 相册
-        if any(k in c for k in ("图鉴", "相册", "收集", "图册")):
+        # 图鉴 / 相册(已收集)
+        if any(k in c for k in ("图鉴", "图册", "收集")) or c == "相册":
             return await self._album(user_id)
-
-        # 空指令/只想玩 → 主动发一张
-        if not c or c in (self.name, self.id):
-            return await self._send_photo(user_id)
 
         return {"facts": [], "outcome": "unknown", "message": ""}
 
@@ -91,10 +97,19 @@ class NekoPhotoGame(GameAdapter):
                 return cat
         # 2. 明确带分类意图 → 剥掉指令前缀词, 剩余文本当分类名
         stripped = cmd
-        for kw in ("发一张", "发张", "来一张", "来张", "喵图", "发图", "看看",
-                   "照片", "自拍", "图片", "给我看", "晒", "的图", "图"):
+        for kw in ("我要玩", "我想玩", "来玩", "想玩", "玩",
+                   "发一张", "发张", "来一张", "来张", "喵图", "发图", "看看",
+                   "照片", "自拍", "图片", "给我看", "晒", "的图"):
             stripped = stripped.replace(kw, " ")
         stripped = " ".join(stripped.split())
+        # 「相册/图库/图鉴/分类」这些是玩法词, 不是分类名 —— 不能当分类返回
+        reserved = ("相册", "图库", "图鉴", "图册", "分类", "图片", "照片", "自拍")
+        if stripped in reserved:
+            return None
+        # 再剥掉尾巴上的「图」(「来张图」→ 空; 「发张日常的图」上面已剥)
+        stripped = " ".join(stripped.replace("图", " ").split())
+        if not stripped or stripped in reserved:
+            return None
         if stripped and any(k in cmd for k in ("喵图", "发张", "发一张", "来张", "来一张")):
             return stripped
         return None
@@ -290,7 +305,7 @@ class NekoPhotoGame(GameAdapter):
         频率改由 LLM 决定: 猫娘通过 send_photo 工具自主想发就发, 插件只兜上限。
         需要"纯定时刷图"的玩法可在 config.json 里把 auto_send_enabled 打开。
         """
-        if not self._cfg("auto_send_enabled", False):
+        if not self._cfg("auto_send_enabled", True):
             return
         now = time.time()
         if now < self._next_auto_ts:
