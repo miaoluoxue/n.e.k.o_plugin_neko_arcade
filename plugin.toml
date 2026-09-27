@@ -11,7 +11,7 @@ keywords = ["game", "游戏", "小游戏", "mini-games", "fun", "play", "玩", "
             "钓鱼", "海龟汤", "猜硬币", "俄罗斯轮盘", "人生重开", "修仙", "塔罗牌",
             "猫猫进化", "历史上的今天"]
 version = "0.5.7"
-entry = "plugins.neko_arcade:NekoArcadePlugin"
+entry = "plugin.plugins.neko_arcade:NekoArcadePlugin"
 
 [plugin.author]
 name = "N.E.K.O Team"

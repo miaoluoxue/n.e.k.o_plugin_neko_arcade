@@ -47,6 +47,17 @@
 - **棋类关键词覆盖不全** — 补齐 `西洋棋 / 翻转棋 / 奥赛罗 / 五连 / 四连棋 / 对弈` 等别名。
 - **棋类帮助内容不全** — `help.json` 的 `text` 原只写 4 种棋，现补齐六种；
   分组由"两种棋硬凑一对"改为 `选棋种 / 六种棋 / 对局操作`，并补 `title` / `subtitle`。
+- **市场发布校验被标准仓库文件卡住** — `.vscode/settings.json` / `.vscode/tasks.json`
+  是市场 `setup-repo --github-actions` 的托管文件，严格模式下缺失直接判 error：
+  CI 最后一步 `[FAIL] neko_arcade: check --release blocked by validation errors`，
+  而本地 pytest / ruff 全绿 —— 属于"本地看不出来"的失败。已补齐，
+  并把这两条校验（外加入口类 `@neko_plugin` 装饰器检查）镜像进
+  `tests/test_smoke.py`，本地即可拦住同类问题。
+- **入口写法非规范** — `plugin.entry` 原写 `plugins.neko_arcade:NekoArcadePlugin`，
+  市场校验判为"模块在插件目录之外，跳过静态入口检查"；改为规范写法
+  `plugin.plugins.neko_arcade:NekoArcadePlugin`——宿主 `normalize_plugin_entry_point()`
+  对外部安装会自动规范化为 `plugins.<id>:Class`，两种安装形态都能加载，
+  改完既消警告又恢复静态入口检查（类装饰器 / 基类 / 生命周期）。
 
 ### 变更 / 升级注意
 
