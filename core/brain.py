@@ -17,6 +17,17 @@ from .registry import GameRegistry
 
 log = logging.getLogger("neko_arcade.brain")
 
+# ── 重复回调守门（线上"双重回复"的真正来源） ──────────────────────────────
+# 宿主在插件推送后会为角色起一轮 run，那一轮可能带着**同一条旧输入**再次回调
+# play_game。实测 2026-09-27 五子棋对局：用户「我下在J9吧」落子成功并推送状态卡，
+# 8 秒后宿主的 run 又拿同一句调了一次 → 第二次落子被判非法("有子了喵") →
+# 用户看到两份状态卡，LLM 也跟着说两遍。
+# 规则：同一条输入在上一次**没有推进状态**(illegal/unknown/idle/hint/error)
+# 之后 DUP_INPUT_WINDOW 秒内再次出现 → 判为宿主重复回调，不再执行、不再推送。
+# 只对"没有推进"的结果生效：正常推进的输入（如连点「抛竿」）不受影响。
+DUP_INPUT_WINDOW = 15.0
+NO_PROGRESS_OUTCOMES = frozenset({"illegal", "unknown", "idle", "hint", "error"})
+
 
 class GameBrain:
     """游戏大脑。"""
@@ -40,6 +51,8 @@ class GameBrain:
         self._session_start = 0.0
         # 每个游戏最近一次推送完整邀请的时间戳（秒），用于抑制重复刷屏
         self._last_invite: Dict[str, float] = {}
+        # 重复回调守门: (game_id, 输入原文) → (时间戳, 上次 outcome)，见模块注释
+        self._recent_inputs: Dict[Any, Any] = {}
         # 游戏状态锚节流：游戏进行中且 LLM 长时间未调工具时，向 LLM 上下文
         # 注入「当前游戏 + 可用指令」（只含当前游戏，绝不含全部游戏，防炸上下文）。
         # 每次工具调用(handle_action)都会刷新，所以锚只在 LLM 脱节时出现。
@@ -280,6 +293,14 @@ class GameBrain:
         """最近玩过的游戏(会话结束后仍保留, 供确认词路由)。"""
         return getattr(self, "_last_game", None)
 
+    def _recent_inputs_map(self) -> Dict[Any, Any]:
+        """重复回调守门表（懒初始化，兼容测试用 __new__ 直接构造）。"""
+        table = getattr(self, "_recent_inputs", None)
+        if table is None:
+            table = {}
+            self._recent_inputs = table
+        return table
+
     async def handle_action(self, game_id: str, cmd: str, args: Optional[Dict] = None,
                             user_id: str = "default") -> Dict[str, Any]:
         args = dict(args or {})
@@ -320,8 +341,39 @@ class GameBrain:
 
         # 交互语义(确认词/催促词)由 LLM 判断并决定调用什么, 主插件不硬编码词表。
         # 游戏自身可通过 outcome 语义返回待选择提示, LLM 收到后决定下一步输入。
+        # ── 重复回调守门（见模块顶部注释）：同一条输入刚发生过且没推进状态 → 忽略 ──
+        dup_table = self._recent_inputs_map()
+        dup_key = (game_id, cmd.strip())
+        now_ts = time.time()
+        recent = dup_table.get(dup_key)
+        if recent is not None:
+            last_ts, last_outcome = recent
+            if (now_ts - last_ts) < DUP_INPUT_WINDOW \
+                    and str(last_outcome) in NO_PROGRESS_OUTCOMES:
+                log.info("忽略重复回调: game=%s input=%r 上次 outcome=%s",
+                         game_id, dup_key[1], last_outcome)
+                return {
+                    "game": game_id,
+                    "game_name": game.name,
+                    "game_icon": game.icon,
+                    "outcome": "duplicate",
+                    "level": "routine",
+                    "facts": [],
+                    "game_result": "",
+                    "emotion_suggestion": "",
+                    "duplicate": True,
+                    # 给宿主 LLM 的说明：这条是重复回调，别再复述一遍
+                    "summary": f"（{game.name}：刚才这条输入没推进对局，是重复回调，"
+                               f"已忽略，不要重复念一遍结果）",
+                }
+
         result = await game.handle_action(user_id, cmd, args or {})
         outcome = result.get("outcome", "done")
+        dup_table[dup_key] = (now_ts, str(outcome))
+        if len(dup_table) > 64:
+            for stale in [k for k, v in dup_table.items()
+                          if now_ts - float(v[0]) >= DUP_INPUT_WINDOW]:
+                dup_table.pop(stale, None)
 
         # 工具被调用 = LLM 还连着游戏, 刷新状态锚节流(脱节时才注入锚)。
         self._last_anchor_ts = time.time()

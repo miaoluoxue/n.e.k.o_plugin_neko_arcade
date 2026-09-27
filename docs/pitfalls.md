@@ -69,6 +69,41 @@ LLM 复述一遍 → 用户看到两条几乎一样的话（双重回复）。
   （这些方法仅保留给 on_tick 后台提醒/历史兼容）
 - ❌ 返回 `pushed` / `summary` 字段（已废除，brain 统一处理）
 - ❌ summary 返回用户已见的原文
+- ❌ **图片推送漏传 `ai_behavior`**（见下）
+
+### 1.1 `ai_behavior` 漏传 = 又一版双重回复（2026-09-27 实机踩到）
+
+**坑**：`text_with_image` / `text_with_image_url` 原先把 `ai_behavior` 一路默认为
+`"read"`。宿主对三个值的处理完全不同（`plugin/server/messaging/proactive_bridge.py`）：
+
+| ai_behavior | 宿主投递模式 | 后果 |
+|---|---|---|
+| `respond` | proactive | 主动说一轮 |
+| `read` | passive | **注入模型上下文**（图走视觉通道，还开一轮 run） |
+| `blind` | silent | 只渲染，**跳过 LLM 注入** |
+
+所以图片/状态卡用 `read` 时，同一份内容走了两条路（`summary` + 被注入的推送），
+LLM 复述一遍；更糟的是那一轮 run 会**带着同一条旧输入**回调 `play_game`：
+
+```
+23:25:01 [MESSAGE FORWARD] 这手我记下了喵      ← 用户「我下在J9吧」落子成功
+23:25:09 POST /runs → 同一条输入又进来 → "有子了喵"（J9 已占）← 第二份状态卡
+```
+
+**规则**：用户可见的推送一律 `blind`（`visibility=["chat"]` 决定"显示在聊天窗"，与
+`ai_behavior` 无关，所以 blind 照样出图）。确需模型真看图才显式 `read`。
+`_push` 默认已是 blind；`_push_native_image` 现在也是。
+
+### 1.2 宿主重复回调守门（`core/brain.py`）
+
+即便推送都是 blind，宿主 run 仍可能拿旧输入再调一次工具。守门规则：
+
+> 同一条输入在上一次**没有推进状态**（`illegal/unknown/idle/hint/error`）之后
+> `DUP_INPUT_WINDOW`(15s) 内再次出现 → 判为重复回调：**不再执行、不再推送**，
+> 只回一条「这是重复回调、别复述」的 summary。
+
+只对"没推进"的结果生效，所以连点「抛竿」这类正常重复输入照常执行。
+回归测试：`tests/test_duplicate_reply.py`。
 
 ---
 

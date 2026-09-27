@@ -2,6 +2,41 @@
 
 > 完整迭代记录，供开发者查阅。插件市场门面 README.md 只保留最新版本。
 
+## v0.5.8 (2026-09)
+
+**一句话主题**：修掉线上「一句两答」——用户可见推送不再走 `ai_behavior="read"`，
+并给宿主的重复回调加了守门。
+
+### 修复
+
+- **双重回复（图片推送漏传 `ai_behavior`）** — `text_with_image` /
+  `text_with_image_url` 不传 `ai_behavior`，落到 `_push_native_image` 的默认值
+  `"read"`。宿主对三个值的投递模式完全不同（`plugin/server/messaging/proactive_bridge.py`）：
+  `respond`=proactive、`read`=passive（**注入模型上下文**，并开一轮 run）、
+  `blind`=silent（跳过 LLM 注入）。于是棋盘图/状态卡同时走了 `summary` 与
+  "被注入的推送"两条路，LLM 复述一遍；那一轮 run 还会带着**同一条旧输入**回调
+  `play_game`——实测 2026-09-27 五子棋：用户「我下在J9吧」落子成功并推状态卡，
+  8 秒后同一句又进来，第二次落子被判非法（"有子了喵"）→ 用户看到两份状态卡。
+  现在图片/卡牌/照片推送默认 `ai_behavior="blind"`（`visibility=["chat"]` 仍保证
+  在聊天窗显示，与 `ai_behavior` 无关）；确需模型真看图才显式传 `"read"`。
+- **宿主重复回调守门** — `core/brain.py::handle_action` 新增：同一条输入在上一次
+  **没有推进状态**（`illegal/unknown/idle/hint/error`）之后 `DUP_INPUT_WINDOW`(15s)
+  内再次出现 → 判为宿主 run 的重复回调：不再执行、不再推送，只回一条
+  "这是重复回调、别复述"的 summary。只对"没推进"的结果生效，连点「抛竿」这类
+  正常重复输入不受影响。
+
+### 测试
+
+- `tests/test_push_sender.py`：图片推送断言改为 `ai_behavior == "blind"`，并新增
+  逃生口测试（显式 `read` 透传、blind 不改 `visibility`）。
+- `tests/test_duplicate_reply.py`（新增 4 项）：重复非推进输入被忽略、推进输入照常
+  执行、窗口过期后允许重试、不同输入互不干扰。
+
+### 变更 / 升级注意
+
+- 版本号 0.5.7 → **0.5.8**；行为变化只影响"推送是否喂给 LLM"，出图与显示不变。
+- 排查同类问题：宿主日志里 `POST /runs` 紧跟推送出现，就是宿主 run 的重复回调。
+
 ## v0.5.7 (2026-09)
 
 **一句话主题**：新增棋类对弈（六种棋），并把「陪伴 / LLM / 渲染」三条通道彻底收归插件本体。

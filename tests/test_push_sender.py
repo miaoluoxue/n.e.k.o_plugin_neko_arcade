@@ -74,7 +74,9 @@ def test_text_with_image_inlines_original_bytes_first():
         assert len(sender.plugin.pushed) == 1
         msg = sender.plugin.pushed[0]
         assert msg["visibility"] == ["chat"]
-        assert msg["ai_behavior"] == "read"
+        # ⚠️ 必须是 blind（宿主侧 silent）："read" 会把推送注入模型上下文并多起
+        # 一轮，LLM 复述已见内容 + 带旧输入回调 play_game → 用户看到"双重回复"。
+        assert msg["ai_behavior"] == "blind"
         parts = msg["parts"]
         assert parts[0] == {"type": "text", "text": "配文"}
         assert parts[1] == {"type": "image", "data": b"PNGDATA", "mime": "image/png"}
@@ -196,9 +198,34 @@ def test_text_with_image_url_prefers_native_channel():
         await sender.text_with_image_url("看图", "http://up/img.jpeg")
         assert len(sender.plugin.pushed) == 1
         msg = sender.plugin.pushed[0]
-        assert msg["ai_behavior"] == "read"
+        assert msg["ai_behavior"] == "blind"
         assert msg["parts"][1] == {"type": "image", "url": "http://up/img.jpeg"}
         assert "data" not in msg["parts"][1], "url 与内联字节不可混用"
+
+    asyncio.run(run())
+
+
+def test_image_push_defaults_to_blind_and_allows_explicit_read():
+    """图片/卡牌推送默认 blind（宿主侧 silent，不喂 LLM，不会多起一轮）。
+
+    「双重回复」回归：以前 text_with_image 不传 ai_behavior，落到
+    _push_native_image 的默认值 "read" → 宿主把推送注入模型上下文并多起一轮，
+    LLM 复述用户已见内容、还带着旧输入回调 play_game，用户就看到两份状态卡。
+    默认必须是 blind；确需模型真"看图"时才显式传 "read"（逃生口保留）。
+    """
+    async def run():
+        sender = _sender(has_images=True)
+        await sender.text_with_image("配文", b"PNGDATA", "image/png")
+        await sender.text_with_image_url("看图", "http://up/img.jpeg")
+        assert [m["ai_behavior"] for m in sender.plugin.pushed] == ["blind", "blind"]
+
+        # 逃生口：显式要求模型读图时透传
+        await sender.text_with_image("配文", b"PNGDATA", "image/png", ai_behavior="read")
+        assert sender.plugin.pushed[-1]["ai_behavior"] == "read"
+
+        # blind 不影响聊天窗可见性（visibility 才决定显示位置）
+        for msg in sender.plugin.pushed:
+            assert msg["visibility"] == ["chat"]
 
     asyncio.run(run())
 

@@ -121,8 +121,16 @@ class PushSender:
         await self._push([{"type": "text", "text": text}], visibility, ai_behavior)
 
     async def text_with_image(self, text: str, image_bytes: bytes,
-                              mime: str = "image/png") -> None:
+                              mime: str = "image/png",
+                              ai_behavior: str = "blind") -> None:
         """推文本 + 图片。
+
+        ⚠️ ai_behavior 默认 "blind"（宿主侧 = silent，跳过 LLM 注入）。
+        只有 visibility 决定"在聊天窗显示"，所以 blind 一样能出图；
+        而 "read" 会把这条推送注入模型上下文并让宿主多起一轮——
+        LLM 复述用户已见内容、还带着旧输入回调 play_game，用户看到的就是
+        "双重回复"（实测 2026-09-27 五子棋对局：正常落子后 8 秒又收到同一句，
+        第二次落子被判非法 → 两份状态卡）。需要模型真的"看图"时才显式传 "read"。
 
         优先走原生图片通道(#2835): 内联原始字节 part + visibility=["chat"]
         → 聊天窗原生图片气泡(原始分辨率、不重编码)；内联不可用时退回
@@ -130,7 +138,8 @@ class PushSender:
         图片语法 `![alt](url)`——旧宿主前端不渲染 <img> HTML 标签
         (ReactMarkdown 无 rehype-raw), 必须用标准 markdown 图片语法。
         """
-        if await self._push_native_image(text, image_bytes, mime=mime):
+        if await self._push_native_image(text, image_bytes, mime=mime,
+                                         ai_behavior=ai_behavior):
             return
         # 回退: 旧宿主 markdown 图片语法(![alt](url), 前端 ReactMarkdown 内置支持)
         url = await self.save_image(image_bytes, mime)
@@ -138,18 +147,19 @@ class PushSender:
             content = f"{text}\n\n![游戏图片]({url})"
         else:
             content = text
-        await self._push([{"type": "text", "text": content}])
+        await self._push([{"type": "text", "text": content}], ai_behavior=ai_behavior)
 
-    async def text_with_image_url(self, text: str, url: str) -> None:
-        """推文本 + 图片 URL。
+    async def text_with_image_url(self, text: str, url: str,
+                                  ai_behavior: str = "blind") -> None:
+        """推文本 + 图片 URL（ai_behavior 语义同 text_with_image，默认 blind）。
 
         优先原生通道(URL 已由 ctx.images.upload() 产生时); 否则 markdown
         图片语法 `![alt](url)`(旧宿主前端不渲染 <img> HTML)。
         """
-        if await self._push_native_image(text, url=url):
+        if await self._push_native_image(text, url=url, ai_behavior=ai_behavior):
             return
         content = f"{text}\n\n![游戏图片]({url})" if url else text
-        await self._push([{"type": "text", "text": content}])
+        await self._push([{"type": "text", "text": content}], ai_behavior=ai_behavior)
 
     async def _push_parts(self, parts: List[dict], ai_behavior: str) -> bool:
         """按 v2 契约(parts + visibility)推送；失败返回 False 由调用方回退。"""
@@ -178,13 +188,14 @@ class PushSender:
 
     async def _push_native_image(self, text: str, image_bytes: Optional[bytes] = None,
                                  url: Optional[str] = None,
-                                 ai_behavior: str = "read",
+                                 ai_behavior: str = "blind",
                                  mime: str = "image/png") -> bool:
         """原生图片通道：内联原始字节优先 → SDK 上传 → 都不行返回 False。
 
         返回 True 表示已推送；False 表示这条通道不可用，调用方应回退 markdown。
         visibility=["chat"] 让图片在用户聊天窗可见；ai_behavior="blind" 表示
-        只给用户看、不喂 LLM（帮助文档图）。
+        只给用户看、不喂 LLM（帮助文档图 / 对局状态图 / 照片都用它）——
+        别改成 "read"：宿主会把内容注入模型上下文，多起一轮就变成"双重回复"。
 
         为什么内联优先：宿主聊天投影对 data 内联图**不缩放、不重编码**（官方
         注释: 帮助/文档/代码图正是读者要放大看的材料），而 ctx.images.upload
