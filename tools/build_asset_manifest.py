@@ -34,6 +34,11 @@ REPO = Path(__file__).resolve().parent.parent
 IMG_EXT = (".png", ".jpg", ".jpeg", ".webp")
 
 
+def _mb(n: int) -> float:
+    """字节 → MB（保留两位）。"""
+    return round(n / 1024 / 1024, 2)
+
+
 def repo_head() -> str:
     try:
         return subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=REPO,
@@ -100,8 +105,7 @@ def main() -> int:
                             "size": new})
         total_src += subtotal_src
         total_out += subtotal_out
-        mb = lambda n: round(n / 1024 / 1024, 2)  # noqa: E731
-        print(f"[{name}] {len(files)} 张  {mb(subtotal_src)} MB → {mb(subtotal_out)} MB")
+        print(f"[{name}] {len(files)} 张  {_mb(subtotal_src)} MB → {_mb(subtotal_out)} MB")
 
     manifest = {
         "version": "1",
@@ -114,8 +118,7 @@ def main() -> int:
     (out_root / "manifest.json").write_text(
         json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
-    mb = lambda n: round(n / 1024 / 1024, 1)  # noqa: E731
-    print(f"合计 {len(entries)} 张: {mb(total_src)} MB → {mb(total_out)} MB "
+    print(f"合计 {len(entries)} 张: {_mb(total_src)} MB → {_mb(total_out)} MB "
           f"(省 {100 - total_out * 100 // max(total_src, 1)}%)")
     print("输出目录:", out_root)
     print("分类:", ", ".join(n for n, _ in categories))
