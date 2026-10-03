@@ -1,8 +1,9 @@
 {
   "version": "1",
-  "note": "塔罗牌面资源：插件首次运行按 path 下载到用户缓存目录并校验 sha256，缺图回退内置占位图。",
-  "count": 131,
-  "total_size": 24961862,
+  "generated_from": "5e9604b",
+  "note": "插件素材：客户端首次运行按 path 下载到用户缓存并校验 sha256，缺图回退占位图。",
+  "count": 136,
+  "total_size": 25247836,
   "files": [
     {
       "path": "tarot/ba/0-愚者.webp",
@@ -658,6 +659,31 @@
       "path": "tarot/touhou/21-世界.webp",
       "sha256": "170d24d56e68a566508ccf6604602dab20e8193fcd0dda1846279af7c5c97cc1",
       "size": 95026
+    },
+    {
+      "path": "ui/icon.webp",
+      "sha256": "7b1d27337820d24f1f37680a75cbd3e3dc17156463c414213b2adf16299171ed",
+      "size": 20818
+    },
+    {
+      "path": "ui/media/yui横.webp",
+      "sha256": "9a7e1641c2288a1dc31587998f338b72b1d147d2730a6d24ae235b3c70e375b5",
+      "size": 53918
+    },
+    {
+      "path": "ui/media/yui竖.webp",
+      "sha256": "c04c94b3a7084a7a69c4d67a81e317f2d812d99c5e34e0239330e507261d4119",
+      "size": 68290
+    },
+    {
+      "path": "panel/logo-icon.webp",
+      "sha256": "906a2942609588948180ce56b430d6a6a40e22e14665285e782f13ea856856d4",
+      "size": 6982
+    },
+    {
+      "path": "panel/yui-hero.webp",
+      "sha256": "1b7e2ec4efc0e583bad3e087af2e2d76ee04c6d36e3e8131803db304534a5fdd",
+      "size": 135966
     }
   ]
 }

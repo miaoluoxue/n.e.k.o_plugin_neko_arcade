@@ -1,57 +1,126 @@
-"""压缩塔罗资源 → 生成可直接上传 Gitee 的目录 + manifest.json。
+"""把插件里的大素材压缩导出成「可直接上传 Gitee」的目录 + manifest.json。
 
-源：neko_arcade/games/tarot/data/<theme>/<sub>/<name>.png（251 MB PNG）
-出：E:\\pythonxx\\tkry\\tarot-assets\\tarot\\<theme>\\<sub>\\<name>.webp + manifest.json
-    同时给出 948px（原尺寸）与 720px 两个方案，默认导出 948px。
+**用法**（默认只处理塔罗；其它分类用 `--category` 追加）：
+
+    python tools/build_asset_manifest.py                       # 塔罗(默认 948px 原尺寸)
+    python tools/build_asset_manifest.py --max-side 720        # 再降一档, 体积更小
+    python tools/build_asset_manifest.py --out D:\\assets       # 指定输出目录
+    python tools/build_asset_manifest.py \
+        --category tarot=games/tarot/data \
+        --category arcade/cat_evolution=games/cat_evolution/assets
+
+输出结构（分类 = Gitee 仓库里的一级目录，天然"分门别类"）：
+
+    <out>/manifest.json                    # 全局清单: path/sha256/size
+    <out>/tarot/<主题>/<子类>/<牌>.webp      # 一类
+    <out>/arcade/cat_evolution/xxx.webp    # 又一类
+
+插件侧只需 `self.asset_path("<分类>/<相对路径>")` 就能取到（首次下载 + 缓存 + 校验）。
+换素材流程：改 → 跑本脚本 → 把 <out> 内容推到 Gitee → 完事（插件不用改代码，
+远端 manifest 优先，插件内置的那份只是离线兜底）。
 """
+from __future__ import annotations
+
+import argparse
 import hashlib
 import io
 import json
-import sys
+import subprocess
 from pathlib import Path
 
 from PIL import Image
 
-SRC = Path(r"E:\pythonxx\tkry\git同步\neko_arcade\games\tarot\data")
-DST = Path(r"E:\pythonxx\tkry\tarot-assets")
-QUALITY = 82
-MAX_SIDE = int(sys.argv[1]) if len(sys.argv) > 1 else 0   # 0 = 保持原尺寸
+REPO = Path(__file__).resolve().parent.parent
+IMG_EXT = (".png", ".jpg", ".jpeg", ".webp")
 
-DST.mkdir(parents=True, exist_ok=True)
-files = sorted(p for p in SRC.rglob("*") if p.suffix.lower() in (".png", ".jpg", ".jpeg", ".webp"))
-entries, total_src, total_out = [], 0, 0
 
-for p in files:
-    rel = p.relative_to(SRC).as_posix()
-    out = DST / "tarot" / Path(rel).with_suffix(".webp")
-    out.parent.mkdir(parents=True, exist_ok=True)
-    total_src += p.stat().st_size
-    with Image.open(p) as im:
+def repo_head() -> str:
+    try:
+        return subprocess.run(["git", "rev-parse", "--short", "HEAD"], cwd=REPO,
+                              capture_output=True, text=True).stdout.strip()
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def convert(src: Path, out: Path, quality: int, max_side: int) -> tuple[int, int]:
+    """把 src 转成 WebP 写到 out，返回 (原字节, 新字节)。"""
+    with Image.open(src) as im:
         if im.mode not in ("RGB", "RGBA"):
             im = im.convert("RGBA")
-        if MAX_SIDE and max(im.size) > MAX_SIDE:
-            ratio = MAX_SIDE / max(im.size)
+        if max_side and max(im.size) > max_side:
+            ratio = max_side / max(im.size)
             im = im.resize((max(1, int(im.width * ratio)), max(1, int(im.height * ratio))),
                            Image.LANCZOS)
         buf = io.BytesIO()
-        im.save(buf, format="WEBP", quality=QUALITY, method=6)
-    data = buf.getvalue()
-    out.write_bytes(data)
-    total_out += len(data)
-    entries.append({"path": f"tarot/{Path(rel).with_suffix('.webp').as_posix()}",
-                    "sha256": hashlib.sha256(data).hexdigest(), "size": len(data)})
+        im.save(buf, format="WEBP", quality=quality, method=6)
+    blob = buf.getvalue()
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_bytes(blob)
+    return src.stat().st_size, len(blob)
 
-manifest = {
-    "version": "1",
-    "note": "塔罗牌面资源：插件首次运行按 path 下载到用户缓存目录并校验 sha256，缺图回退内置占位图。",
-    "count": len(entries),
-    "total_size": total_out,
-    "files": entries,
-}
-(DST / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
-                                   encoding="utf-8")
-mb = lambda n: round(n / 1024 / 1024, 1)  # noqa: E731
-print(f"导出 {len(entries)} 张  (最长边 {'原尺寸' if not MAX_SIDE else str(MAX_SIDE) + 'px'}, WebP q{QUALITY})")
-print(f"原图 {mb(total_src)} MB  →  导出 {mb(total_out)} MB  (省 {100 - total_out * 100 // total_src}%)")
-print("目录:", DST)
-print("样例:", entries[0]["path"], entries[0]["sha256"][:12], f"{entries[0]['size'] // 1024} KB")
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description="导出素材 + 生成 manifest")
+    ap.add_argument("--category", action="append", default=None,
+                    metavar="分类=路径", help="可重复；默认 tarot=games/tarot/data")
+    ap.add_argument("--out", default=r"E:\pythonxx\tkry\tarot-assets")
+    ap.add_argument("--quality", type=int, default=82, help="WebP 质量(默认 82)")
+    ap.add_argument("--max-side", type=int, default=0, help="最长边上限(0=保持原尺寸)")
+    args = ap.parse_args()
+
+    pairs = args.category or ["tarot=games/tarot/data"]
+    categories: list[tuple[str, Path]] = []
+    for item in pairs:
+        name, _, rel = item.partition("=")
+        src = (REPO / rel).resolve() if not Path(rel).is_absolute() else Path(rel)
+        if not src.is_dir():
+            print(f"跳过（目录不存在）: {name} <- {src}")
+            continue
+        categories.append((name.strip("/"), src))
+    if not categories:
+        print("没有可处理的分类")
+        return 1
+
+    out_root = Path(args.out)
+    out_root.mkdir(parents=True, exist_ok=True)
+    entries: list[dict] = []
+    total_src = total_out = 0
+
+    for name, src in categories:
+        files = sorted(p for p in src.rglob("*") if p.suffix.lower() in IMG_EXT)
+        subtotal_src = subtotal_out = 0
+        for p in files:
+            rel = p.relative_to(src).with_suffix(".webp").as_posix()
+            asset_path = f"{name}/{rel}"
+            old, new = convert(p, out_root / asset_path, args.quality, args.max_side)
+            subtotal_src += old
+            subtotal_out += new
+            entries.append({"path": asset_path,
+                            "sha256": hashlib.sha256((out_root / asset_path).read_bytes()).hexdigest(),
+                            "size": new})
+        total_src += subtotal_src
+        total_out += subtotal_out
+        mb = lambda n: round(n / 1024 / 1024, 2)  # noqa: E731
+        print(f"[{name}] {len(files)} 张  {mb(subtotal_src)} MB → {mb(subtotal_out)} MB")
+
+    manifest = {
+        "version": "1",
+        "generated_from": repo_head(),
+        "note": "插件素材：客户端首次运行按 path 下载到用户缓存并校验 sha256，缺图回退占位图。",
+        "count": len(entries),
+        "total_size": total_out,
+        "files": entries,
+    }
+    (out_root / "manifest.json").write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+    mb = lambda n: round(n / 1024 / 1024, 1)  # noqa: E731
+    print(f"合计 {len(entries)} 张: {mb(total_src)} MB → {mb(total_out)} MB "
+          f"(省 {100 - total_out * 100 // max(total_src, 1)}%)")
+    print("输出目录:", out_root)
+    print("分类:", ", ".join(n for n, _ in categories))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

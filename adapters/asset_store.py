@@ -42,6 +42,16 @@ DEFAULT_TIMEOUT = 30.0
 DEFAULT_CONCURRENCY = 3
 DEFAULT_RETRIES = 2
 
+#: 分类 → 插件代码目录里的对应子目录。
+#: 用途：**本地优先** —— 素材若仍随包（图标/面板图这类小件），就不必再下载；
+#: 只有真正的"大块头"（塔罗牌面）才会走网络。新增素材分类时在这里登记
+#: （工具侧对应 `tools/build_asset_manifest.py --category 分类=目录`）。
+DEFAULT_LOCAL_MAP: Dict[str, str] = {
+    "tarot": "games/tarot/data",
+    "ui": "assets",
+    "panel": "static/img",
+}
+
 
 class AssetStore:
     """外部素材的"下载一次、之后走缓存"管理器。"""
@@ -49,6 +59,7 @@ class AssetStore:
     def __init__(self, plugin: Any, *, cache_dir: Optional[str] = None,
                  base_urls: Optional[Sequence[str]] = None,
                  bundled_manifest: Optional[str] = None,
+                 local_map: Optional[Dict[str, str]] = None,
                  enabled: bool = True, logger: Any = None) -> None:
         self.plugin = plugin
         self.log = logger
@@ -57,11 +68,13 @@ class AssetStore:
                                      (base_urls or DEFAULT_BASE_URLS) if u]
         self._cache_root = Path(cache_dir) if cache_dir else self._default_cache_dir()
         self._bundled_manifest = Path(bundled_manifest) if bundled_manifest else None
+        self._local_map: Dict[str, str] = dict(local_map or DEFAULT_LOCAL_MAP)
         self._manifest: Optional[Dict[str, Any]] = None
         self._index: Dict[str, Dict[str, Any]] = {}
         self._sem = asyncio.Semaphore(DEFAULT_CONCURRENCY)
         self._prefetch_task: Optional[asyncio.Task] = None
-        self.stats: Dict[str, int] = {"hit": 0, "download": 0, "fail": 0, "skip": 0}
+        self.stats: Dict[str, int] = {"hit": 0, "download": 0, "fail": 0, "skip": 0,
+                                      "local": 0}
 
     # ── 路径 / 缓存 ────────────────────────────────────
 
@@ -83,6 +96,26 @@ class AssetStore:
     def local_path(self, rel: str) -> Path:
         """某资源在本地缓存里的路径（不保证已存在）。"""
         return self._cache_root / rel.replace("\\", "/")
+
+    def local_mirror(self, rel: str) -> Optional[Path]:
+        """同一份素材若仍随插件包（代码目录），返回那个本地文件路径。
+
+        "本地优先"：图标/面板图这类小件继续随包 → 不下载、离线可用；
+        只有代码目录里没有的大块头（塔罗牌面）才走网络。
+        扩展名会尝试 .png/.jpg/.webp（本地可能是 png，素材源统一 webp）。
+        """
+        rel = rel.replace("\\", "/")
+        category, _, tail = rel.partition("/")
+        sub = self._local_map.get(category)
+        code_dir = getattr(self.plugin, "plugin_dir", None)
+        if not sub or not tail or not code_dir:
+            return None
+        base = Path(str(code_dir)) / sub / tail
+        for cand in (base, base.with_suffix(".png"), base.with_suffix(".jpg"),
+                     base.with_suffix(".jpeg")):
+            if cand.is_file():
+                return cand
+        return None
 
     # ── manifest ──────────────────────────────────────
 
@@ -141,6 +174,11 @@ class AssetStore:
         if not self.enabled or not rel:
             return None
         rel = rel.replace("\\", "/")
+        # ① 随包的本地素材优先（小件不下载、离线可用）
+        local = self.local_mirror(rel)
+        if local is not None:
+            self.stats["local"] += 1
+            return local
         target = self.local_path(rel)
         entry = (await self.manifest()).get("files") and self._index.get(rel)
         if target.is_file() and entry and target.stat().st_size == int(entry.get("size", -1)):

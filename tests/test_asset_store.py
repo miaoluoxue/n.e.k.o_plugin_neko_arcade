@@ -181,6 +181,44 @@ def test_default_sources_prefer_gitee_then_github():
     assert all(u.endswith("/") for u in DEFAULT_BASE_URLS), "base url 必须带结尾斜杠才能拼路径"
 
 
+class _FakePlugin:
+    """带 plugin_dir / cache_path 的假插件（用于"本地优先"用例）。"""
+
+    logger = None
+
+    def __init__(self, plugin_dir: Path):
+        self.plugin_dir = plugin_dir
+
+    def cache_path(self, *parts):
+        p = Path(self.plugin_dir) / "cache" / Path(*parts)
+        p.mkdir(parents=True, exist_ok=True)
+        return p
+
+
+def test_local_mirror_wins_over_download():
+    """随包的素材（代码目录里已有）→ 直接本地返回，不联网。
+
+    这一条保证"分门别类上传 Gitee"不会把图标/面板图变成网络依赖：
+    分类在 DEFAULT_LOCAL_MAP 里登记后，本地有就本地用。
+    """
+    async def run():
+        tmp = _tmp_dir("localmirror")
+        (tmp / "assets").mkdir(parents=True, exist_ok=True)
+        icon = tmp / "assets" / "icon.png"
+        icon.write_bytes(PAYLOAD)
+        f = _Fetcher({"https://primary/manifest.json": _manifest_bytes(path="ui/icon.png"),
+                      "https://primary/ui/": b"SHOULD-NOT-BE-USED"})
+        store = AssetStore(_FakePlugin(tmp), cache_dir=str(tmp / "c"),
+                           base_urls=["https://primary/"])
+        store._fetch = f            # type: ignore[assignment]
+        p = await store.ensure("ui/icon.png")
+        assert p == icon, "本地镜像应优先于下载"
+        assert not any("/ui/" in u for u in f.calls), "本地已有不该下载素材"
+        assert store.stats["local"] == 1 and store.stats["download"] == 0
+
+    asyncio.run(run())
+
+
 def test_stats_and_snapshot():
     """面板/日志要能看到命中/下载/失败计数与缓存位置。"""
     async def run():

@@ -102,8 +102,7 @@ class ArcadeRuntime:
         from adapters.asset_store import build_store_from_cfg
         self.assets = build_store_from_cfg(
             self.plugin, self.cfg,
-            bundled_manifest=os.path.join(self._code_dir(), "games", "tarot",
-                                          "assets.manifest.json"),
+            bundled_manifest=os.path.join(self._code_dir(), "assets.manifest.json"),
             logger=log)
         self.registry._assets = self.assets
         if self.cfg.get("asset_prefetch", True):
