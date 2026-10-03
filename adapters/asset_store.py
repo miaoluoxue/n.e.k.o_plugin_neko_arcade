@@ -31,9 +31,9 @@ from typing import Any, Dict, List, Optional, Sequence
 
 #: 缺省资源源（按顺序尝试；第一个成功即用）
 DEFAULT_BASE_URLS: Sequence[str] = (
-    # 主源：Gitee（国内直连快）——账号/仓库确定后填这里或走配置 asset_base_url
-    "https://gitee.com/miaoluoxue/neko-arcade-tarot/raw/master/",
-    # 兜底：GitHub 插件仓库 assets 分支（已验证可拉）
+    # 主源：Gitee（国内直连快，2026-10 实测可拉；131 张 WebP / 23.8 MB）
+    "https://gitee.com/maoyvna/taluopai/raw/master/",
+    # 兜底：GitHub 插件仓库 assets 分支（同一份素材，已实测可拉）
     "https://raw.githubusercontent.com/miaoluoxue/n.e.k.o_plugin_neko_arcade/assets/",
 )
 

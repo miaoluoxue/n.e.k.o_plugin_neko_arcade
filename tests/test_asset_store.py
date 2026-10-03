@@ -20,7 +20,10 @@ import json
 import shutil
 from pathlib import Path
 
-from plugin.plugins.neko_arcade.adapters.asset_store import AssetStore
+from plugin.plugins.neko_arcade.adapters.asset_store import (
+    DEFAULT_BASE_URLS,
+    AssetStore,
+)
 
 _TMP = Path(__file__).resolve().parent.parent / ".tmp_asset_store_test"
 PAYLOAD = b"WEBPDATA-0123456789"
@@ -169,6 +172,13 @@ def test_local_code_dir_wins_before_download():
         assert not any("/tarot/" in u for u in f.calls), "本地已有就不该下载素材"
 
     asyncio.run(run())
+
+
+def test_default_sources_prefer_gitee_then_github():
+    """缺省素材源：Gitee 主源在前，GitHub 兜底在后（都实测可拉）。"""
+    assert DEFAULT_BASE_URLS[0].startswith("https://gitee.com/")
+    assert any("raw.githubusercontent.com" in u for u in DEFAULT_BASE_URLS)
+    assert all(u.endswith("/") for u in DEFAULT_BASE_URLS), "base url 必须带结尾斜杠才能拼路径"
 
 
 def test_stats_and_snapshot():
