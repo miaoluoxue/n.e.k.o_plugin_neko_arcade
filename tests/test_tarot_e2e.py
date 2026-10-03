@@ -65,9 +65,20 @@ def _make_game():
     game._help = HELP
     game._keywords = KWS
     game._emotion_templates = EMO
-    # 图片资源在 games/tarot/data/(真实目录, 供 _card_image 读 bytes)
+    # 图片资源：优先用仓库里的 games/tarot/data/（开发环境）；**发布包里不含牌面**
+    # （251MB 已外置，首次运行从素材源下载）——干净 checkout 下这里就是空目录，
+    # 相关断言会自动降级为"优雅不出图"。见 _assets_ready()
     game._local_scan_dir = str(ROOT / "games" / "tarot" / "data")
     return game, plugin
+
+
+def _assets_ready() -> bool:
+    """本地是否有牌面素材（开发环境有；CI 干净 checkout 没有）。"""
+    data_dir = ROOT / "games" / "tarot" / "data"
+    if not data_dir.is_dir():
+        return False
+    return any(p.suffix.lower() in (".webp", ".png", ".jpg", ".jpeg")
+               for p in data_dir.rglob("*"))
 
 
 def test_tarot_single_card():
@@ -77,8 +88,13 @@ def test_tarot_single_card():
         assert r["outcome"] in ("tarot", "divine", "help"), r
         assert r["facts"][0]["kind"] == "tarot"
         assert "正位" in r["message"] or "逆位" in r["message"], r
-        # 应返回牌面图 images(bytes 形式)
-        assert r.get("images") and r["images"][0].get("bytes"), r
+        if _assets_ready():
+            # 有素材 → 应返回牌面图 images(bytes 形式)
+            assert r.get("images") and r["images"][0].get("bytes"), r
+        else:
+            # 素材未就位（CI/首次运行前）→ 不出图也不能报错，文字结果照常
+            assert r.get("images") == [], r
+            assert r["message"].strip(), r
 
     asyncio.run(run())
 
@@ -108,7 +124,10 @@ def test_tarot_divine():
         assert "牌阵" in r["message"], r
         # 牌阵应抽多张 → 多张 facts + 多张 images
         assert len(r["facts"]) >= 3, r
-        assert len(r["images"]) >= 3, r
+        if _assets_ready():
+            assert len(r["images"]) >= 3, r
+        else:
+            assert r.get("images") == [], r
 
     asyncio.run(run())
 
@@ -137,6 +156,46 @@ def test_tarot_unknown():
         game, plugin = _make_game()
         r = await game.handle_action("user_1", "乱七八糟")
         assert r["outcome"] == "unknown", r
+
+    asyncio.run(run())
+
+
+def test_card_image_reads_local_file_and_mime():
+    """取图链路（不依赖真实牌面）：本地有图 → 读 bytes 并给出正确 mime。
+
+    发布包里**不含牌面**（251MB 已外置），所以这条用桩文件验证链路本身；
+    真实素材由"首次运行从素材源下载"补齐，CI 不做网络。
+    """
+    async def run():
+        import shutil
+
+        game, _ = _make_game()
+        tmp = ROOT / ".tmp_tarot_asset_test"
+        if tmp.exists():
+            shutil.rmtree(tmp, ignore_errors=True)
+        (tmp / "bili" / "MajorArcana").mkdir(parents=True, exist_ok=True)
+        (tmp / "bili" / "MajorArcana" / "0-愚者.webp").write_bytes(b"WEBP-BYTES")
+        game._local_scan_dir = str(tmp)
+        game._theme = "bili"
+
+        img = await game._card_image({"type": "MajorArcana", "pic": "0-愚者",
+                                      "name_cn": "愚者"})
+        assert img and img["bytes"] == b"WEBP-BYTES", img
+        assert img["mime"] == "image/webp", img
+        assert img["text"] == "愚者", img
+
+        shutil.rmtree(tmp, ignore_errors=True)
+
+    asyncio.run(run())
+
+
+def test_card_image_missing_returns_none():
+    """素材未就位（首次运行前/离线）→ 返回 None，不抛异常。"""
+    async def run():
+        game, _ = _make_game()
+        game._local_scan_dir = str(ROOT / ".tmp_tarot_asset_missing")
+        img = await game._card_image({"type": "MajorArcana", "pic": "0-愚者"})
+        assert img is None, img
 
     asyncio.run(run())
 
