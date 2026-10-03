@@ -46,12 +46,9 @@ exclude_files = [
     "games/xiuxian/data/items/*.json",
     "games/xiuxian/data/levels/*.json",
     "games/fishing/fishdata.json",
-    # 图片素材一律不进包: 首次运行从素材源(Gitee 主源)自动下载补齐到缓存。
-    # 对应 ASSET_IDS 见 core/help/themes.py；清单 assets.manifest.json 随包兜底。
-    #   assets/icon.jpg + assets/media/*  → ui/     (帮助图头像/背景)
-    #   static/img/*                      → panel/  (立绘/徽章; 面板 HTML 不引用图片)
-    # 新增素材时: 跑 tools/build_asset_manifest.py 生成清单 → 传 Gitee → 在这里补一行。
-    "assets/icon.jpg",
-    "assets/media/*",
-    "static/img/*",
+    # ⚠️ UI 素材（图标/背景/立绘/徽章，共约 288KB）**刻意留在包里**：
+    #   · 帮助图渲染要它们内联成 data URI，留包 = 完全离线可用；
+    #   · 体积代价只有 0.28MB，而"人生重开"的 JSON 才是大头（见上）。
+    #   素材库是"本地优先"的（AssetStore.local_mirror），本地有就不会下载。
+    #   塔罗牌面（251MB）例外：那部分确实外置，首次运行按需/预热下载。
 ]

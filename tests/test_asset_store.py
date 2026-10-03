@@ -204,15 +204,15 @@ def test_local_mirror_wins_over_download():
     async def run():
         tmp = _tmp_dir("localmirror")
         (tmp / "assets").mkdir(parents=True, exist_ok=True)
-        icon = tmp / "assets" / "icon.png"
+        icon = tmp / "assets" / "icon.jpg"          # 本地是 jpg，清单里是 webp
         icon.write_bytes(PAYLOAD)
-        f = _Fetcher({"https://primary/manifest.json": _manifest_bytes(path="ui/icon.png"),
+        f = _Fetcher({"https://primary/manifest.json": _manifest_bytes(path="ui/icon.webp"),
                       "https://primary/ui/": b"SHOULD-NOT-BE-USED"})
         store = AssetStore(_FakePlugin(tmp), cache_dir=str(tmp / "c"),
                            base_urls=["https://primary/"])
         store._fetch = f            # type: ignore[assignment]
-        p = await store.ensure("ui/icon.png")
-        assert p == icon, "本地镜像应优先于下载"
+        p = await store.ensure("ui/icon.webp")
+        assert p == icon, "本地镜像应优先于下载（扩展名不同也要认出来）"
         assert not any("/ui/" in u for u in f.calls), "本地已有不该下载素材"
         assert store.stats["local"] == 1 and store.stats["download"] == 0
 

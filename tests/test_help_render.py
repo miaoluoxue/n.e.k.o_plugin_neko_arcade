@@ -23,6 +23,40 @@ def test_build_help_html_contains_rows_title_and_brand() -> None:
     assert "N.E.K.O 猫娘小游戏 × 测试游戏" in html
 
 
+def test_asset_resolver_prefers_injected_paths() -> None:
+    """素材路径可由 AssetStore 注入（本地优先，缺则下载到缓存）。
+
+    帮助图素材（头像/背景/立绘/徽章）现在走素材库解析：
+      · 随包的 → local_mirror 命中本地，**不联网**；
+      · 外置的 → 首次运行下载到缓存后注入；
+    这里验证"注入路径优先于 code_dir 相对路径"这条契约。
+    """
+    import shutil
+    from pathlib import Path
+
+    from plugin.plugins.neko_arcade.core.help.themes import AssetResolver
+
+    tmp = Path(__file__).resolve().parent.parent / ".tmp_theme_asset_test"
+    if tmp.exists():
+        shutil.rmtree(tmp, ignore_errors=True)
+    (tmp / "code").mkdir(parents=True)
+    (tmp / "cache").mkdir(parents=True)
+
+    # 缓存里放一张真图（模拟"首次运行已下载补齐"）
+    from PIL import Image
+    img_path = tmp / "cache" / "yui竖.webp"
+    Image.new("RGB", (32, 48), (120, 90, 60)).save(img_path, format="WEBP")
+
+    res = AssetResolver(str(tmp / "code"), str(tmp / "cache"))
+    assert res.uri("bg") == "", "代码目录没有素材时应优雅降级为空串"
+
+    res.set_paths({"bg": str(img_path)})
+    uri = res.uri("bg")
+    assert uri.startswith("data:image/"), f"注入了路径就应出图: {uri[:30]}"
+
+    shutil.rmtree(tmp, ignore_errors=True)
+
+
 def test_page_tag_only_when_multiple_pages() -> None:
     ir = ImageRenderer()
     assert "(1/1)" not in ir.build_help_html("G", [("a", "b")], page=1, pages=1)
