@@ -2,6 +2,54 @@
 
 > 完整迭代记录，供开发者查阅。插件市场门面 README.md 只保留最新版本。
 
+## v0.5.10 (2026-10)
+
+**一句话主题**：发布包 **4.37 MB → 1.72 MB** —— 塔罗牌面（251 MB）移出包体、首次运行
+自动从 Gitee 下载补齐；大数据改 `.gz`；UI 素材 WebP 化后继续随包（离线可用）。
+
+### 新增
+
+- **外部素材库 `adapters/asset_store.py`** — 塔罗牌面 251 MB PNG 不再进包：
+  - 远端 manifest（Gitee 主源 `gitee.com/maoyvna/taluopai` → GitHub 插件仓库 `assets`
+    分支兜底）→ 下载后核对 **sha256 + 字节数**（不符即丢弃重试，绝不用坏图）
+    → 落 `plugin.cache_path("assets")`；
+  - 多源回退、失败重试、线程池下载不阻塞宿主、原子落盘（`.part` → `os.replace`）、
+    已下载跳过（重启不重下）；首次运行后台预热（`shutdown` 可取消）；
+  - 游戏侧统一入口 `GameAdapter.asset_path(rel)`，拿不到返回 `None`（回退占位图，不报错）。
+  - 实测：空缓存 + 包里无图 → 首次渲染自动补齐 4 个素材（4 成功 0 失败）。
+
+- **素材分类与"本地优先"** — 清单按 `tarot/` `ui/` `panel/` 分类；`DEFAULT_LOCAL_MAP`
+  让仍随包的素材本地直接用（不下载、离线可用），只有本地没有的才联网。
+  帮助图四个素材（头像/背景/立绘/徽章，共 288 KB）**刻意留在包内**。
+
+- **工具 `tools/`** — `build_asset_manifest.py`（按分类压缩导出素材 + 生成清单）、
+  `compress_data_json.py`（重新生成 `.gz`）、`estimate_package_size.py`
+  （按官方打包规则预估包体，发版前自查）。
+
+### 变更 / 优化
+
+- **大数据 `.gz`** — 人生重开 `age.json`(1.88 MB) + `events.json`(0.36 MB) + 修仙/钓鱼数据
+  共 2.59 MB → **0.17 MB**（省 94%）：仓库保留明文（开发/审阅/再生成），打包用
+  `exclude_files` 排除明文，运行时 `core/datafile.py` 优先读 `<name>.gz` 透明解压。
+- **UI 素材瘦身** — 背景图 PNG 原图 1.89 MB → WebP 132 KB（按代码实际使用的 820px 宽导出）；
+  图标 139 KB(480px，实为 JPEG 却叫 `.png`) → 16 KB(256px `icon.jpg`)；
+  无任何代码引用的 `yui横.png` 506 KB → 46 KB WebP 留档。
+- 打包范围：`exclude_dirs` 增加 `games/tarot/data`、`static/cards`；
+  `exclude_files` 增加大数据明文 JSON。发布包构成：代码 ~1 MB + `static/index.html`
+  228 KB + UI 素材 288 KB + `.gz` 数据 132 KB。
+
+### 测试
+
+- 新增 `tests/test_asset_store.py`（11 项）、`tests/test_datafile.py`（5 项）；
+  `tests/test_help_render.py` 增加"素材路径注入优先"用例。
+  全量 **211 passed**，ruff 全绿。
+
+## v0.5.9 (2026-09)
+
+> 该版本尝试放宽帮助图交付宽度（宿主原生气泡 280px 上限），随后**决定保持原样并撤回**：
+> 改动见 revert 提交，结论记录在 `docs/pitfalls.md` §2.6（markdown 通路可突破上限但会
+> 超出气泡白底，取舍待定）。
+
 ## v0.5.8 (2026-09)
 
 **一句话主题**：修掉线上「一句两答」——用户可见推送不再走 `ai_behavior="read"`，

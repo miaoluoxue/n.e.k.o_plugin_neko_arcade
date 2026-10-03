@@ -10,7 +10,7 @@ keywords = ["game", "游戏", "小游戏", "mini-games", "fun", "play", "玩", "
             "中国象棋", "四子棋", "围棋", "国际象棋", "西洋棋",
             "钓鱼", "海龟汤", "猜硬币", "俄罗斯轮盘", "人生重开", "修仙", "塔罗牌",
             "猫猫进化", "历史上的今天"]
-version = "0.5.8"
+version = "0.5.10"
 entry = "plugin.plugins.neko_arcade:NekoArcadePlugin"
 
 [plugin.author]
