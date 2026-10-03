@@ -490,3 +490,35 @@ self.plugin.push_message(..., target_lanlan=target or None)
 - [ ] 配置项读到 0/false 时要显式判空，别用 `or` 吞掉（§14）
 - [ ] 注释/文档不出现任何参考项目名
 - [ ] 需要的插件能力先查 [rules.md §2.5 桥接表](rules.md)，**主插件能做的不要游戏自己做**
+
+---
+
+## 17. 发布坑：本地全绿、CI 却红（2026-10 v0.5.10 实际踩到）
+
+**现象**：本地 `pytest` + `ruff` 全绿，推 tag 后 CI 在 *Ruff check* / *Release check* 失败。
+
+两个原因都跟"本地环境和 CI 不一样"有关：
+
+1. **ruff 规则集不同** — CI 用的是
+   `ruff check --ignore-noqa --isolated --target-version py311 --line-length 120 --select E4,E7,E9,F,I`
+   （`--isolated` = **忽略仓库 ruff.toml**，且选了 **E7**）。
+   仓库 `ruff.toml` 没选 E7，所以 `mb = lambda n: ...`（**E731**）本地不报、CI 报。
+   → 发版前跑一次上面这条**原命令**（本地 `plugin-repo` 不存在会有个 E902，忽略即可）。
+
+2. **测试依赖"仓库里有的东西"，CI 干净 checkout 里没有** —
+   塔罗牌面已外置（不进仓库/不进包），CI checkout 后 `games/tarot/data/` 是空的，
+   于是 `assert len(images) >= 3` 直接失败。
+   → 规则：**测试不许依赖"仓库里有素材"**。要么用桩文件（`_local_scan_dir` 指到临时目录），
+   要么按"素材就位与否"分别断言（就地出图 / 优雅降级），见 `tests/test_tarot_e2e.py`
+   的 `_assets_ready()` 与 `test_card_image_*`。
+
+**发版前自查清单**：
+
+```powershell
+python -m ruff check --ignore-noqa --isolated --target-version py311 --line-length 120 `
+       --select E4,E7,E9,F,I --exclude vendor plugin-repo .
+python -m pytest tests/ -q                 # 有素材态
+# 再模拟一次"干净 checkout"（临时移走大素材目录）跑一遍：
+Rename-Item games\tarot\data data.hidden; python -m pytest tests/ -q; Rename-Item data.hidden data
+python tools\estimate_package_size.py -v    # 包体自查
+```
