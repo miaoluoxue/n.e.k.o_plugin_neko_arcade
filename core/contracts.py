@@ -33,10 +33,11 @@ class GameAdapter(abc.ABC):
         self._llm: Any = None
         self._photo: Any = None
         self._render: Any = None
+        self._assets: Any = None
 
     def bind_services(self, push=None, img=None, tts=None, llm=None,
                       photo=None, render=None, companion=None,
-                      llm_gateway=None) -> None:
+                      llm_gateway=None, assets=None) -> None:
         """绑定插件服务（由注册表在注册时调用），游戏可通过 self 调用。
 
         photo: PhotoBridge 实例(插件主体通用发图桥接), 游戏可用 self.send_photo
@@ -65,6 +66,23 @@ class GameAdapter(abc.ABC):
         if llm_gateway is not None:
             #: 本体统一的 LLM 入口(场景缓存/限流/统计), 由 call_llm 内部使用
             self._llm_gateway = llm_gateway
+        if assets is not None:
+            #: 外部素材库(首次运行从 Git 源下载大素材并缓存) —— 游戏用 self.asset_path()
+            self._assets = assets
+
+    async def asset_path(self, rel: str) -> Optional[Any]:
+        """取外部素材的本地路径（首次调用会下载）。
+
+        素材（如塔罗牌面 251MB）不进插件包：包内只有 manifest，
+        首次运行按需下载到缓存目录并校验 sha256。
+        返回 None 表示暂时拿不到（离线/未启用）——调用方应回退占位图，不要报错。
+        """
+        if not self._assets:
+            return None
+        try:
+            return await self._assets.ensure(rel)
+        except Exception:  # noqa: BLE001 - 取素材失败绝不能影响对局
+            return None
 
     # ── 发图桥接(插件主体通用能力) ─────────
 

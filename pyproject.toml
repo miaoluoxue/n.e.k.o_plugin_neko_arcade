@@ -17,6 +17,11 @@ exclude_dirs = [
     ".tmp_push_sender_test",
     # 喵图相册图库: 用户上传/自建的图**绝不进包**(打包发布默认空图库)
     "games/neko_photo/data",
+    # 塔罗牌面 251MB PNG: 不进包 —— 首次运行从素材源下载到缓存
+    # (见 adapters/asset_store.py; 包内只留 games/tarot/assets.manifest.json)
+    "games/tarot/data",
+    # 渲染产物落盘缓存(旧宿主 markdown 图片通道用), 属于运行时数据不该发布
+    "static/cards",
 ]
 exclude_files = [
     ".gitignore",

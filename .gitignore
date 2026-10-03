@@ -20,3 +20,11 @@ store.db
 
 # 喵图相册图库: 用户上传/自建的图不进包(正式位置在宿主私有存储, 这里只是兜底)
 games/neko_photo/data/
+
+# 塔罗牌面 251MB: 不进仓库/不进包 —— 外部素材源下载到用户缓存
+# (素材本体见 assets 分支/Gitee, 清单 games/tarot/assets.manifest.json 才是入库内容)
+games/tarot/data/
+
+# 运行时产物: 渲染出的卡片/帮助图缓存(旧宿主 markdown 图片通道落盘在这里)
+static/cards/
+cache/

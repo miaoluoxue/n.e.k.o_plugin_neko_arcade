@@ -52,7 +52,8 @@ class GameRegistry:
             game.enabled = bool(states.get(game.id, True))
         game.bind_services(self._push, self._img, self._tts, self._llm, self._photo,
                            render=self._render, companion=self._companion,
-                           llm_gateway=self._llm_gateway)
+                           llm_gateway=self._llm_gateway,
+                           assets=getattr(self, "_assets", None))
         self._games[game.id] = game
         log.info("已注册游戏: %s (%s)%s", game.name, game.id,
                  "" if game.enabled else " [停用]")

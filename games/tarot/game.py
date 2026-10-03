@@ -136,7 +136,7 @@ class TarotGame(GameAdapter):
         up = random.random() < 0.5
         meaning = card["meaning"]["up"] if up else card["meaning"]["down"]
         name_cn = card.get("name_cn", card_key)
-        image = self._card_image(card)
+        image = await self._card_image(card)
 
         lines = [f"🔮 {name_cn}「{'正位' if up else '逆位'}」"]
         lines.append(f"含义: {meaning}")
@@ -185,7 +185,7 @@ class TarotGame(GameAdapter):
                 rep = f"切牌「{rep}」"
             lines.append(f"\n{rep}: {name_cn}「{'正位' if up else '逆位'}」")
             lines.append(f"   {meaning}")
-            img = self._card_image(card)
+            img = await self._card_image(card)
             if img:
                 images.append({**img, "text": f"{rep}: {name_cn}"})
             facts.append(build_fact("tarot", card=name_cn, position="up" if up else "down",
@@ -217,30 +217,54 @@ class TarotGame(GameAdapter):
             return override
         return _DATA_DIR
 
-    def _card_image(self, card: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        """从游戏 data 目录读牌面图 bytes, 返回 images 元素(交 brain 推送)。
+    async def _card_image(self, card: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """取牌面图 bytes, 返回 images 元素(交 brain 推送)。
 
-        文件路径: data/<主题>/<Type>/<pic>.<png|jpg>。pic 字段与文件名匹配
-        (如大阿卡纳 0-愚者, 小阿卡纳 圣杯-01)。
+        路径: <主题>/<Type>/<pic>.<ext>（pic 如大阿卡纳 `0-愚者`、小阿卡纳 `圣杯-01`）。
+
+        素材来源（v0.5.10 起牌面不再打进插件包, 251MB → 首次运行按需下载）：
+        1. **本地代码目录** `data/<主题>/<Type>/<pic>.<png|jpg|webp>`（开发期直接放文件）；
+        2. **外部素材库** `self.asset_path("tarot/<主题>/<Type>/<pic>.webp")`
+           —— 缓存命中直接用，没有就下载并校验 sha256；
+        3. 都拿不到 → 返回 None（调用方照旧出文字，不报错）。
         """
         ttype = card.get("type", "MajorArcana")
         pic = card.get("pic", "")
         if not pic:
             return None
+        # ① 本地代码目录（开发/离线兜底）
         base = os.path.join(self._data_root(), self._theme, ttype)
-        for cand in (".png", ".jpg", ".jpeg"):
+        for cand in (".png", ".jpg", ".jpeg", ".webp"):
             p = os.path.join(base, pic + cand)
             if os.path.exists(p):
-                try:
-                    with open(p, "rb") as f:
-                        raw = f.read()
-                    if raw:
-                        return {"bytes": raw,
-                                "mime": "image/png" if cand == ".png" else "image/jpeg",
-                                "text": card.get("name_cn", "")}
-                except OSError:
-                    return None
+                got = self._read_image_file(p, card)
+                if got:
+                    return got
+        # ② 外部素材库（首次会下载，之后走缓存）
+        rel = f"tarot/{self._theme}/{ttype}/{pic}.webp"
+        path = await self.asset_path(rel)
+        if path is not None:
+            got = self._read_image_file(str(path), card, mime="image/webp")
+            if got:
+                return got
         return None
+
+    @staticmethod
+    def _read_image_file(p: str, card: Dict[str, Any],
+                         mime: str = "") -> Optional[Dict[str, Any]]:
+        """读一张牌面图；失败返回 None（缺图不该影响抽牌结果）。"""
+        try:
+            with open(p, "rb") as f:
+                raw = f.read()
+        except OSError:
+            return None
+        if not raw:
+            return None
+        if not mime:
+            ext = os.path.splitext(p)[1].lower()
+            mime = {"png": "image/png", "webp": "image/webp"}.get(ext.lstrip("."),
+                                                                "image/jpeg")
+        return {"bytes": raw, "mime": mime, "text": card.get("name_cn", "")}
 
     # ── 状态 / 面板 ───────────────────────
 

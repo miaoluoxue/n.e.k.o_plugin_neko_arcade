@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from typing import Any, Dict, Optional
 
 from ..adapters import ImageRenderer, LLMProvider, PhotoBridge, PushSender, TTSClient
@@ -27,6 +28,8 @@ class ArcadeRuntime:
         self.registry = GameRegistry(plugin, self.cfg_mgr)
         self.llm = LLMProvider(15)
         self.llm_gateway: Any = None
+        #: 外部素材库（塔罗牌面等大素材不进包，首次运行按需下载到缓存）
+        self.assets: Any = None
         self.push = PushSender(plugin)
         self.img = ImageRenderer()
         self.tts = TTSClient(plugin)
@@ -93,6 +96,18 @@ class ArcadeRuntime:
         self.registry._tts = self.tts
         self.registry._llm = self.llm
         self.registry._photo = self.photo
+        # 外部素材库：塔罗牌面等大素材不进包 → 首次运行后台拉一次，之后走本地缓存。
+        # 配置: asset_base_url(主源) / asset_mirrors(备源) / asset_auto_download /
+        #       asset_prefetch / asset_cache_mb
+        from adapters.asset_store import build_store_from_cfg
+        self.assets = build_store_from_cfg(
+            self.plugin, self.cfg,
+            bundled_manifest=os.path.join(self._code_dir(), "games", "tarot",
+                                          "assets.manifest.json"),
+            logger=log)
+        self.registry._assets = self.assets
+        if self.cfg.get("asset_prefetch", True):
+            self.assets.start_prefetch()
         count = await self.registry.discover()
         self._register_dynamic_llm_tool()
         self._tick_task = asyncio.create_task(self._tick_loop())
@@ -271,6 +286,11 @@ class ArcadeRuntime:
         log.info("未配置自建 LLM, 情感渲染用模板兜底(对话由宿主按 summary 演绎)")
 
     async def shutdown(self) -> None:
+        if self.assets is not None:
+            try:
+                await self.assets.stop()      # 取消后台资源预热
+            except Exception as exc:          # noqa: BLE001
+                log.debug("资源预热取消异常: %s", exc)
         if self._tick_task:
             self._tick_task.cancel()
             self._tick_task = None
