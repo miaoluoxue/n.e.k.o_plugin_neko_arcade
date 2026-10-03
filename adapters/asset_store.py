@@ -309,5 +309,21 @@ def build_store_from_cfg(plugin: Any, cfg: Dict[str, Any], *,
         mirrors = [mirrors]
     urls: List[str] = [u for u in [base, *mirrors] if str(u).strip()]
     enabled = cfg.get("asset_auto_download", True)
-    return AssetStore(plugin, base_urls=urls or None, bundled_manifest=bundled_manifest,
-                      enabled=bool(enabled), logger=logger)
+    store = AssetStore(plugin, base_urls=urls or None, bundled_manifest=bundled_manifest,
+                       enabled=bool(enabled), logger=logger)
+    set_active_store(store)
+    return store
+
+
+#: 进程内"当前素材库"。渲染器/发图桥等功能模块按需取用（插件是单实例，
+#: 省掉一层构造参数传递；没有 store 时它们照旧只读本地文件）。
+_ACTIVE_STORE: Optional["AssetStore"] = None
+
+
+def set_active_store(store: Optional["AssetStore"]) -> None:
+    global _ACTIVE_STORE
+    _ACTIVE_STORE = store
+
+
+def active_store() -> Optional["AssetStore"]:
+    return _ACTIVE_STORE

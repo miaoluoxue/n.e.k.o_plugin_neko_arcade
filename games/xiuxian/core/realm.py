@@ -17,21 +17,19 @@
 
 from __future__ import annotations
 
-import json
 import random
 from pathlib import Path
 from typing import Any, Dict, List
+
+from ....core.datafile import read_json
 
 _LEVELS_DIR = Path(__file__).resolve().parent.parent / "data" / "levels"
 
 
 def _load(name: str) -> List[Dict[str, Any]]:
-    try:
-        with open(_LEVELS_DIR / name, encoding="utf-8") as f:
-            data = json.load(f)
-        return data if isinstance(data, list) else []
-    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
-        return []
+    # 优先读 <name>.gz（包里只发布压缩版，见 core/datafile.py）
+    data = read_json(_LEVELS_DIR / name, [])
+    return data if isinstance(data, list) else []
 
 
 REALMS: List[Dict[str, Any]] = _load("练气境界.json")

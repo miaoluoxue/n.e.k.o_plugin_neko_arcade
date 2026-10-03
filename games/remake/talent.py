@@ -1,8 +1,8 @@
-import json
 import random
 from collections.abc import Iterator
 from pathlib import Path
 
+from ...core.datafile import read_json
 from .property import Property
 from .utils import parse_condition
 
@@ -50,7 +50,8 @@ class TalentManager:
         self.grade_prob = [0.889, 0.1, 0.01, 0.001]
 
     def load(self, path: Path):
-        data: dict = json.load(path.open("r", encoding="utf8"))
+        # 优先读 <path>.gz（包里只发布压缩版，见 core/datafile.py）
+        data: dict = read_json(path, {})
         talent_list: list[Talent] = [Talent(data) for data in data.values()]
         self.talent_dict = {
             i: [t for t in talent_list if t.grade == i] for i in range(self.grade_count)

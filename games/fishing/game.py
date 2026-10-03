@@ -18,13 +18,13 @@
 
 from __future__ import annotations
 
-import json
 import os
 import random
 from datetime import date
 from typing import Any, Dict, List, Optional
 
 from ...core.contracts import GameAdapter
+from ...core.datafile import read_json
 from .data import (
     BAITS,
     RARITY_LABELS,
@@ -37,12 +37,11 @@ _DATA = None
 
 
 def _load_fishdata() -> Dict[str, Any]:
-    """惰性加载鱼池数据（从导出的 fishdata.json）。"""
+    """惰性加载鱼池数据（优先 fishdata.json.gz，包里只发布压缩版）。"""
     global _DATA
     if _DATA is None:
         path = os.path.join(os.path.dirname(__file__), "fishdata.json")
-        with open(path, encoding="utf-8") as f:
-            _DATA = json.load(f)
+        _DATA = read_json(path, {})
     return _DATA
 
 

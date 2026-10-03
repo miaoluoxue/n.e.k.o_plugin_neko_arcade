@@ -254,10 +254,37 @@ class HelpRenderer:
                 "group_cmds": self.group_cmds, "flat_cmds": self.flat_cmds}
 
     # ── 对外主入口 ────────────────────────────────────────
+    async def _prepare_assets(self) -> None:
+        """把主题素材(头像/背景/立绘/徽章)就位。
+
+        包体里**不再带图片**：本地有就用本地（开发环境/旧包升级），
+        没有就按 ``AssetResolver.ASSET_IDS`` 从素材源下载补齐到缓存
+        —— 首次运行由这里自动完成，之后走本地缓存。
+        素材拿不到不阻断渲染（主题会优雅降级）。
+        """
+        try:
+            from ...adapters.asset_store import active_store
+        except Exception:  # noqa: BLE001 - 独立运行时（测试）没有适配层
+            return
+        store = active_store()
+        if store is None:
+            return
+        mapping: Dict[str, str] = {}
+        for key, asset_id in AssetResolver.ASSET_IDS.items():
+            try:
+                path = await store.ensure(asset_id)
+            except Exception as exc:  # noqa: BLE001
+                log.debug("素材 %s 就位失败: %s", asset_id, exc)
+                continue
+            if path is not None:
+                mapping[key] = str(path)
+        self.assets.set_paths(mapping)
+
     async def render(self, doc: HelpDoc, page: Page, theme: str = "light",
                      use_cache: bool = True) -> List[bytes]:
         """渲染一个寻址结果(可能多页)。无浏览器/失败时返回空列表。"""
         self._refresh_layout()
+        await self._prepare_assets()
         theme = self._pick_theme(doc, theme)
         payloads = self._build_pages(doc, page)
         out: List[bytes] = []
@@ -275,6 +302,7 @@ class HelpRenderer:
         这是渲染桥接的底座: 游戏永远不写 HTML/CSS, 只描述要展示什么。
         """
         self._refresh_layout()
+        await self._prepare_assets()
         theme_name = self._pick_theme(HelpDoc(theme=str(spec.get("theme") or "")), theme)
         png = await self._render_one(self._spec_page(spec), theme_name, use_cache)
         return [png] if png else []

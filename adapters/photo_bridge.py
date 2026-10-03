@@ -244,12 +244,29 @@ class PhotoBridge:
             return avatar
         if local:
             return random.choice(local)
-        return self._default_photo()
+        return await self._default_photo()
 
-    def _default_photo(self, prefer_category: str = "") -> Optional[Dict[str, Any]]:
-        """插件自带的默认图(猫娘图标) —— 不属于图库, 不随上传增长, 不进包之外的东西。"""
-        for rel in ("assets/icon.png", "static/img/yui-hero.webp", "static/img/logo-icon.png"):
+    async def _default_photo(self, prefer_category: str = "") -> Optional[Dict[str, Any]]:
+        """插件自带的默认图（猫娘图标/立绘）。
+
+        **包体里不再带图片**：本地有就用本地（开发环境），没有就从素材源
+        首次运行下载补齐（`ui/icon.webp` / `panel/yui-hero.webp` / `panel/logo-icon.png`）。
+        """
+        candidates = (
+            ("assets/icon.jpg", "ui/icon.webp"),
+            ("static/img/yui-hero.webp", "panel/yui-hero.webp"),
+            ("static/img/logo-icon.png", "panel/logo-icon.webp"),
+        )
+        try:
+            from .asset_store import active_store
+            store = active_store()
+        except Exception:  # noqa: BLE001
+            store = None
+        for rel, asset_id in candidates:
             path = Path(getattr(self.plugin, "config_dir", "") or "") / rel
+            if not path.is_file() and store is not None:
+                got = await store.ensure(asset_id)      # 首次运行会下载补齐
+                path = Path(got) if got is not None else path
             if not path.is_file():
                 continue
             try:
@@ -258,7 +275,9 @@ class PhotoBridge:
                 continue
             if not data:
                 continue
-            mime = "image/webp" if path.suffix.lower() == ".webp" else "image/png"
+            suffix = path.suffix.lower()
+            mime = {"webp": "image/webp", "jpg": "image/jpeg",
+                    "jpeg": "image/jpeg"}.get(suffix.lstrip("."), "image/png")
             return {"bytes": data, "mime": mime, "style": "calm", "rarity": "common",
                     "source": "default", "category": prefer_category or "默认",
                     "path": str(path)}

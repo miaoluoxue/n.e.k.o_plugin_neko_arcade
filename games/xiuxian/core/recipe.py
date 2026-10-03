@@ -9,22 +9,19 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from ....core.datafile import read_json
 from .player import PlayerSave
 
 _ITEMS_DIR = Path(__file__).resolve().parent.parent / "data" / "items"
 
 
 def _load_list(name: str) -> List[Dict[str, Any]]:
-    try:
-        with open(_ITEMS_DIR / name, encoding="utf-8") as f:
-            data = json.load(f)
-        return data if isinstance(data, list) else []
-    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
-        return []
+    # 优先读 <name>.gz（包里只发布压缩版，见 core/datafile.py）
+    data = read_json(_ITEMS_DIR / name, [])
+    return data if isinstance(data, list) else []
 
 
 class RecipeCatalog:

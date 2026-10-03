@@ -39,4 +39,19 @@ exclude_files = [
     "docs/rules.md",
     "docs/pitfalls.md",
     "docs/ARCHITECTURE.md",
+    # 大数据 JSON: 仓库里保留明文(开发/审阅/再生成), **发布只带 .json.gz**
+    # —— minify+gzip 后 2.59MB → 0.17MB(省 94%); 运行时由 core/datafile.py
+    #    优先读 <name>.gz 透明解压。改数据后跑 tools/compress_data_json.py 重新生成。
+    "games/remake/resources/data/*.json",
+    "games/xiuxian/data/items/*.json",
+    "games/xiuxian/data/levels/*.json",
+    "games/fishing/fishdata.json",
+    # 图片素材一律不进包: 首次运行从素材源(Gitee 主源)自动下载补齐到缓存。
+    # 对应 ASSET_IDS 见 core/help/themes.py；清单 assets.manifest.json 随包兜底。
+    #   assets/icon.jpg + assets/media/*  → ui/     (帮助图头像/背景)
+    #   static/img/*                      → panel/  (立绘/徽章; 面板 HTML 不引用图片)
+    # 新增素材时: 跑 tools/build_asset_manifest.py 生成清单 → 传 Gitee → 在这里补一行。
+    "assets/icon.jpg",
+    "assets/media/*",
+    "static/img/*",
 ]

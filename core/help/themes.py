@@ -6,8 +6,8 @@ token 逐字取自官方 UI Kit 样式表
 亮色 ``:root`` / 暗色 ``prefers-color-scheme: dark``。帮助图因此与官方托管 UI 同款长相。
 
 素材(全部来自插件自身, 离线可用, 渲染时以 data URI 内联):
-- ``assets/icon.png``            猫娘图标 → 头像
-- ``assets/media/yui竖.png``     汉服猫娘云海 → 整页背景
+- ``assets/icon.jpg``            猫娘图标 → 头像
+- ``assets/media/yui竖.webp``     汉服猫娘云海 → 整页背景
 - ``static/img/yui-hero.webp``   透明抠图 → 右下角立绘
 - ``static/img/logo-icon.png``   插件徽章 → 页脚品牌
 """
@@ -89,10 +89,20 @@ def icon_glyph(name: str, override: Optional[Dict[str, str]] = None) -> str:
 class AssetResolver:
     """把插件素材解析成可内联的 data URI(带缓存与降采样)。"""
 
+    #: 素材在"外部素材库"里的 id —— 包体里不再带图片，首次运行时按这些 id
+    #: 从素材源(Gitee 主源/GitHub 兜底)下载补齐到缓存；本地已有则直接用本地。
+    #: 见 adapters/asset_store.py 与 core/help/renderer.py::_prepare_assets()
+    ASSET_IDS: Dict[str, str] = {
+        "avatar": "ui/icon.webp",           # 猫娘图标 → 头像
+        "bg": "ui/media/yui竖.webp",         # 整页背景
+        "mascot": "panel/yui-hero.webp",     # 右下角立绘
+        "brand": "panel/logo-icon.webp",     # 页脚徽章
+    }
+
     SPEC = {
         # key: (相对路径, 最大宽度, JPEG 质量 or None, 是否强制丢 alpha)
-        "avatar": ("assets/icon.png", 256, None, False),         # 猫娘图标 → 头像
-        "bg": ("assets/media/yui竖.png", 820, 86, True),         # 整页背景(丢 alpha 转 JPEG)
+        "avatar": ("assets/icon.jpg", 256, None, False),           # 猫娘图标 → 头像
+        "bg": ("assets/media/yui竖.webp", 820, 86, True),          # 整页背景(丢 alpha 转 JPEG)
         "mascot": ("static/img/yui-hero.webp", 320, None, False),  # 透明抠图 → 保留 alpha
         "brand": ("static/img/logo-icon.png", 64, None, False),   # 页脚徽章
     }
@@ -101,12 +111,23 @@ class AssetResolver:
         self.code_dir = code_dir or ""
         self.cache_dir = cache_dir or ""
         self._memo: Dict[str, str] = {}
+        #: 由 renderer 解析后注入的"素材已就位路径"（优先于 code_dir 里的相对路径）。
+        #: 正常来自 AssetStore：本地有就用本地，没有就首次运行从 Gitee 下载到缓存。
+        self._paths: Dict[str, str] = {}
         if self.cache_dir:
             try:
                 os.makedirs(self.cache_dir, exist_ok=True)
             except OSError as exc:      # 只读环境不致命: 退化为每次现算
                 log.debug("帮助素材缓存目录不可写: %s", exc)
                 self.cache_dir = ""
+
+    def set_paths(self, mapping: Dict[str, str]) -> None:
+        """注入素材的实际文件路径（AssetStore 解析结果）。路径变了要清 memo。"""
+        fresh = {k: v for k, v in (mapping or {}).items() if v}
+        if not fresh:
+            return
+        self._paths.update(fresh)
+        self._memo.clear()
 
     # ── 对外 ──────────────────────────────────────────────
     def uri(self, key: str) -> str:
@@ -116,7 +137,9 @@ class AssetResolver:
         spec = self.SPEC.get(key)
         uri = ""
         if spec:
-            path = os.path.join(self.code_dir, spec[0].replace("/", os.sep))
+            located = self._paths.get(key) or spec[0]
+            path = located if os.path.isabs(located) \
+                else os.path.join(self.code_dir, str(located).replace("/", os.sep))
             if os.path.isfile(path):
                 uri = self._encode(path, key, spec[1], spec[2],
                                    spec[3] if len(spec) > 3 else False) or ""
