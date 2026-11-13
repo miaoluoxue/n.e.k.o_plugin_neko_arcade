@@ -1,6 +1,6 @@
 [project]
 name = "neko_arcade"
-version = "0.6.0"
+version = "0.6.1"
 description = "N.E.K.O mini-games hub: catgirl plays fishing, turtle-soup, coin-flip and more."
 requires-python = ">=3.11"
 license = "Apache-2.0"
@@ -12,6 +12,7 @@ exclude_dirs = [
     ".venv",
     ".pytest_cache",
     ".ruff_cache",
+    "release-notes",
     "tests",
     ".tmp_*_test",
     ".tmp_neko_photo_test",
