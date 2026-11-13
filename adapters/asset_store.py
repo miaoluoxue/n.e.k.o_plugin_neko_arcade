@@ -118,6 +118,9 @@ class AssetStore:
         parts = raw.split("/")
         if any(part in ("", ".", "..") for part in parts):
             raise ValueError("asset path contains an unsafe segment")
+        if any(re.search(r'[<>:"|?*\x00-\x1f]', part)
+               or part.endswith((".", " ")) for part in parts):
+            raise ValueError("asset path contains Windows-reserved characters")
         normalized = "/".join(parts)
         if len(normalized) > 500 or "\x00" in normalized:
             raise ValueError("asset path is invalid")

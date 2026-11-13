@@ -20,7 +20,9 @@ import importlib.util
 import io
 import logging
 import os
+import shutil
 import sys
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 log = logging.getLogger("neko_arcade.image")
@@ -47,20 +49,33 @@ INK = (61, 51, 40)
 INK2 = (138, 122, 102)
 
 BRAND_FOOTER = "N.E.K.O 猫娘小游戏"
-_CJK_FONT_CANDIDATES = [
-    r"C:\Windows\Fonts\msyh.ttc",
-    r"C:\Windows\Fonts\msyhbd.ttc",
-    r"C:\Windows\Fonts\simhei.ttf",
-    r"C:\Windows\Fonts\simsun.ttc",
-    r"C:\Windows\Fonts\Deng.ttf",
-]
+
+
+def _font_candidates() -> List[str]:
+    """按运行环境定位 CJK 字体，不写死盘符或用户目录。"""
+    names = ("msyh.ttc", "msyhbd.ttc", "simhei.ttf", "simsun.ttc", "Deng.ttf")
+    roots = [
+        os.environ.get("WINDIR", ""),
+        os.environ.get("SystemRoot", ""),
+    ]
+    local = os.environ.get("LOCALAPPDATA", "")
+    candidates: List[str] = []
+    for root in roots:
+        if root:
+            candidates.extend(str(Path(root) / "Fonts" / name) for name in names)
+    if local:
+        candidates.extend(
+            str(Path(local) / "Microsoft" / "Windows" / "Fonts" / name)
+            for name in names
+        )
+    return candidates
 
 
 def _load_cjk_font(size: int):
     """加载支持中文的字体（PIL 默认字体不含 CJK，会渲染成方框）。"""
     try:
         from PIL import ImageFont
-        for path in _CJK_FONT_CANDIDATES:
+        for path in _font_candidates():
             if os.path.exists(path):
                 try:
                     return ImageFont.truetype(path, size)
@@ -536,9 +551,12 @@ class ImageRenderer:
         内置 Playwright Chromium 不可用时, 退到系统已装浏览器。
         """
         env = os.environ
+        browser_names = ("google-chrome", "google-chrome-stable", "chromium",
+                         "chromium-browser", "microsoft-edge")
+        found = [path for name in browser_names if (path := shutil.which(name))]
         if sys.platform == "win32":
-            bases = [env.get("ProgramFiles", r"C:\Program Files"),
-                     env.get("ProgramFiles(x86)", r"C:\Program Files (x86)"),
+            bases = [env.get("ProgramFiles", ""),
+                     env.get("ProgramFiles(x86)", ""),
                      env.get("LOCALAPPDATA", "")]
             rels = [
                 r"Google\Chrome\Application\chrome.exe",
@@ -546,15 +564,18 @@ class ImageRenderer:
                 r"Microsoft\Edge\Application\msedge.exe",
                 r"Chromium\Application\chrome.exe",
             ]
-            return [os.path.join(b, r) for b in bases if b for r in rels]
+            return found + [os.path.join(b, r) for b in bases if b for r in rels]
         if sys.platform == "darwin":
-            apps = ["/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-                    "/Applications/Chromium.app/Contents/MacOS/Chromium",
-                    "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge"]
-            return apps
-        return ["/usr/bin/google-chrome", "/usr/bin/google-chrome-stable",
-                "/usr/bin/chromium", "/usr/bin/chromium-browser",
-                "/usr/bin/microsoft-edge", "/snap/bin/chromium"]
+            app_roots = [Path(os.sep) / "Applications", Path.home() / "Applications"]
+            apps = []
+            for root in app_roots:
+                apps.extend([
+                    str(root / "Google Chrome.app/Contents/MacOS/Google Chrome"),
+                    str(root / "Chromium.app/Contents/MacOS/Chromium"),
+                    str(root / "Microsoft Edge.app/Contents/MacOS/Microsoft Edge"),
+                ])
+            return found + apps
+        return found
 
     @classmethod
     def _host_browser_hint(cls) -> Optional[str]:

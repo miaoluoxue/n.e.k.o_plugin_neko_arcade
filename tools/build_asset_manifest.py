@@ -4,7 +4,7 @@
 
     python tools/build_asset_manifest.py                       # 塔罗(默认 948px 原尺寸)
     python tools/build_asset_manifest.py --max-side 720        # 再降一档, 体积更小
-    python tools/build_asset_manifest.py --out D:\\assets       # 指定输出目录
+    python tools/build_asset_manifest.py --out <目录>           # 指定输出目录
     python tools/build_asset_manifest.py \
         --category tarot=games/tarot/data \
         --category arcade/cat_evolution=games/cat_evolution/assets
@@ -68,7 +68,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="导出素材 + 生成 manifest")
     ap.add_argument("--category", action="append", default=None,
                     metavar="分类=路径", help="可重复；默认 tarot=games/tarot/data")
-    ap.add_argument("--out", default=r"E:\pythonxx\tkry\tarot-assets")
+    ap.add_argument("--out", default=str(REPO.parent / f"{REPO.name}-assets"))
     ap.add_argument("--quality", type=int, default=82, help="WebP 质量(默认 82)")
     ap.add_argument("--max-side", type=int, default=0, help="最长边上限(0=保持原尺寸)")
     ap.add_argument("--bundled-manifest", default=str(REPO / "assets.manifest.json"),

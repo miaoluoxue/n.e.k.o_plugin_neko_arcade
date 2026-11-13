@@ -147,6 +147,8 @@ def test_rejects_path_traversal_and_non_https_sources():
         assert store.base_urls == ["https://primary/"]
         assert await store.ensure("../outside.webp") is None
         assert await store.ensure("tarot/../../outside.webp") is None
+        assert await store.ensure(f"{chr(67)}:/outside.webp") is None
+        assert await store.ensure("tarot/card.webp:stream") is None
         assert not (tmp / "outside.webp").exists()
 
     asyncio.run(run())

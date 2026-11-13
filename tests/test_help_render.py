@@ -166,11 +166,12 @@ def test_launch_chain_prefers_host_environment(monkeypatch) -> None:
     chain = ImageRenderer._launch_kwargs_chain()
     assert chain[0] == {"headless": True}
     assert "executable_path" not in chain[0]
+    mocked_browser = str("mock-host-browser")
     monkeypatch.setattr(ImageRenderer, "_find_chromium",
-                        classmethod(lambda cls: r"C:\host\chrome.exe"))
+                        classmethod(lambda cls: mocked_browser))
     chain2 = ImageRenderer._launch_kwargs_chain()
     assert chain2[0] == {"headless": True}
-    assert chain2[1]["executable_path"] == r"C:\host\chrome.exe"
+    assert chain2[1]["executable_path"] == mocked_browser
 
 
 def test_launch_chain_without_any_browser(monkeypatch) -> None:
