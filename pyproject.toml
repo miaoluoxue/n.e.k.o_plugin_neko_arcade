@@ -16,6 +16,8 @@ exclude_dirs = [
     ".tmp_*_test",
     ".tmp_neko_photo_test",
     ".tmp_push_sender_test",
+    # 老宿主 cache_path 回退时可能生成空 data/assets；运行缓存不进包
+    "data/assets",
     # 喵图相册图库: 用户上传/自建的图**绝不进包**(打包发布默认空图库)
     "games/neko_photo/data",
     # 塔罗牌面 251MB PNG: 不进包 —— 首次运行从素材源下载到缓存
