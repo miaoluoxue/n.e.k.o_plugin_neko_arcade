@@ -6,8 +6,8 @@
 素材**首次运行按需下载**到 `plugin.cache_path("assets")`，之后一直走本地缓存。
 
 设计要点：
-- **manifest 双份**：远端（Gitee/GitHub 上的 `manifest.json`，换素材不用重发插件）
-  优先，拉不到就用插件内置的 `games/tarot/assets.manifest.json` 兜底。
+- **manifest 双份**：随插件发布的 `assets.manifest.json` 是信任根，固定每个文件
+  的 sha256/大小；只有没有内置清单时才读取远端清单兜底。
 - **多源回退**：`base_urls` 依次尝试；每个源失败自动换下一个。
 - **完整性**：下载后核对 `sha256` + 字节数，不匹配就丢弃重试（绝不用坏图）。
 - **不阻塞宿主**：下载在线程池里跑（`asyncio.to_thread`），并发上限默认 3；
@@ -22,6 +22,7 @@ import asyncio
 import hashlib
 import json
 import os
+import re
 import time
 import urllib.error
 import urllib.parse
@@ -41,6 +42,8 @@ MANIFEST_NAME = "manifest.json"
 DEFAULT_TIMEOUT = 30.0
 DEFAULT_CONCURRENCY = 3
 DEFAULT_RETRIES = 2
+DEFAULT_MAX_ASSET_BYTES = 64 * 1024 * 1024
+DEFAULT_MAX_MANIFEST_BYTES = 2 * 1024 * 1024
 
 #: 分类 → 插件代码目录里的对应子目录。
 #: 用途：**本地优先** —— 素材若仍随包（图标/面板图这类小件），就不必再下载；
@@ -64,8 +67,11 @@ class AssetStore:
         self.plugin = plugin
         self.log = logger
         self.enabled = bool(enabled)
-        self.base_urls: List[str] = [u.rstrip("/") + "/" for u in
-                                     (base_urls or DEFAULT_BASE_URLS) if u]
+        self.base_urls: List[str] = []
+        for raw in base_urls or DEFAULT_BASE_URLS:
+            base = self._normalize_base_url(str(raw or ""))
+            if base and base not in self.base_urls:
+                self.base_urls.append(base)
         self._cache_root = Path(cache_dir) if cache_dir else self._default_cache_dir()
         self._bundled_manifest = Path(bundled_manifest) if bundled_manifest else None
         self._local_map: Dict[str, str] = dict(local_map or DEFAULT_LOCAL_MAP)
@@ -93,9 +99,33 @@ class AssetStore:
     def cache_root(self) -> Path:
         return self._cache_root
 
+    @staticmethod
+    def _normalize_base_url(raw: str) -> str:
+        """素材源只接受无凭据、无查询参数的 HTTPS 根地址。"""
+        parsed = urllib.parse.urlsplit(str(raw or "").strip())
+        if (parsed.scheme.lower() != "https" or not parsed.hostname
+                or parsed.username or parsed.password or parsed.query or parsed.fragment):
+            return ""
+        path = parsed.path.rstrip("/") + "/"
+        return urllib.parse.urlunsplit(("https", parsed.netloc, path, "", ""))
+
+    @staticmethod
+    def _safe_rel(rel: str) -> str:
+        """规范化清单/缓存相对路径，拒绝绝对路径和任何 .. 穿越。"""
+        raw = str(rel or "").replace("\\", "/").strip()
+        if not raw or raw.startswith("/"):
+            raise ValueError("asset path must be relative")
+        parts = raw.split("/")
+        if any(part in ("", ".", "..") for part in parts):
+            raise ValueError("asset path contains an unsafe segment")
+        normalized = "/".join(parts)
+        if len(normalized) > 500 or "\x00" in normalized:
+            raise ValueError("asset path is invalid")
+        return normalized
+
     def local_path(self, rel: str) -> Path:
         """某资源在本地缓存里的路径（不保证已存在）。"""
-        return self._cache_root / rel.replace("\\", "/")
+        return self._cache_root.joinpath(*self._safe_rel(rel).split("/"))
 
     def local_mirror(self, rel: str) -> Optional[Path]:
         """同一份素材若仍随插件包（代码目录），返回那个本地文件路径。
@@ -104,31 +134,54 @@ class AssetStore:
         只有代码目录里没有的大块头（塔罗牌面）才走网络。
         扩展名会尝试 .png/.jpg/.webp（本地可能是 png，素材源统一 webp）。
         """
-        rel = rel.replace("\\", "/")
+        try:
+            rel = self._safe_rel(rel)
+        except ValueError:
+            return None
         category, _, tail = rel.partition("/")
         sub = self._local_map.get(category)
         code_dir = getattr(self.plugin, "plugin_dir", None)
         if not sub or not tail or not code_dir:
             return None
         base = Path(str(code_dir)) / sub / tail
+        code_root = Path(str(code_dir)).resolve()
         for cand in (base, base.with_suffix(".png"), base.with_suffix(".jpg"),
                      base.with_suffix(".jpeg")):
-            if cand.is_file():
+            try:
+                safe = cand.resolve().is_relative_to(code_root)
+            except OSError:
+                safe = False
+            if safe and cand.is_file():
                 return cand
         return None
 
     # ── manifest ──────────────────────────────────────
 
     async def manifest(self) -> Dict[str, Any]:
-        """取 manifest：远端优先，失败用内置兜底（都为空时返回 {}）。"""
+        """取 manifest：内置清单是信任根，远端只作无内置时的兜底。"""
         if self._manifest is not None:
             return self._manifest
-        data = await asyncio.to_thread(self._load_remote_manifest)
+        data = self._load_bundled_manifest()
         if not data:
-            data = self._load_bundled_manifest()
+            data = await asyncio.to_thread(self._load_remote_manifest)
         self._manifest = data or {}
-        self._index = {str(f.get("path")): f for f in self._manifest.get("files", [])
-                       if isinstance(f, dict) and f.get("path")}
+        index: Dict[str, Dict[str, Any]] = {}
+        for item in self._manifest.get("files", []):
+            if not isinstance(item, dict):
+                continue
+            try:
+                rel = self._safe_rel(str(item.get("path") or ""))
+                size = int(item.get("size", -1))
+                digest = str(item.get("sha256") or "").lower()
+            except (TypeError, ValueError):
+                self._log("warning", "忽略非法素材清单项: %r", item)
+                continue
+            if (not 0 < size <= DEFAULT_MAX_ASSET_BYTES
+                    or re.fullmatch(r"[0-9a-f]{64}", digest) is None):
+                self._log("warning", "忽略缺少大小/哈希的素材清单项: %s", rel)
+                continue
+            index[rel] = {**item, "path": rel, "size": size, "sha256": digest}
+        self._index = index
         if self._index:
             self._log("info", "资源清单就绪: %d 项, 共 %.1f MB (源: %s)",
                       len(self._index), self._manifest.get("total_size", 0) / 1024 / 1024,
@@ -137,7 +190,8 @@ class AssetStore:
 
     def _load_remote_manifest(self) -> Optional[Dict[str, Any]]:
         for base in self.base_urls:
-            blob = self._fetch(base + MANIFEST_NAME)
+            blob = self._fetch(base + MANIFEST_NAME,
+                               max_bytes=DEFAULT_MAX_MANIFEST_BYTES)
             if not blob:
                 continue
             try:
@@ -173,7 +227,12 @@ class AssetStore:
         """
         if not self.enabled or not rel:
             return None
-        rel = rel.replace("\\", "/")
+        try:
+            rel = self._safe_rel(rel)
+        except ValueError as exc:
+            self._log("warning", "拒绝不安全素材路径 %r: %s", rel, exc)
+            self.stats["fail"] += 1
+            return None
         # ① 随包的本地素材优先（小件不下载、离线可用）
         local = self.local_mirror(rel)
         if local is not None:
@@ -181,15 +240,11 @@ class AssetStore:
             return local
         target = self.local_path(rel)
         entry = (await self.manifest()).get("files") and self._index.get(rel)
-        if target.is_file() and entry and target.stat().st_size == int(entry.get("size", -1)):
-            self.stats["hit"] += 1
-            return target
-        if target.is_file() and not entry:
-            # 清单里没有（例如开发期直接放进缓存）→ 有就用
+        if entry and target.is_file() and self._file_matches(target, entry):
             self.stats["hit"] += 1
             return target
         if not entry:
-            self._log("debug", "资源不在清单里: %s", rel)
+            self._log("warning", "资源不在有效清单里: %s", rel)
             self.stats["fail"] += 1
             return None
         async with self._sem:
@@ -203,17 +258,24 @@ class AssetStore:
     def _download_one(self, rel: str, entry: Dict[str, Any]) -> bool:
         """下载单个资源并校验（同步，跑在线程池里）。"""
         want_size = int(entry.get("size", -1))
-        want_sha = str(entry.get("sha256") or "")
+        want_sha = str(entry.get("sha256") or "").lower()
+        if not 0 < want_size <= DEFAULT_MAX_ASSET_BYTES:
+            self._log("warning", "资源大小无效，拒绝下载: %s", rel)
+            return False
+        if re.fullmatch(r"[0-9a-f]{64}", want_sha) is None:
+            self._log("warning", "资源缺少有效 sha256，拒绝下载: %s", rel)
+            return False
         quoted = urllib.parse.quote(rel)
         for attempt in range(DEFAULT_RETRIES + 1):
             for base in self.base_urls:
-                blob = self._fetch(base + quoted, timeout=DEFAULT_TIMEOUT)
+                blob = self._fetch(base + quoted, timeout=DEFAULT_TIMEOUT,
+                                   max_bytes=want_size)
                 if not blob:
                     continue
-                if want_size >= 0 and len(blob) != want_size:
+                if len(blob) != want_size:
                     self._log("warning", "资源大小不符 %s: %d != %d", rel, len(blob), want_size)
                     continue
-                if want_sha and hashlib.sha256(blob).hexdigest() != want_sha:
+                if hashlib.sha256(blob).hexdigest() != want_sha:
                     self._log("warning", "资源 sha256 不符，丢弃: %s", rel)
                     continue
                 try:
@@ -231,8 +293,28 @@ class AssetStore:
         self._log("warning", "资源下载失败: %s", rel)
         return False
 
-    def _fetch(self, url: str, timeout: float = DEFAULT_TIMEOUT) -> Optional[bytes]:
+    @staticmethod
+    def _file_matches(path: Path, entry: Dict[str, Any]) -> bool:
+        try:
+            if path.stat().st_size != int(entry.get("size", -1)):
+                return False
+            digest = hashlib.sha256()
+            with path.open("rb") as handle:
+                for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                    digest.update(chunk)
+            return digest.hexdigest() == str(entry.get("sha256") or "").lower()
+        except OSError:
+            return False
+
+    def _fetch(self, url: str, timeout: float = DEFAULT_TIMEOUT,
+               max_bytes: int = DEFAULT_MAX_ASSET_BYTES) -> Optional[bytes]:
         """GET 一个 URL（尊重 HTTPS_PROXY 环境变量，失败返回 None）。"""
+        parsed = urllib.parse.urlsplit(url)
+        if parsed.scheme.lower() != "https" or not parsed.hostname:
+            self._log("warning", "拒绝非 HTTPS 素材地址: %s", url)
+            return None
+        if max_bytes <= 0:
+            return None
         try:
             opener = urllib.request.build_opener(
                 urllib.request.ProxyHandler({
@@ -241,7 +323,20 @@ class AssetStore:
                 }))
             req = urllib.request.Request(url, headers={"User-Agent": "neko-arcade/1.0"})
             with opener.open(req, timeout=timeout) as resp:
-                return resp.read()
+                final = urllib.parse.urlsplit(resp.geturl())
+                if final.scheme.lower() != "https" or not final.hostname:
+                    self._log("warning", "素材下载重定向到了非 HTTPS 地址: %s", resp.geturl())
+                    return None
+                data = bytearray()
+                while True:
+                    chunk = resp.read(min(1024 * 1024, max_bytes + 1 - len(data)))
+                    if not chunk:
+                        break
+                    data.extend(chunk)
+                    if len(data) > max_bytes:
+                        self._log("warning", "素材超过大小上限 %d: %s", max_bytes, url)
+                        return None
+                return bytes(data)
         except urllib.error.HTTPError as exc:
             self._log("debug", "HTTP %s: %s", exc.code, url)
         except Exception as exc:  # noqa: BLE001 - 断网/超时/DNS 都当"这个源不可用"

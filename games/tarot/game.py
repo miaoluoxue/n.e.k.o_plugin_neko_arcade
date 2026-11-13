@@ -140,6 +140,8 @@ class TarotGame(GameAdapter):
 
         lines = [f"🔮 {name_cn}「{'正位' if up else '逆位'}」"]
         lines.append(f"含义: {meaning}")
+        if image is None:
+            lines.append("(素材下载失败，本次先看文字牌意喵)")
         if not up:
             lines.append("(牌面已倒转~)")
         msg = "\n".join(lines)
@@ -175,6 +177,7 @@ class TarotGame(GameAdapter):
         lines = [f"🔮 牌阵: {fname}"]
         images = []
         facts = []
+        missing_images = 0
         for i, key in enumerate(chosen):
             card = pool[key]
             up = random.random() < 0.5
@@ -188,8 +191,12 @@ class TarotGame(GameAdapter):
             img = await self._card_image(card)
             if img:
                 images.append({**img, "text": f"{rep}: {name_cn}"})
+            else:
+                missing_images += 1
             facts.append(build_fact("tarot", card=name_cn, position="up" if up else "down",
                                     position_name=rep, meaning=meaning))
+        if missing_images:
+            lines.append(f"\n({missing_images} 张牌面素材下载失败，本次先看文字牌意喵)")
 
         return {"facts": facts, "outcome": "divine",
                 "message": "\n".join(lines), "images": images}

@@ -95,6 +95,7 @@ def test_tarot_single_card():
             # 素材未就位（CI/首次运行前）→ 不出图也不能报错，文字结果照常
             assert r.get("images") == [], r
             assert r["message"].strip(), r
+            assert "素材下载失败" in r["message"], r
 
     asyncio.run(run())
 
@@ -128,6 +129,7 @@ def test_tarot_divine():
             assert len(r["images"]) >= 3, r
         else:
             assert r.get("images") == [], r
+            assert "素材下载失败" in r["message"], r
 
     asyncio.run(run())
 

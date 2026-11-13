@@ -17,11 +17,13 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import re
 import shutil
 from pathlib import Path
 
 from plugin.plugins.neko_arcade.adapters.asset_store import (
     DEFAULT_BASE_URLS,
+    DEFAULT_MAX_ASSET_BYTES,
     AssetStore,
 )
 
@@ -52,11 +54,12 @@ class _Fetcher:
         self.responses = responses
         self.calls: list[str] = []
 
-    def __call__(self, url: str, timeout: float = 0.0) -> bytes | None:
+    def __call__(self, url: str, timeout: float = 0.0,
+                 max_bytes: int = 0) -> bytes | None:
         self.calls.append(url)
         for prefix, body in self.responses.items():
             if url.startswith(prefix):
-                return body
+                return body if not max_bytes or len(body) <= max_bytes else None
         return None
 
 
@@ -99,6 +102,9 @@ def test_sha_mismatch_is_rejected():
         assert await store.ensure("tarot/ba/card.webp") is None
         assert not (tmp / "cache" / "tarot" / "ba" / "card.webp").exists()
         assert store.stats["fail"] == 1
+        assert sum("/tarot/" in url for url in bad.calls) == 6, (
+            "两个源各重试两次（共三次尝试）"
+        )
 
     asyncio.run(run())
 
@@ -124,6 +130,62 @@ def test_unknown_path_returns_none():
         f = _Fetcher({"https://primary/manifest.json": _manifest_bytes()})
         store = _store(tmp, f)
         assert await store.ensure("tarot/ba/not-in-manifest.webp") is None
+
+    asyncio.run(run())
+
+
+def test_rejects_path_traversal_and_non_https_sources():
+    async def run():
+        tmp = _tmp_dir("traversal")
+        f = _Fetcher({"https://primary/manifest.json": _manifest_bytes()})
+        store = AssetStore(
+            object(),
+            cache_dir=str(tmp / "cache"),
+            base_urls=["file:///tmp/assets", "http://primary/", "https://primary/"],
+        )
+        store._fetch = f            # type: ignore[assignment]
+        assert store.base_urls == ["https://primary/"]
+        assert await store.ensure("../outside.webp") is None
+        assert await store.ensure("tarot/../../outside.webp") is None
+        assert not (tmp / "outside.webp").exists()
+
+    asyncio.run(run())
+
+
+def test_manifest_requires_size_and_sha256():
+    async def run():
+        tmp = _tmp_dir("manifest-integrity")
+        bad_manifest = json.dumps({
+            "files": [
+                {"path": "tarot/no-hash.webp", "size": 10},
+                {"path": "tarot/no-size.webp", "sha256": SHA},
+                {"path": "../escape.webp", "sha256": SHA, "size": 10},
+            ],
+        }).encode()
+        f = _Fetcher({"https://primary/manifest.json": bad_manifest})
+        store = _store(tmp, f)
+        assert await store.ensure("tarot/no-hash.webp") is None
+        assert await store.ensure("tarot/no-size.webp") is None
+        assert await store.ensure("../escape.webp") is None
+        assert store.snapshot()["files"] == 0
+
+    asyncio.run(run())
+
+
+def test_existing_cache_is_rehashed_before_hit():
+    async def run():
+        tmp = _tmp_dir("cache-rehash")
+        f = _Fetcher({"https://primary/manifest.json": _manifest_bytes(),
+                      "https://primary/tarot/": PAYLOAD})
+        store = _store(tmp, f)
+        target = tmp / "cache" / "tarot" / "ba" / "card.webp"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(b"X" * len(PAYLOAD))
+
+        got = await store.ensure("tarot/ba/card.webp")
+        assert got == target
+        assert target.read_bytes() == PAYLOAD
+        assert store.stats["download"] == 1, "同大小但哈希不对的缓存必须重下"
 
     asyncio.run(run())
 
@@ -156,11 +218,34 @@ def test_bundled_manifest_fallback():
     asyncio.run(run())
 
 
+def test_bundled_manifest_is_trust_root_over_remote_manifest():
+    """远端清单不能替换随插件发布的哈希与文件列表。"""
+    async def run():
+        tmp = _tmp_dir("bundled-trust-root")
+        bundled = tmp / "assets.manifest.json"
+        bundled.write_bytes(_manifest_bytes())
+        remote_bad = _manifest_bytes(sha="0" * 64)
+        f = _Fetcher({
+            "https://primary/manifest.json": remote_bad,
+            "https://primary/tarot/": PAYLOAD,
+        })
+        store = _store(tmp, f, bundled_manifest=str(bundled))
+
+        got = await store.ensure("tarot/ba/card.webp")
+        assert got is not None and got.read_bytes() == PAYLOAD
+        assert store._manifest["_source"] == "bundled"
+        assert not any(url.endswith("/manifest.json") for url in f.calls), (
+            "有内置清单时不应信任远端清单"
+        )
+
+    asyncio.run(run())
+
+
 def test_local_code_dir_wins_before_download():
     """开发期代码目录里有图 → 不该联网（塔罗本地兜底优先，见 game._card_image）。"""
     async def run():
         tmp = _tmp_dir("local")
-        f = _Fetcher({})
+        f = _Fetcher({"https://primary/manifest.json": _manifest_bytes()})
         store = _store(tmp, f)
         # 缓存目录里直接放一份（等价于"开发期已就位"）
         target = tmp / "cache" / "tarot" / "ba" / "card.webp"
@@ -179,6 +264,24 @@ def test_default_sources_prefer_gitee_then_github():
     assert DEFAULT_BASE_URLS[0].startswith("https://gitee.com/")
     assert any("raw.githubusercontent.com" in u for u in DEFAULT_BASE_URLS)
     assert all(u.endswith("/") for u in DEFAULT_BASE_URLS), "base url 必须带结尾斜杠才能拼路径"
+
+
+def test_bundled_manifest_is_complete_and_pinned():
+    """发布清单必须逐项带合法大小与 sha256；素材更新后忘记同步会在这里失败。"""
+    manifest = json.loads(
+        (Path(__file__).resolve().parent.parent / "assets.manifest.json")
+        .read_text(encoding="utf-8")
+    )
+    files = manifest.get("files") or []
+    assert manifest["count"] == len(files)
+    assert manifest["total_size"] == sum(int(item["size"]) for item in files)
+    seen = set()
+    for item in files:
+        rel = AssetStore._safe_rel(item["path"])
+        assert rel not in seen
+        seen.add(rel)
+        assert 0 < int(item["size"]) <= DEFAULT_MAX_ASSET_BYTES
+        assert re.fullmatch(r"[0-9a-f]{64}", item["sha256"])
 
 
 class _FakePlugin:

@@ -16,8 +16,8 @@
     <out>/arcade/cat_evolution/xxx.webp    # 又一类
 
 插件侧只需 `self.asset_path("<分类>/<相对路径>")` 就能取到（首次下载 + 缓存 + 校验）。
-换素材流程：改 → 跑本脚本 → 把 <out> 内容推到 Gitee → 完事（插件不用改代码，
-远端 manifest 优先，插件内置的那份只是离线兜底）。
+换素材流程：改 → 跑本脚本 → 把 <out> 内容推到 Gitee → 一起提交
+`assets.manifest.json`。内置清单是信任根，远端文件哈希不匹配会直接拒绝。
 """
 from __future__ import annotations
 
@@ -71,6 +71,8 @@ def main() -> int:
     ap.add_argument("--out", default=r"E:\pythonxx\tkry\tarot-assets")
     ap.add_argument("--quality", type=int, default=82, help="WebP 质量(默认 82)")
     ap.add_argument("--max-side", type=int, default=0, help="最长边上限(0=保持原尺寸)")
+    ap.add_argument("--bundled-manifest", default=str(REPO / "assets.manifest.json"),
+                    help="同步写入仓库的信任根清单路径")
     args = ap.parse_args()
 
     pairs = args.category or ["tarot=games/tarot/data"]
@@ -115,12 +117,16 @@ def main() -> int:
         "total_size": total_out,
         "files": entries,
     }
-    (out_root / "manifest.json").write_text(
-        json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    encoded = json.dumps(manifest, ensure_ascii=False, indent=2) + "\n"
+    (out_root / "manifest.json").write_text(encoded, encoding="utf-8")
+    bundled = Path(args.bundled_manifest)
+    bundled.parent.mkdir(parents=True, exist_ok=True)
+    bundled.write_text(encoded, encoding="utf-8")
 
     print(f"合计 {len(entries)} 张: {_mb(total_src)} MB → {_mb(total_out)} MB "
           f"(省 {100 - total_out * 100 // max(total_src, 1)}%)")
     print("输出目录:", out_root)
+    print("内置信任根清单:", bundled)
     print("分类:", ", ".join(n for n, _ in categories))
     return 0
 

@@ -522,3 +522,30 @@ python -m pytest tests/ -q                 # 有素材态
 Rename-Item games\tarot\data data.hidden; python -m pytest tests/ -q; Rename-Item data.hidden data
 python tools\estimate_package_size.py -v    # 包体自查
 ```
+
+---
+
+## 18. 外部素材的信任根必须是插件内清单
+
+远端素材仓库只能存放二进制图片，**不能把远端 `manifest.json` 当成唯一信任源**：
+远端可以同时替换清单和文件，单看远端哈希无法发现篡改。
+
+固定规则：
+
+- 插件内提交 `assets.manifest.json`，作为路径、大小和 SHA-256 的信任根；
+- 只有插件内没有清单时，才读取远端清单兜底；
+- 下载地址只允许 HTTPS；路径必须是相对路径，任何 `..`、绝对路径和空段都拒绝；
+- 每个文件都必须有有效大小和合法 SHA-256，单文件默认上限 64 MiB；
+- 缓存命中也要重新计算哈希；大小相同但内容被替换时必须重下；
+- 失败重试一两次即可，最终只影响当前图片，游戏回退纯文字/占位图并提示
+  “素材下载失败”；
+- 默认按需下载，不启动整套素材预热。素材改为 WebP 后再上传。
+
+换素材时运行：
+
+```powershell
+python tools\build_asset_manifest.py --max-side 720
+```
+
+该工具会同时更新上传目录的 `manifest.json` 和仓库内的 `assets.manifest.json`；
+两者必须一起提交，否则新图会被旧哈希拦住。
