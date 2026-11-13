@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 
 from plugin.plugins.neko_arcade.core.brain import GameBrain
+from plugin.plugins.neko_arcade.core.session import SessionKey
 
 
 class _FakeMood:
@@ -45,10 +46,10 @@ class _FakePersona:
 
 
 class _FakeMemory:
-    async def register_play(self, gid):
+    async def register_play(self, gid, **kw):
         pass
 
-    def record(self, gid, outcome, facts, msg):
+    def record(self, gid, outcome, facts, msg, **kw):
         pass
 
     async def bump_stat(self, *a, **k):
@@ -272,3 +273,19 @@ def test_pending_switch_is_isolated_per_user():
     assert brain.pending_switch_for("alice") is not None
     assert brain.session_game("alice") == "fishing"
     assert brain.session_game("bob") == "xiuxian"
+
+
+def test_pending_switch_is_isolated_by_channel_for_same_user():
+    brain, fishing, xiuxian = _make_brain(current=None)
+    qq = SessionKey("qq", "alice")
+    web = SessionKey("web", "alice")
+    asyncio.run(brain.handle_action("fishing", "钓鱼", {}, session=qq))
+    asyncio.run(brain.handle_action("xiuxian", "修仙", {}, session=web))
+
+    asyncio.run(brain.handle_action("xiuxian", "修仙", {}, session=qq))
+    assert brain.pending_switch_for(qq)["to"] == "xiuxian"
+    assert brain.pending_switch_for(web) is None
+
+    asyncio.run(brain.handle_action("xiuxian", "继续", {}, session=web))
+    assert brain.pending_switch_for(qq) is not None
+    assert brain.session_game(qq) == "fishing"

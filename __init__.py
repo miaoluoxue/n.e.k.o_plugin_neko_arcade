@@ -16,6 +16,8 @@ from plugin.sdk.plugin import (
     plugin_entry,
 )
 
+from .core.session import SessionKey, resolve_session_key
+
 PUSH_SOURCE = "neko_arcade"
 STORE_PREFIX = "game_user_data"
 
@@ -28,6 +30,16 @@ class NekoArcadePlugin(NekoPluginBase):
         super().__init__(ctx)
         self.logger = self.enable_file_logging(log_level="INFO")
         self.rt: Any = None
+
+    def _session_for(self, kwargs: Any = None) -> SessionKey:
+        """从宿主本次调用的 ``_ctx`` 解析 (channel,user_id)，缺用户则单人模式。"""
+        values = kwargs if isinstance(kwargs, dict) else {}
+        context = values.get("_ctx")
+        host_ctx = getattr(self.ctx, "_host_ctx", None) or self.ctx
+        return resolve_session_key(
+            context if isinstance(context, dict) else {},
+            host_context=host_ctx,
+        )
 
     # ui.context 由 plugin.toml 静态配置，装饰器在运行时动态注册
     async def ctx_dashboard(self) -> dict:
@@ -71,7 +83,7 @@ class NekoArcadePlugin(NekoPluginBase):
         活跃"来判断是否应该动作, 避免插件在无人聊天时刷屏或发图。
         """
         if self.rt and self.rt.brain:
-            await self.rt.brain.on_owner_speak()
+            await self.rt.brain.on_owner_speak(self._session_for(_))
         return Ok({"status": "observed"})
 
     async def store_get_user(self, game_id: str, user_id: str, default: Any = None) -> Any:
@@ -133,6 +145,7 @@ class NekoArcadePlugin(NekoPluginBase):
                               switch_to: str = "", args: dict = None, **_) -> Any:
         if not self.rt or not self.rt.brain:
             return Err(SdkError("猫娘小游戏还没准备好"))
+        session = self._session_for(_)
         args = dict(args or {})
         switch_to = str(switch_to or args.get("switch_to") or "").strip()
         if switch_to:
@@ -155,7 +168,7 @@ class NekoArcadePlugin(NekoPluginBase):
                     return Err(SdkError(f"没有找到游戏「{game}」喵"))
                 self.logger.warning(
                     "[play_game] game=%r 不是已知游戏，改用 input=%r 路由", game, raw)
-                game_id, cmd = self.rt.parse_input(raw)
+                game_id, cmd = self.rt.parse_input(raw, session)
                 if not game_id:
                     return Err(SdkError(
                         f"没有找到匹配的游戏喵，试试：{self.rt.registry.game_names()}"))
@@ -163,17 +176,18 @@ class NekoArcadePlugin(NekoPluginBase):
                 game_id, cmd = game_obj.id, (cmd or "")
         elif cmd:
             # 只给了 cmd（没有 game）：按原话路由
-            game_id, cmd = self.rt.parse_input(str(cmd))
+            game_id, cmd = self.rt.parse_input(str(cmd), session)
             if not game_id:
                 return Err(SdkError(
                     f"没有找到匹配的游戏喵，试试：{self.rt.registry.game_names()}"))
         else:
-            game_id, cmd = self.rt.parse_input(input or "")
+            game_id, cmd = self.rt.parse_input(input or "", session)
             if not game_id:
                 return Err(SdkError(
                     f"没有找到匹配的游戏喵，试试：{self.rt.registry.game_names()}"))
-        user_id = getattr(self.ctx, "user_id", "default") or "default"
-        result = await self.rt.brain.handle_action(game_id, cmd, args, user_id)
+        result = await self.rt.brain.handle_action(
+            game_id, cmd, args, session
+        )
         # 兜底：确保返回给宿主的 dict 一定带可读 summary（宿主按 llm_result_fields 提取）
         if isinstance(result, dict):
             result.setdefault("summary",
@@ -187,7 +201,7 @@ class NekoArcadePlugin(NekoPluginBase):
     async def entry_start_game(self, game: str = "", **_) -> Any:
         if not self.rt or not self.rt.brain:
             return Err(SdkError("猫娘小游戏还没准备好"))
-        result = await self.rt.brain.start_game(game)
+        result = await self.rt.brain.start_game(game, self._session_for(_))
         return Ok(result)
 
     @plugin_entry(id="stop_game", name="停止游戏", description="停止当前游戏会话。",
@@ -196,7 +210,7 @@ class NekoArcadePlugin(NekoPluginBase):
     async def entry_stop_game(self, **_) -> Any:
         if not self.rt or not self.rt.brain:
             return Err(SdkError("猫娘小游戏还没准备好"))
-        result = await self.rt.brain.stop_game()
+        result = await self.rt.brain.stop_game(self._session_for(_))
         return Ok(result)
 
     @plugin_entry(id="game_status", name="游戏状态", description="查看小游戏当前状态。",
@@ -208,7 +222,7 @@ class NekoArcadePlugin(NekoPluginBase):
         game_obj = self.rt.registry.get(game) or self.rt.registry.get_by_name(game)
         if not game_obj:
             return Err(SdkError(f"没有找到游戏「{game}」喵"))
-        user_id = getattr(self.ctx, "user_id", "default") or "default"
+        user_id = self._session_for(_).storage_id
         status = await game_obj.get_status(user_id)
         return Ok({"game": game_obj.id, "status": status})
 
@@ -395,10 +409,13 @@ class NekoArcadePlugin(NekoPluginBase):
         if not self.rt:
             return Ok({"games": [], "statuses": {}, "brain": {}, "started": False,
                        "token_stats": {}})
-        user_id = getattr(self.ctx, "user_id", "default") or "default"
+        session = self._session_for(_)
+        user_id = session.storage_id
         games = self.rt.registry.get_meta_list(with_help=True)
         statuses = await self.rt.registry.get_statuses(user_id)
-        brain_snap = await self.rt.brain.snapshot() if self.rt.brain else {}
+        brain_snap = (
+            await self.rt.brain.snapshot(session) if self.rt.brain else {}
+        )
         enabled = self.rt.registry.enabled_ids()
         # token 统计: LLMProvider 内存快照(最新)优先, 无则读 store 落盘
         token_stats = {}
@@ -459,7 +476,10 @@ class NekoArcadePlugin(NekoPluginBase):
             "required": ["input"],
         },
     )
-    async def tool_play_game(self, input: str, switch_to: str = "") -> Any:
+    async def tool_play_game(
+        self, input: str, switch_to: str = "",
+        _ctx: dict[str, Any] | None = None,
+    ) -> Any:
         """play_game LLM 工具处理器（@llm_tool 静态注册, SDK 启动自动注册）。
 
         auto=True: 多轮状态机游戏(如人生重开)由 AI 代玩时一次调用走完随机流程,
@@ -468,13 +488,15 @@ class NekoArcadePlugin(NekoPluginBase):
         if not self.rt:
             return {"error": "猫娘小游戏还没准备好"}
         result = await self.entry_play_game(
-            input=input, switch_to=switch_to, args={"auto": True})
+            input=input, switch_to=switch_to, args={"auto": True}, _ctx=_ctx)
         # 从 Ok/Err 包装中解出数据（SDK v2: Ok.value；旧版: Ok.data）
         return self.unwrap_result(result, default={"error": "游戏执行失败喵"})
 
     # ── 喵图相册: LLM 工具 + 用户上传 ─────────────────
 
-    async def tool_send_photo(self, input: str = "") -> Any:
+    async def tool_send_photo(
+        self, input: str = "", _ctx: dict[str, Any] | None = None
+    ) -> Any:
         """send_photo LLM 工具处理器（由 runtime._register_dynamic_llm_tool 注册）。
 
         猫娘在聊天中自主决定何时调用: 想分享心情/活跃气氛/给主人惊喜时,
@@ -485,7 +507,7 @@ class NekoArcadePlugin(NekoPluginBase):
         game = self.rt.registry.get("neko_photo")
         if not game:
             return {"error": "喵图相册还没加载喵"}
-        user_id = getattr(self.ctx, "user_id", "default") or "default"
+        user_id = self._session_for({"_ctx": _ctx}).storage_id
         caption = (input or "").strip()
         try:
             return await game.send_random_photo(user_id, caption=caption)
@@ -508,7 +530,7 @@ class NekoArcadePlugin(NekoPluginBase):
         game = self.rt.registry.get("neko_photo")
         if not game:
             return Err(SdkError("喵图相册还没加载喵"))
-        user_id = getattr(self.ctx, "user_id", "default") or "default"
+        user_id = self._session_for(_).storage_id
         result = await game.upload_photo(user_id, name=name, data_b64=data_b64,
                                          category=category)
         return Ok(result)
@@ -527,7 +549,7 @@ class NekoArcadePlugin(NekoPluginBase):
         game = self.rt.registry.get("neko_photo")
         if not game:
             return Err(SdkError("喵图相册还没加载喵"))
-        user_id = getattr(self.ctx, "user_id", "default") or "default"
+        user_id = self._session_for(_).storage_id
         results = []
         ok_count = 0
         dup_count = 0

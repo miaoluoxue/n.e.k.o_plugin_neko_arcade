@@ -51,7 +51,10 @@ class TarotGame(GameAdapter):
     def __init__(self, plugin: Any) -> None:
         super().__init__(plugin)
         self._data: Optional[Dict[str, Any]] = None
-        self._theme: str = "bili"
+        self._themes: Dict[str, str] = {}
+
+    def _theme_for(self, user_id: str) -> str:
+        return self._themes.get(str(user_id or "default"), "bili")
 
     # ── 数据加载 ──────────────────────────
 
@@ -65,10 +68,10 @@ class TarotGame(GameAdapter):
             self._data = {"cards": {}, "formations": {}}
         return self._data
 
-    def _card_pool(self) -> Dict[str, Dict[str, Any]]:
+    def _card_pool(self, user_id: str) -> Dict[str, Dict[str, Any]]:
         """按当前主题返回可抽的牌池(排除 Extra 王牌)。"""
         data = self._load_data()
-        types = _THEME_TYPES.get(self._theme, ["MajorArcana"])
+        types = _THEME_TYPES.get(self._theme_for(user_id), ["MajorArcana"])
         return {k: v for k, v in data.get("cards", {}).items()
                 if v.get("type") in types}
 
@@ -80,24 +83,24 @@ class TarotGame(GameAdapter):
 
         # 切换主题
         if "主题" in c:
-            return await self._switch_theme(c)
+            return await self._switch_theme(c, user_id)
 
         # 指定牌: 「塔罗牌 X」(X 为牌名/编号), 兼容「玩塔罗牌X」「来塔罗牌X」
         for prefix in ("玩塔罗牌", "来塔罗牌", "塔罗牌"):
             if c.startswith(prefix) and c != prefix:
                 rest = c[len(prefix):].strip()
                 if rest:
-                    return await self._single_card(rest)
+                    return await self._single_card(rest, user_id)
 
         # 单张: 精确启动词或含"塔罗牌/抽牌/来一张"意图
         if c in ("塔罗牌", "单张", "抽牌", "来一张"):
-            return await self._single_card("")
+            return await self._single_card("", user_id)
         if "玩塔罗牌" in c or "来玩塔罗" in c or "来张塔罗" in c or "塔罗牌" in c and c != "塔罗牌":
-            return await self._single_card("")
+            return await self._single_card("", user_id)
 
         # 占卜(牌阵)
         if any(k in c for k in ("占卜", "牌阵", "塔罗占卜")):
-            return await self._divine()
+            return await self._divine(user_id)
 
         # 空指令/帮助
         if not c or c in ("帮助", "玩法"):
@@ -109,8 +112,8 @@ class TarotGame(GameAdapter):
 
     # ── 单张牌 ────────────────────────────
 
-    async def _single_card(self, query: str) -> Dict[str, Any]:
-        pool = self._card_pool()
+    async def _single_card(self, query: str, user_id: str) -> Dict[str, Any]:
+        pool = self._card_pool(user_id)
         if not pool:
             return {"facts": [build_fact("error")], "outcome": "error",
                     "message": "塔罗牌数据还没准备好喵, 稍后再试~"}
@@ -136,7 +139,7 @@ class TarotGame(GameAdapter):
         up = random.random() < 0.5
         meaning = card["meaning"]["up"] if up else card["meaning"]["down"]
         name_cn = card.get("name_cn", card_key)
-        image = await self._card_image(card)
+        image = await self._card_image(card, user_id)
 
         lines = [f"🔮 {name_cn}「{'正位' if up else '逆位'}」"]
         lines.append(f"含义: {meaning}")
@@ -153,13 +156,13 @@ class TarotGame(GameAdapter):
 
     # ── 牌阵占卜 ──────────────────────────
 
-    async def _divine(self) -> Dict[str, Any]:
+    async def _divine(self, user_id: str) -> Dict[str, Any]:
         data = self._load_data()
         formations = data.get("formations", {})
         if not formations:
             return {"facts": [build_fact("error")], "outcome": "error",
                     "message": "牌阵数据还没准备好喵, 稍后再试~"}
-        pool = self._card_pool()
+        pool = self._card_pool(user_id)
 
         fname = random.choice(list(formations.keys()))
         formation = formations[fname]
@@ -188,7 +191,7 @@ class TarotGame(GameAdapter):
                 rep = f"切牌「{rep}」"
             lines.append(f"\n{rep}: {name_cn}「{'正位' if up else '逆位'}」")
             lines.append(f"   {meaning}")
-            img = await self._card_image(card)
+            img = await self._card_image(card, user_id)
             if img:
                 images.append({**img, "text": f"{rep}: {name_cn}"})
             else:
@@ -203,16 +206,16 @@ class TarotGame(GameAdapter):
 
     # ── 主题切换 ──────────────────────────
 
-    async def _switch_theme(self, c: str) -> Dict[str, Any]:
+    async def _switch_theme(self, c: str, user_id: str) -> Dict[str, Any]:
         for theme in THEMES:
             label = _THEME_LABELS.get(theme, theme)
             if theme.lower() in c.lower() or label in c:
-                self._theme = theme
+                self._themes[str(user_id or "default")] = theme
                 return {"facts": [build_fact("theme", theme=theme)], "outcome": "theme",
                         "message": f"已切换塔罗牌主题: {label} 喵~"}
         names = "、".join(_THEME_LABELS.get(t, t) for t in THEMES)
         return {"facts": [build_fact("theme_help")], "outcome": "theme_help",
-                "message": f"当前主题: {_THEME_LABELS.get(self._theme, self._theme)}。"
+                "message": f"当前主题: {_THEME_LABELS.get(self._theme_for(user_id), self._theme_for(user_id))}。"
                            f"说「塔罗主题 {names}」切换喵~"}
 
     # ── 图片 ──────────────────────────────
@@ -224,7 +227,9 @@ class TarotGame(GameAdapter):
             return override
         return _DATA_DIR
 
-    async def _card_image(self, card: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    async def _card_image(
+        self, card: Dict[str, Any], user_id: str = "default"
+    ) -> Optional[Dict[str, Any]]:
         """取牌面图 bytes, 返回 images 元素(交 brain 推送)。
 
         路径: <主题>/<Type>/<pic>.<ext>（pic 如大阿卡纳 `0-愚者`、小阿卡纳 `圣杯-01`）。
@@ -240,7 +245,8 @@ class TarotGame(GameAdapter):
         if not pic:
             return None
         # ① 本地代码目录（开发/离线兜底）
-        base = os.path.join(self._data_root(), self._theme, ttype)
+        theme = self._theme_for(user_id)
+        base = os.path.join(self._data_root(), theme, ttype)
         for cand in (".png", ".jpg", ".jpeg", ".webp"):
             p = os.path.join(base, pic + cand)
             if os.path.exists(p):
@@ -248,7 +254,7 @@ class TarotGame(GameAdapter):
                 if got:
                     return got
         # ② 外部素材库（首次会下载，之后走缓存）
-        rel = f"tarot/{self._theme}/{ttype}/{pic}.webp"
+        rel = f"tarot/{theme}/{ttype}/{pic}.webp"
         path = await self.asset_path(rel)
         if path is not None:
             got = self._read_image_file(str(path), card, mime="image/webp")
@@ -277,7 +283,8 @@ class TarotGame(GameAdapter):
 
     async def get_status(self, user_id: str = "default") -> Dict[str, Any]:
         data = self._load_data()
-        return {"theme": _THEME_LABELS.get(self._theme, self._theme),
+        theme = self._theme_for(user_id)
+        return {"theme": _THEME_LABELS.get(theme, theme),
                 "cards": len(data.get("cards", {})),
                 "formations": len(data.get("formations", {}))}
 

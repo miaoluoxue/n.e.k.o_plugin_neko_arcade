@@ -549,3 +549,24 @@ python tools\build_asset_manifest.py --max-side 720
 
 该工具会同时更新上传目录的 `manifest.json` 和仓库内的 `assets.manifest.json`；
 两者必须一起提交，否则新图会被旧哈希拦住。
+
+---
+
+## 19. 跨用户状态必须用 `(channel,user_id)` 作键
+
+只按裸 `user_id` 分槽仍不够：同一个账号可能同时从 QQ、网页或本地渠道进入。
+所有这些可变状态必须共用同一个会话键：
+
+- 当前游戏与最近游戏；
+- 换游戏待确认、重复回调守门；
+- 游戏实例拿到的存档 ID；
+- 台词缓存、最近台词、心情；
+- 游戏记忆、统计、主动搭话和活动时间；
+- 会话恢复与持久化。
+
+宿主 `_ctx` 提供 `channel/platform/source` 和 `user_id/actor_id` 时使用
+`SessionKey(channel, user_id)`；拿不到 `user_id` 时**整体回退单人模式**，
+不要拿 `conversation_id` 或猫娘角色名冒充玩家 ID。
+
+运行时代码同时禁止写死盘符、用户主目录或绝对安装路径。字体、浏览器和工具输出
+必须从环境变量、`shutil.which()`、宿主 API 或仓库相对路径推导。

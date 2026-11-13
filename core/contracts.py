@@ -405,11 +405,15 @@ class GameAdapter(abc.ABC):
     # ── 存档工具 ─────────────────────────────
 
     async def get_user_data(self, user_id: str, default: Any = None) -> Any:
-        """读取玩家存档。"""
+        """读取玩家存档。
+
+        大脑传入的是完整会话存档 ID（包含渠道与用户），游戏实例不得自行把
+        它截断成裸用户名，否则同一用户跨渠道仍会共用进度。
+        """
         return await self.plugin.store_get_user(self.id, user_id, default)
 
     async def save_user_data(self, user_id: str, data: Any) -> None:
-        """写入玩家存档。"""
+        """写入玩家存档；``user_id`` 同样是完整会话存档 ID。"""
         await self.plugin.store_save_user(self.id, user_id, data)
 
 

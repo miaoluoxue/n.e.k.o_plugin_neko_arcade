@@ -237,6 +237,8 @@ class Persona:
 
     def polish(self, text: str, style: Optional[Dict[str, Any]] = None) -> str:
         """拟人化修饰：结巴、语气词。"""
+        if not text:
+            return ""
         s = style or self.mood.style()
         if self._rng.random() < 0.06 + (0.08 if s.get("energy") == "high" else 0.0):
             if len(text) > 2:

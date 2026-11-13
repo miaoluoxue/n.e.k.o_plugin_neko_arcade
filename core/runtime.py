@@ -12,6 +12,7 @@ from .brain import GameBrain
 from .config_manager import ConfigManager, resolve_data_dir
 from .help import HelpRenderer, RenderBridge
 from .registry import GameRegistry
+from .session import SINGLE_SESSION, SessionLike
 
 log = logging.getLogger("neko_arcade.runtime")
 
@@ -84,7 +85,7 @@ class ArcadeRuntime:
                                self.llm, self.push, self.img, self.cfg_mgr, self.tts)
         self._wire_llm()
         # 陪伴层(带宿主猫娘人格)注入注册表 → 游戏注册时拿到
-        self.registry._companion = getattr(self.brain, "companion", None)
+        self.registry._companion = getattr(self.brain, "companion_router", None)
         # 统一 LLM 入口: 所有游戏的 call_llm 都走它(场景缓存/限流/token 统计)
         from .llm_gateway import LLMGateway
         self.llm_gateway = LLMGateway(self.llm)
@@ -190,7 +191,9 @@ class ArcadeRuntime:
         "再玩一次", "还想玩", "玩点什么", "随便玩", "来一局", "来一把", "开一局",
     )
 
-    def parse_input(self, input: str) -> tuple[Optional[str], str]:
+    def parse_input(
+        self, input: str, session: SessionLike = SINGLE_SESSION
+    ) -> tuple[Optional[str], str]:
         """解析用户输入，返回 (game_id, cmd)。
 
         规则(按优先级)：
@@ -239,7 +242,15 @@ class ArcadeRuntime:
                     return game.id, rest
             return game.id, raw
 
-        cur = self.brain.current_game if (self.brain and self.brain.current_game) else None
+        if self.brain:
+            session_game = getattr(self.brain, "session_game", None)
+            cur = (
+                session_game(session)
+                if callable(session_game)
+                else getattr(self.brain, "current_game", None)
+            )
+        else:
+            cur = None
 
         # 1. 当前游戏优先
         if cur:
@@ -262,7 +273,15 @@ class ArcadeRuntime:
             return cur, input
 
         # 4. last_game 弱指令兜底: 无会话 + 弱指令意图词 → 回最近游戏并换启动指令
-        last = self.brain.last_game if (self.brain and self.brain.last_game) else None
+        if self.brain:
+            last_getter = getattr(self.brain, "last_game", None)
+            last = (
+                last_getter(session)
+                if callable(last_getter)
+                else last_getter
+            )
+        else:
+            last = None
         if last and self.registry.get(last):
             for hint in self._WEAK_PLAY_HINTS:
                 if hint in input:

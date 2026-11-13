@@ -128,10 +128,16 @@ class BoardGame(GameAdapter):
             base.update(got)
         return base
 
-    def _companion(self) -> Any:
+    def _companion(self, user_id: str = "") -> Any:
         """陪伴层: 优先用本体注入的那份(带宿主猫娘人格); 没有才自己兜底。"""
         injected = getattr(self, "_companion_svc", None)
         if injected is not None:
+            resolver = getattr(injected, "for_session", None)
+            if callable(resolver):
+                try:
+                    return resolver(user_id or "default")
+                except Exception as exc:
+                    log.debug("按会话取陪伴层失败，使用默认实例: %s", exc)
             return injected
         if self._comp is None:
             try:
@@ -148,9 +154,10 @@ class BoardGame(GameAdapter):
                 self._comp = None
         return self._comp
 
-    async def _say(self, event: str, *, ctx: Optional[Dict[str, Any]] = None,
+    async def _say(self, user_id: str, event: str, *,
+                   ctx: Optional[Dict[str, Any]] = None,
                    user_text: str = "", situation: str = "", cache: bool = True) -> str:
-        comp = self._companion()
+        comp = self._companion(user_id)
         if comp is None:
             return ""
         try:
@@ -169,43 +176,45 @@ class BoardGame(GameAdapter):
         if isinstance(state, dict):
             state["last_ts"] = time.time()
         mode_id = str((state or {}).get("mode") or data.get("mode") or "gomoku")
-        try:
-            limit = max(0, int(self._cfg("undo_limit", 3)))
-        except (TypeError, ValueError):
-            limit = 3
-        self._undo_left = max(0, limit - int(data.get("undo_used") or 0))
-
         if any(w in c for w in _SWITCH) or ("下棋" in c and not state):
             return await self._catalog(data, user_id)
         for word, mid in MODE_WORDS.items():
             if word in c:
                 if not isinstance(state, dict) or state.get("over") or mid != mode_id:
                     return await self._new_game(data, user_id, mid)
-                return await self._pack(state, await self._say("resume", situation=self._situation(state)),
-                                  outcome="board")
+                return await self._pack(
+                    state,
+                    await self._say(user_id, "resume", situation=self._situation(state)),
+                    outcome="board", data=data)
         if isinstance(state, dict) and not state.get("over"):
             if any(w in c for w in _RESIGN):
                 return await self._finish(data, user_id, state, result="black", event="resign")
             if any(w in c for w in _UNDO):
                 return await self._undo(data, user_id, state)
             if any(w in c for w in _BOARD):
-                return await self._pack(state, await self._say("board", situation=self._situation(state)),
-                                  outcome="board")
+                return await self._pack(
+                    state,
+                    await self._say(user_id, "board", situation=self._situation(state)),
+                    outcome="board", data=data)
             mode = MODES.get(mode_id)
             move = mode.parse_move(c, state) if mode else None
             if move is not None:
                 return await self._play(data, user_id, state, mode, move)
-            reply = await self._say("chat", user_text=c, situation=self._situation(state),
+            reply = await self._say(user_id, "chat", user_text=c, situation=self._situation(state),
                                     cache=False)
-            return await self._pack(state, reply or "嗯嗯，本喵听着喵（轮到你走）",
-                              outcome="chat", facts=[{"kind": "chat", "value": c[:40]}])
+            return await self._pack(
+                state, reply or "嗯嗯，本喵听着喵（轮到你走）",
+                outcome="chat", facts=[{"kind": "chat", "value": c[:40]}],
+                data=data)
         if isinstance(state, dict) and state.get("over"):
             # 已经结束的对局: 认输/悔棋都要给"这局结束了"的准话, 不能报"没有对决"
             if any(w in c for w in _RESIGN) or any(w in c for w in _UNDO):
-                line = await self._say("board", situation=self._situation(state))
+                line = await self._say(user_id, "board", situation=self._situation(state))
                 record = self._record_line(data)
-                return await self._pack(state, f"{line}\n这局已经结束啦，{record}｜说「重开」再来一盘",
-                                        outcome="finished")
+                return await self._pack(
+                    state,
+                    f"{line}\n这局已经结束啦，{record}｜说「重开」再来一盘",
+                    outcome="finished", data=data)
         if any(w in c for w in _RESTART) or "下棋" in c:
             return await self._new_game(data, user_id, mode_id)
         if any(w in c for w in _RESIGN + _UNDO + _BOARD):
@@ -238,20 +247,21 @@ class BoardGame(GameAdapter):
         await self._save(user_id, data)
         record = self._record_line(data)
         last = self._last_result_text(data, mode_id)
-        line = await self._say("start",
+        line = await self._say(user_id, "start",
                                ctx={"event_desc": f"开局一盘{mode.NAME}；对手战绩：{record}；{last}"},
                                situation=f"{self._situation(state)}；{record}；{last}")
         head = "\n".join(x for x in (line, f"（{record}{'；' + last if last else ''}）",
                                       _HOWTO.get(mode_id, "")) if x)
-        return await self._pack(state, head, outcome="start")
+        return await self._pack(state, head, outcome="start", data=data)
 
     async def _play(self, data: Dict[str, Any], user_id: str, state: Dict[str, Any],
                     mode: Any, move: Any) -> Dict[str, Any]:
         out = mode.apply_move(state, move)
         if not out.get("ok"):
-            line = await self._say("illegal", situation=self._situation(state))
-            return await self._pack(state, line or "这步走不了喵", outcome="illegal",
-                              facts=[{"kind": "illegal"}])
+            line = await self._say(user_id, "illegal", situation=self._situation(state))
+            return await self._pack(
+                state, line or "这步走不了喵", outcome="illegal",
+                facts=[{"kind": "illegal"}], data=data)
         facts = list(out.get("facts") or [])
         event = str(out.get("event") or "player_move")
         if out.get("over"):
@@ -273,13 +283,14 @@ class BoardGame(GameAdapter):
                                                   result=str(her_out["over"]),
                                                   event=str(her_out.get("event") or "lose"),
                                                   facts=facts)
-        line = await self._say(event, ctx={"move": str(out.get("coord") or out.get("move") or ""),
+        line = await self._say(user_id, event, ctx={"move": str(out.get("coord") or out.get("move") or ""),
                                            "piece": next((f.get("piece") for f in facts
                                                           if f.get("piece")), "")},
                                situation=self._situation(state))
         data["game"] = state
         await self._save(user_id, data)
-        return await self._pack(state, line, outcome=event, facts=facts)
+        return await self._pack(
+            state, line, outcome=event, facts=facts, data=data)
 
     async def _undo(self, data: Dict[str, Any], user_id: str, state: Dict[str, Any]) -> Dict[str, Any]:
         try:
@@ -288,22 +299,24 @@ class BoardGame(GameAdapter):
             limit = 3
         moves = list(state.get("moves") or [])
         if int(data.get("undo_used") or 0) >= limit:
-            line = await self._say("undo", situation=self._situation(state))
-            return await self._pack(state, f"{line}（本局 {limit} 次悔棋都用完了喵）",
-                                    outcome="undo")
+            line = await self._say(user_id, "undo", situation=self._situation(state))
+            return await self._pack(
+                state, f"{line}（本局 {limit} 次悔棋都用完了喵）",
+                outcome="undo", data=data)
         if len(moves) < 2:
-            return await self._pack(state, "还没得悔喵～至少下两手之后再说",
-                                    outcome="undo")
+            return await self._pack(
+                state, "还没得悔喵～至少下两手之后再说",
+                outcome="undo", data=data)
         del moves[-2:]
         state["moves"] = moves
         state["over"] = ""
         state["result"] = ""
         data["undo_used"] = int(data.get("undo_used") or 0) + 1
-        self._undo_left = max(0, limit - int(data["undo_used"]))   # 撤完要重算余量
         data["game"] = state
         await self._save(user_id, data)
-        line = await self._say("undo", situation=self._situation(state))
-        return await self._pack(state, line, outcome="undo", facts=[{"kind": "undo"}])
+        line = await self._say(user_id, "undo", situation=self._situation(state))
+        return await self._pack(
+            state, line, outcome="undo", facts=[{"kind": "undo"}], data=data)
 
     async def _finish(self, data: Dict[str, Any], user_id: str, state: Dict[str, Any],
                       *, result: str, event: str,
@@ -334,13 +347,14 @@ class BoardGame(GameAdapter):
         data["undo_used"] = 0
         await self._save(user_id, data)
         key = "win" if result == "red" else ("lose" if result == "black" else "draw")
-        line = await self._say(key, situation=self._situation(state))
+        line = await self._say(user_id, key, situation=self._situation(state))
         record = (f"{mode.NAME}战绩：{stats['wins']} 胜 {stats['losses']} 负"
                   + (f" {stats['draws']} 平" if stats.get("draws") else ""))
         out_facts = list(facts or [])
         out_facts.append({"kind": key, "value": record})
         msg = f"{line}\n\n{self._situation(state)}\n{record}"
-        return await self._pack(state, msg, outcome=key, facts=out_facts)
+        return await self._pack(
+            state, msg, outcome=key, facts=out_facts, data=data)
 
     # ── 打包 ────────────────────────────────
     def _last_result_text(self, data: Dict[str, Any], mode_id: str) -> str:
@@ -374,7 +388,8 @@ class BoardGame(GameAdapter):
             return ""
 
     async def _pack(self, state: Dict[str, Any], line: str, *, outcome: str,
-                    facts: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
+                    facts: Optional[List[Dict[str, Any]]] = None,
+                    data: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """打包结果: 每步都给棋盘图(渲染桥); 出图不可用才退回文字棋盘。
 
         ⚠️ 合并棋类时这里漏过出图, 结果线上"只有文字没有棋盘图"(用户实测反馈),
@@ -383,7 +398,12 @@ class BoardGame(GameAdapter):
         mode = MODES.get(str(state.get("mode") or "gomoku"))
         lv = LEVELS.get(int(state.get("level") or 2), "正常")
         head = f"🎴 {mode.NAME}（难度 {lv}）" if mode else "🎴 棋类对弈"
-        undo_txt = f"｜悔棋剩 {getattr(self, '_undo_left', 0)} 次"
+        try:
+            limit = max(0, int(self._cfg("undo_limit", 3)))
+        except (TypeError, ValueError):
+            limit = 3
+        undo_left = max(0, limit - int((data or {}).get("undo_used") or 0))
+        undo_txt = f"｜悔棋剩 {undo_left} 次"
         msg = "\n".join(x for x in (line, f"{head}｜{self._situation(state)}{undo_txt}") if x)
         result: Dict[str, Any] = {"message": msg,
                                   "facts": list(facts or [{"kind": outcome}]),
@@ -445,7 +465,7 @@ class BoardGame(GameAdapter):
             state["last_ts"] = time.time()
             data["game"] = state
             await self._save(user_id, data)
-            line = await self._say("nudge", situation=self._situation(state), cache=False)
+            line = await self._say(user_id, "nudge", situation=self._situation(state), cache=False)
             return line                     # 推送由本体 brain 负责(游戏不自己推)
         except Exception as exc:
             log.warning("boardgame on_tick 异常: %s", exc)

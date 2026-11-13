@@ -261,14 +261,17 @@ def test_neko_photo_brain_background_tick():
                 return self._g if self._g.id == gid else None
 
         brain = GameBrain.__new__(GameBrain)  # 跳过 __init__ 的宿主加载
+        from plugin.plugins.neko_arcade.core.session import SessionKey
+
+        key = SessionKey("chat", "user_bg")
         brain.registry = FakeRegistry(game)
         brain._current_game = None
-        brain._current_user = "user_bg"
-        brain._last_activity_ts = time.time()  # 模拟主人最近说过话
+        brain._current_session = key
+        brain._last_activity_ts_by_session = {key: time.time()}
         brain._background_active_window = 900.0
 
         game._next_auto_ts = 0.0  # 立即触发
-        await brain._tick_background_games()
+        await brain._tick_background_games(key)
         assert plugin.pushes, "后台 tick 应触发自动发图"
 
     asyncio.run(run())
@@ -296,19 +299,22 @@ def test_neko_photo_brain_background_tick_activity_gate():
                 return self._g if self._g.id == gid else None
 
         brain = GameBrain.__new__(GameBrain)
+        from plugin.plugins.neko_arcade.core.session import SessionKey
+
+        key = SessionKey("chat", "user_bg")
         brain.registry = FakeRegistry(game)
         brain._current_game = None
-        brain._current_user = "user_bg"
+        brain._current_session = key
         # 主人最后一次说话是 2 小时前(超过默认 15 分钟窗口)
-        brain._last_activity_ts = time.time() - 7200.0
+        brain._last_activity_ts_by_session = {key: time.time() - 7200.0}
         brain._background_active_window = 900.0
 
         game._next_auto_ts = 0.0
-        await brain._tick_background_games()
+        await brain._tick_background_games(key)
         assert not plugin.pushes, "超窗口后不应自动发图"
         # 从未聊过天也不应发图
-        brain._last_activity_ts = 0.0
-        await brain._tick_background_games()
+        brain._last_activity_ts_by_session = {key: 0.0}
+        await brain._tick_background_games(key)
         assert not plugin.pushes, "从未活跃不应自动发图"
 
     asyncio.run(run())
@@ -324,10 +330,6 @@ def test_neko_photo_brain_on_owner_speak_refreshes_activity():
                         "send_min_interval": 0}   # 本用例测活跃窗口刷新, 关掉冷却干扰
         plugin.pushes.clear()
 
-        class FakeProactive:
-            def on_owner_speak(self):
-                pass
-
         class FakeRegistry:
             def __init__(self, g):
                 self._g = g
@@ -340,20 +342,23 @@ def test_neko_photo_brain_on_owner_speak_refreshes_activity():
                 return self._g if self._g.id == gid else None
 
         brain = GameBrain.__new__(GameBrain)
+        from plugin.plugins.neko_arcade.core.session import SessionKey
+
+        key = SessionKey("chat", "user_bg")
         brain.registry = FakeRegistry(game)
         brain._current_game = None
-        brain._current_user = "user_bg"
-        brain.proactive = FakeProactive()
-        brain._last_activity_ts = time.time() - 7200.0  # 2小时前, 已超窗口
+        brain._current_session = key
+        brain._proactive_by_session = {}
+        brain._last_activity_ts_by_session = {key: time.time() - 7200.0}
         brain._background_active_window = 900.0
 
         game._next_auto_ts = 0.0
-        await brain._tick_background_games()
+        await brain._tick_background_games(key)
         assert not plugin.pushes, "超窗口时不应自动发图"
 
         # 主人说话(@message 监听 → on_owner_speak)刷新活动时间
-        await brain.on_owner_speak()
-        await brain._tick_background_games()
+        await brain.on_owner_speak(key)
+        await brain._tick_background_games(key)
         assert plugin.pushes, "主人说话后应恢复自动发图"
 
     asyncio.run(run())

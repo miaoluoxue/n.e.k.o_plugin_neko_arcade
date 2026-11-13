@@ -5,6 +5,8 @@ from __future__ import annotations
 import time
 from typing import Any, Dict, List
 
+from .session import SINGLE_SESSION, SessionKey, SessionLike, coerce_session_key
+
 STORE_KEY = "game_memories"
 
 
@@ -13,7 +15,8 @@ class GameMemory:
 
     def __init__(self, plugin: Any) -> None:
         self.plugin = plugin
-        self._session: List[Dict[str, Any]] = []
+        self._session_by_key: Dict[SessionKey, List[Dict[str, Any]]] = {}
+        self._session = self._session_by_key.setdefault(SINGLE_SESSION, [])
         self._milestones: Dict[str, Any] = {}
 
     async def _load(self) -> Dict[str, Any]:
@@ -35,28 +38,61 @@ class GameMemory:
         if callable(is_err) and is_err():
             raise RuntimeError("游戏记忆写入失败")
 
-    def record(self, game_id: str, outcome: str, facts: List[Dict], text: str) -> None:
-        self._session.append({"ts": time.time(), "game": game_id, "outcome": outcome,
-                              "facts": facts[:5], "neko_said": text[:80]})
-        if len(self._session) > 20:
-            self._session = self._session[-20:]
+    def _profile(self, key: SessionKey) -> Dict[str, Any]:
+        profiles = self._milestones.setdefault("profiles", {})
+        if not isinstance(profiles, dict):
+            profiles = {}
+            self._milestones["profiles"] = profiles
+        if not profiles:
+            legacy_keys = {"profiles", "sessions"}
+            legacy = {
+                name: value
+                for name, value in self._milestones.items()
+                if name not in legacy_keys
+            }
+            if legacy:
+                profiles[SINGLE_SESSION.storage_id] = legacy
+        profile = profiles.get(key.storage_id)
+        if not isinstance(profile, dict):
+            profile = {}
+            profiles[key.storage_id] = profile
+        return profile
 
-    def recent_session(self, n: int = 5) -> str:
+    def _recent_for(self, key: SessionKey) -> List[Dict[str, Any]]:
+        return self._session_by_key.setdefault(key, [])
+
+    def record(self, game_id: str, outcome: str, facts: List[Dict], text: str,
+               *, session_key: SessionLike = SINGLE_SESSION) -> None:
+        key = coerce_session_key(session_key)
+        session = self._recent_for(key)
+        session.append({"ts": time.time(), "game": game_id, "outcome": outcome,
+                        "facts": facts[:5], "neko_said": text[:80]})
+        if len(session) > 20:
+            del session[:-20]
+
+    def recent_session(
+        self, n: int = 5, *, session_key: SessionLike = SINGLE_SESSION
+    ) -> str:
         lines = []
-        for e in self._session[-n:]:
+        key = coerce_session_key(session_key)
+        for e in self._recent_for(key)[-n:]:
             names = [str(f.get("name", f.get("item", ""))) for f in (e.get("facts") or []) if f.get("name") or f.get("item")]
             lines.append(f"[{e['game']}] {e['outcome']}" + (f"（{', '.join(names)}）" if names else ""))
         return "；".join(lines)
 
-    async def bump_stat(self, game_id: str, key: str, amount: int = 1) -> None:
-        m = await self._load()
-        stats = m.setdefault("stats", {}).setdefault(game_id, {})
+    async def bump_stat(self, game_id: str, key: str, amount: int = 1,
+                        *, session_key: SessionLike = SINGLE_SESSION) -> None:
+        await self._load()
+        profile = self._profile(coerce_session_key(session_key))
+        stats = profile.setdefault("stats", {}).setdefault(game_id, {})
         stats[key] = stats.get(key, 0) + amount
         await self._save()
 
-    async def set_record(self, game_id: str, key: str, value: Any, label: str = "") -> bool:
-        m = await self._load()
-        records = m.setdefault("records", {}).setdefault(game_id, {})
+    async def set_record(self, game_id: str, key: str, value: Any, label: str = "",
+                         *, session_key: SessionLike = SINGLE_SESSION) -> bool:
+        await self._load()
+        profile = self._profile(coerce_session_key(session_key))
+        records = profile.setdefault("records", {}).setdefault(game_id, {})
         old = records.get(key)
         if old is None or (isinstance(value, (int, float)) and value > old):
             records[key] = {"value": value, "label": label, "ts": time.time()}
@@ -64,32 +100,46 @@ class GameMemory:
             return True
         return False
 
-    async def record_species(self, game_id: str, name: str) -> bool:
-        m = await self._load()
-        seen = m.setdefault("species", {}).setdefault(game_id, [])
+    async def record_species(self, game_id: str, name: str,
+                             *, session_key: SessionLike = SINGLE_SESSION) -> bool:
+        await self._load()
+        profile = self._profile(coerce_session_key(session_key))
+        seen = profile.setdefault("species", {}).setdefault(game_id, [])
         if name in seen:
             return False
         seen.append(name)
         await self._save()
         return True
 
-    async def register_play(self, game_id: str) -> None:
-        m = await self._load()
-        stats = m.setdefault("stats", {}).setdefault(game_id, {})
+    async def register_play(self, game_id: str,
+                            *, session_key: SessionLike = SINGLE_SESSION) -> None:
+        await self._load()
+        profile = self._profile(coerce_session_key(session_key))
+        stats = profile.setdefault("stats", {}).setdefault(game_id, {})
         stats["plays"] = stats.get("plays", 0) + 1
         stats["last_play_ts"] = time.time()
         await self._save()
 
-    async def get_stats(self, game_id: str) -> Dict[str, Any]:
-        m = await self._load()
-        return m.get("stats", {}).get(game_id, {})
+    async def get_stats(self, game_id: str,
+                        *, session_key: SessionLike = SINGLE_SESSION) -> Dict[str, Any]:
+        await self._load()
+        return self._profile(coerce_session_key(session_key)).get(
+            "stats", {}
+        ).get(game_id, {})
 
-    async def snapshot(self) -> Dict[str, Any]:
-        m = await self._load()
+    async def snapshot(
+        self, *, session_key: SessionLike = SINGLE_SESSION
+    ) -> Dict[str, Any]:
+        await self._load()
+        key = coerce_session_key(session_key)
+        profile = self._profile(key)
         summary = {}
-        for gid, st in (m.get("stats", {}) or {}).items():
+        for gid, st in (profile.get("stats", {}) or {}).items():
             summary[gid] = {"plays": st.get("plays", 0), "last": st.get("last_play_ts")}
-        return {"games": summary, "session": self.recent_session()}
+        return {"games": summary, "session": self.recent_session(session_key=key)}
+
+    def scoped(self, session_key: SessionLike) -> "_ScopedGameMemory":
+        return _ScopedGameMemory(self, coerce_session_key(session_key))
 
     # ── 会话指针持久化（谁在玩什么，重启后能接着玩）────────────
     async def save_sessions(self, sessions: Dict[str, str]) -> None:
@@ -105,3 +155,33 @@ class GameMemory:
         if not isinstance(got, dict):
             return {}
         return {str(k): str(v) for k, v in got.items() if v}
+
+
+class _ScopedGameMemory:
+    """交给游戏的记忆代理，自动固定到当前 ``(channel,user_id)``。"""
+
+    def __init__(self, memory: GameMemory, key: SessionKey) -> None:
+        self._memory = memory
+        self._key = key
+
+    async def bump_stat(self, game_id: str, name: str, amount: int = 1) -> None:
+        await self._memory.bump_stat(
+            game_id, name, amount, session_key=self._key
+        )
+
+    async def set_record(self, game_id: str, name: str, value: Any,
+                         label: str = "") -> bool:
+        return await self._memory.set_record(
+            game_id, name, value, label, session_key=self._key
+        )
+
+    async def record_species(self, game_id: str, name: str) -> bool:
+        return await self._memory.record_species(
+            game_id, name, session_key=self._key
+        )
+
+    async def register_play(self, game_id: str) -> None:
+        await self._memory.register_play(game_id, session_key=self._key)
+
+    async def get_stats(self, game_id: str) -> Dict[str, Any]:
+        return await self._memory.get_stats(game_id, session_key=self._key)

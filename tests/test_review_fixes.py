@@ -21,6 +21,7 @@ import pytest
 from plugin.plugins.neko_arcade.core.brain import GameBrain
 from plugin.plugins.neko_arcade.core.companion import Companion
 from plugin.plugins.neko_arcade.core.memory import GameMemory
+from plugin.plugins.neko_arcade.core.session import SessionKey
 from plugin.plugins.neko_arcade.games.coinflip.game import CoinFlipGame, parse_pick
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -149,6 +150,7 @@ class _FakeGame:
         self.started = []
         self.stopped = []
         self.last_cmd = None
+        self.seen_users = []
         self.outcome = "done"
 
     def get_keywords(self):
@@ -174,6 +176,7 @@ class _FakeGame:
 
     async def handle_action(self, uid, cmd, args=None):
         self.last_cmd = cmd
+        self.seen_users.append(uid)
         return {"facts": [], "outcome": self.outcome, "message": f"{self.name}收到"}
 
 
@@ -219,18 +222,25 @@ def _make_brain(games, plugin=None):
     brain.plugin = None
     brain.cfg_mgr = None
     brain._sessions = {}
-    brain._session_start_by_user = {}
-    brain._current_user = None
+    brain._session_start_by_key = {}
+    brain._current_session = None
     brain._session_start = 0.0
     brain._sessions_dirty = False
     brain._last_anchor_ts = 0.0
+    brain._last_anchor_ts_by_session = {}
     brain._anchor_interval = 20.0
     brain._last_invite = {}
     brain._pending_switch = {}
     brain._switch_confirm_ttl = 180.0
     brain._last_activity_ts = 0.0
+    brain._last_activity_ts_by_session = {}
     brain._background_active_window = 900.0
     brain._recent_inputs = {}
+    brain._last_game_by_session = {}
+    brain._companions = {}
+    brain._llm_provider = None
+    brain._proactive_by_session = {}
+    brain.companion = Companion(persona=brain.persona, llm=None)
     return brain
 
 
@@ -249,7 +259,7 @@ def test_sessions_are_isolated_per_user():
 
     assert brain.session_game("alice") == "fishing"
     assert brain.session_game("bob") == "xiuxian", "B 的游戏不能顶掉 A 的"
-    assert set(brain.active_sessions()) == {"alice", "bob"}
+    assert {key.storage_id for key in brain.active_sessions()} == {"alice", "bob"}
 
     # A 继续下棋指令 → 只走钓鱼; B 不受影响
     asyncio.run(brain.handle_action("fishing", "抛竿", {}, user_id="alice"))
@@ -261,6 +271,66 @@ def test_sessions_are_isolated_per_user():
     assert brain.session_game("alice") is None
     assert brain.session_game("bob") == "xiuxian"
     assert fishing.stopped == ["alice"]
+
+
+def test_same_user_on_different_channels_uses_different_game_state():
+    fishing = _FakeGame("fishing", "钓鱼")
+    brain = _make_brain([fishing])
+    qq = SessionKey("qq", "alice")
+    web = SessionKey("web", "alice")
+
+    asyncio.run(brain.handle_action("fishing", "钓鱼", {}, session=qq))
+    asyncio.run(brain.handle_action("fishing", "钓鱼", {}, session=web))
+
+    assert brain.session_game(qq) == "fishing"
+    assert brain.session_game(web) == "fishing"
+    assert fishing.seen_users[-2:] == [qq.storage_id, web.storage_id]
+    assert len(set(fishing.seen_users[-2:])) == 2
+
+
+def test_real_game_save_is_separate_for_same_user_on_two_channels():
+    class _StorePlugin:
+        def __init__(self):
+            self.values = {}
+
+        async def store_get_user(self, game_id, user_id, default=None):
+            return self.values.get((game_id, user_id), default)
+
+        async def store_save_user(self, game_id, user_id, data):
+            self.values[(game_id, user_id)] = data
+
+    plugin = _StorePlugin()
+    game = CoinFlipGame(plugin)
+    game._config = {"max_plays_per_day": 20}
+    qq = SessionKey("qq", "alice").storage_id
+    web = SessionKey("web", "alice").storage_id
+
+    asyncio.run(game.handle_action(qq, "猜硬币 正"))
+    asyncio.run(game.handle_action(web, "猜硬币 反"))
+    assert (game.id, qq) in plugin.values
+    assert (game.id, web) in plugin.values
+    assert qq != web
+
+
+def test_memory_and_stats_are_scoped_per_session():
+    plugin = _FakePlugin()
+    memory = GameMemory(plugin)
+    qq = SessionKey("qq", "alice")
+    web = SessionKey("web", "alice")
+
+    memory.record("fishing", "win", [{"kind": "fish", "name": "鲤鱼"}],
+                  "钓到鲤鱼", session_key=qq)
+    memory.record("xiuxian", "breakthrough", [], "突破成功", session_key=web)
+    asyncio.run(memory.register_play("fishing", session_key=qq))
+    asyncio.run(memory.register_play("xiuxian", session_key=web))
+
+    assert "fishing" in memory.recent_session(session_key=qq)
+    assert "xiuxian" not in memory.recent_session(session_key=qq)
+    assert "xiuxian" in memory.recent_session(session_key=web)
+    qq_stats = asyncio.run(memory.get_stats("fishing", session_key=qq))
+    web_stats = asyncio.run(memory.get_stats("fishing", session_key=web))
+    assert qq_stats["plays"] == 1
+    assert web_stats == {}
 
 
 def test_sessions_persist_and_restore():

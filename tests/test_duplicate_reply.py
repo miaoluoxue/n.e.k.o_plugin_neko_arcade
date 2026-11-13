@@ -20,6 +20,7 @@ from plugin.plugins.neko_arcade.core.brain import (
     NO_PROGRESS_OUTCOMES,
     GameBrain,
 )
+from plugin.plugins.neko_arcade.core.session import SINGLE_SESSION, SessionKey
 
 
 class _FakeMood:
@@ -178,7 +179,7 @@ def test_window_expiry_allows_retry():
 
         await brain.handle_action("boardgame", "我下在J9吧")
         # 把时间戳推到窗口外
-        brain._recent_inputs[("default", "boardgame", "我下在J9吧")] = (
+        brain._recent_inputs[(SINGLE_SESSION, "boardgame", "我下在J9吧")] = (
             0.0, "illegal")
         await brain.handle_action("boardgame", "我下在J9吧")
         assert game.calls == ["我下在J9吧", "我下在J9吧"]
@@ -211,5 +212,19 @@ def test_same_input_for_different_users_is_not_deduplicated():
         assert game.calls == ["我下在J9吧", "我下在J9吧"], (
             "不同用户的相同输入不能当成同一个重复回调"
         )
+
+    asyncio.run(run())
+
+
+def test_same_input_for_different_channels_is_not_deduplicated():
+    async def run():
+        game = _RecorderGame(outcome="illegal")
+        brain = _make_brain(game)
+
+        await brain.handle_action(
+            "boardgame", "我下在J9吧", session=SessionKey("qq", "alice"))
+        await brain.handle_action(
+            "boardgame", "我下在J9吧", session=SessionKey("web", "alice"))
+        assert game.calls == ["我下在J9吧", "我下在J9吧"]
 
     asyncio.run(run())

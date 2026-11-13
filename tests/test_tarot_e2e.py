@@ -139,16 +139,22 @@ def test_tarot_theme_switch():
         game, plugin = _make_game()
         r = await game.handle_action("user_1", "塔罗主题 东方")
         assert r["outcome"] == "theme", r
-        assert game._theme == "touhou", game._theme
+        assert game._theme_for("user_1") == "touhou"
         # 切到 touhou 后抽牌 → 只可能出大阿卡纳
         r2 = await game.handle_action("user_1", "塔罗牌")
         assert r2["outcome"] == "tarot", r2
         # 切回 bili
         await game.handle_action("user_1", "塔罗主题 bili")
-        assert game._theme == "bili", game._theme
+        assert game._theme_for("user_1") == "bili"
         # ba 主题(碧蓝档案)
         r3 = await game.handle_action("user_1", "塔罗主题 碧蓝档案")
-        assert r3["outcome"] == "theme" and game._theme == "ba", r3
+        assert r3["outcome"] == "theme" and game._theme_for("user_1") == "ba", r3
+
+        # 不同会话的主题偏好互不覆盖
+        r4 = await game.handle_action("user_2", "塔罗主题 东方")
+        assert r4["outcome"] == "theme"
+        assert game._theme_for("user_1") == "ba"
+        assert game._theme_for("user_2") == "touhou"
 
     asyncio.run(run())
 
@@ -178,7 +184,7 @@ def test_card_image_reads_local_file_and_mime():
         (tmp / "bili" / "MajorArcana").mkdir(parents=True, exist_ok=True)
         (tmp / "bili" / "MajorArcana" / "0-愚者.webp").write_bytes(b"WEBP-BYTES")
         game._local_scan_dir = str(tmp)
-        game._theme = "bili"
+        game._themes["default"] = "bili"
 
         img = await game._card_image({"type": "MajorArcana", "pic": "0-愚者",
                                       "name_cn": "愚者"})
