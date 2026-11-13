@@ -443,8 +443,30 @@ def test_coinflip_parses_only_explicit_side():
     assert parse_pick("反") == "反"
     assert parse_pick("猜硬币 反面") == "反"
     assert parse_pick("tails") == "反"
-    for garbage in ("随便说点什么", "你好", "哈哈哈", "", "？"):
+    for garbage in ("随便说点什么", "你好", "哈哈哈", "", "？",
+                    "反正", "不正常", "heads-up", "go ahead"):
         assert parse_pick(garbage) is None, f"{garbage!r} 不该被当成正/反"
+
+
+def test_coinflip_tolerates_missing_or_corrupt_stats():
+    game = CoinFlipGame(plugin=None)
+    played = {}
+
+    async def fake_get(uid, default):
+        return played.get(uid, {"stats": {"wins": "坏数据"}})
+
+    async def fake_save(uid, data):
+        played[uid] = data
+
+    game.get_user_data = fake_get
+    game.save_user_data = fake_save
+    game._config = {}
+
+    res = asyncio.run(game.handle_action("alice", "猜硬币 正"))
+    assert res["outcome"] in ("win", "lose")
+    assert played["alice"]["stats"]["plays"] == 1
+    assert isinstance(played["alice"]["stats"]["wins"], int)
+    assert asyncio.run(game.get_status("alice"))["plays"] == 1
 
 
 def test_coinflip_garbage_input_does_not_consume_a_play():
