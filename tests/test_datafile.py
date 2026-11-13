@@ -66,6 +66,10 @@ def test_missing_or_broken_returns_default():
     gz_path(bad_gz).write_bytes(b"not gzip at all")
     assert read_json(bad_gz, "fallback") == "fallback"
 
+    truncated = d / "truncated.json"
+    gz_path(truncated).write_bytes(gzip.compress(b'{"ok": true}')[:-4])
+    assert read_json(truncated, "truncated-fallback") == "truncated-fallback"
+
 
 def test_gz_path_convention():
     """约定：压缩版就是原文件名后加 .gz（工具与读取器同一约定）。"""

@@ -15,8 +15,11 @@ from __future__ import annotations
 
 import gzip
 import json
+import logging
 from pathlib import Path
 from typing import Any
+
+log = logging.getLogger("neko_arcade.datafile")
 
 
 def gz_path(path: Any) -> Path:
@@ -28,10 +31,14 @@ def read_bytes(path: Any) -> bytes:
     """读原始字节：优先 `.gz`（自动解压），没有就读明文。"""
     p = Path(path)
     gz = gz_path(p)
-    if gz.is_file():
-        with gzip.open(gz, "rb") as f:
-            return f.read()
-    return p.read_bytes()
+    try:
+        if gz.is_file():
+            with gzip.open(gz, "rb") as f:
+                return f.read()
+        return p.read_bytes()
+    except (OSError, EOFError, UnicodeDecodeError):
+        log.warning("读取数据文件失败: %s", gz if gz.is_file() else p, exc_info=True)
+        raise
 
 
 def read_json(path: Any, default: Any = None) -> Any:
@@ -44,5 +51,7 @@ def read_json(path: Any, default: Any = None) -> Any:
                 return json.load(f)
         with p.open("r", encoding="utf-8") as f:
             return json.load(f)
-    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+    except (OSError, EOFError, json.JSONDecodeError, UnicodeDecodeError):
+        log.warning("读取 JSON 失败，使用默认值: %s", gz if gz.is_file() else p,
+                    exc_info=True)
         return default

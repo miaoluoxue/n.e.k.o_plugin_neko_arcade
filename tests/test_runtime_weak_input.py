@@ -61,7 +61,7 @@ def test_weak_input_routes_to_last_game():
 def test_weak_input_other_hints():
     """多个弱指令意图词都路由回最近游戏。"""
     rt = _make_runtime(_FakeBrain(last="remake"))
-    for hint in ("继续玩", "接着玩", "玩点什么", "随便玩", "来一把", "再开", "再玩一次"):
+    for hint in ("继续玩", "接着玩", "玩点什么", "随便玩", "来一把", "再玩一次"):
         gid, cmd = rt.parse_input(hint)
         assert gid == "remake", f"{hint} 应路由到 remake, got {gid}"
         assert cmd == "人生重开"
@@ -93,6 +93,22 @@ def test_weak_input_not_triggered_by_plain_chat():
     rt = _make_runtime(_FakeBrain(last="fishing"))
     gid, cmd = rt.parse_input("今天天气不错")
     assert gid is None
+
+
+def test_bare_continue_words_do_not_hijack_chat():
+    """裸「继续/再来/接着/再开」是日常聊天，不能自动开最近游戏。"""
+    rt = _make_runtime(_FakeBrain(last="fishing"))
+    for text in ("继续", "再来", "接着", "再开"):
+        gid, _ = rt.parse_input(text)
+        assert gid is None, f"裸词「{text}」不应被当成游戏启动指令"
+
+
+def test_toy_is_not_stripped_to_single_character():
+    """玩具是普通词，不能被「玩」前缀归一化成「具」。"""
+    rt = _make_runtime(_FakeBrain(current=None, last="fishing"))
+    gid, cmd = rt.parse_input("玩具")
+    assert gid is None
+    assert cmd == "玩具"
 
 
 def test_play_prefix_normalized_to_start_cmd():

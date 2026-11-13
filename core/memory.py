@@ -30,7 +30,10 @@ class GameMemory:
         return self._milestones
 
     async def _save(self) -> None:
-        await self.plugin.store.set(STORE_KEY, self._milestones)
+        result = await self.plugin.store.set(STORE_KEY, self._milestones)
+        is_err = getattr(result, "is_err", None)
+        if callable(is_err) and is_err():
+            raise RuntimeError("游戏记忆写入失败")
 
     def record(self, game_id: str, outcome: str, facts: List[Dict], text: str) -> None:
         self._session.append({"ts": time.time(), "game": game_id, "outcome": outcome,

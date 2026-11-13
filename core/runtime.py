@@ -112,7 +112,9 @@ class ArcadeRuntime:
             log.warning("外部素材库初始化失败，降级为仅本地素材: %s", exc)
             self.assets = None
         self.registry._assets = self.assets
-        if self.assets is not None and self.cfg.get("asset_prefetch", True):
+        # 默认按需下载：只有当前游戏真正取某张图时才联网，避免首次启动
+        # 无差别拉取整套塔罗牌面。需要离线的用户可显式开启 asset_prefetch。
+        if self.assets is not None and self.cfg.get("asset_prefetch", False):
             self.assets.start_prefetch()
         count = await self.registry.discover()
         # 恢复上次的会话(谁在玩什么): 重启/宿主重连后能直接接着玩, 不必重新开局
@@ -184,8 +186,8 @@ class ArcadeRuntime:
     # 弱指令(无关键词、无会话时的「接着玩」意图) → 路由到最近玩过的游戏
     # 只收明确的"接着玩"意图词, 避免「又」「想玩」「换个」等宽泛词误伤闲聊
     _WEAK_PLAY_HINTS = (
-        "再来一局", "再来", "继续玩", "继续", "接着玩", "接着", "再玩一次",
-        "还想玩", "玩点什么", "随便玩", "来一局", "来一把", "开一局", "再开",
+        "再来一局", "再玩一局", "继续玩", "继续刚才的游戏", "接着玩",
+        "再玩一次", "还想玩", "玩点什么", "随便玩", "来一局", "来一把", "开一局",
     )
 
     def parse_input(self, input: str) -> tuple[Optional[str], str]:
@@ -220,12 +222,21 @@ class ArcadeRuntime:
             """
             clean = raw.strip()
             # 剥掉「玩/来玩/我要玩/想玩/来把」前缀, 看剩下是否还有具体指令
-            for p in ("我要玩", "我想玩", "来玩", "来把", "来一局", "玩一下", "玩", "想玩"):
+            for p in ("我要玩", "我想玩", "来玩", "来把", "来一局", "玩一下", "想玩"):
                 if clean.startswith(p):
                     rest = clean[len(p):].strip()
                     if rest and rest not in game.get_keywords():
                         return game.id, rest  # 有具体指令(如「塔罗牌 恋人」)
                     return game.id, (game.get_keywords()[0] if game.get_keywords() else rest or raw)
+            if clean.startswith("玩"):
+                rest = clean[1:].strip()
+                keywords = [str(k) for k in game.get_keywords() if str(k)]
+                if rest in keywords:
+                    return game.id, (
+                        game.get_keywords()[0] if game.get_keywords() else rest
+                    )
+                if any(len(kw) >= 2 and rest.startswith(kw) for kw in keywords):
+                    return game.id, rest
             return game.id, raw
 
         cur = self.brain.current_game if (self.brain and self.brain.current_game) else None
@@ -314,13 +325,20 @@ class ArcadeRuntime:
                 log.warning("卸载 %s 异常: %s", game.id, exc)
 
     async def _tick_loop(self) -> None:
-        try:
-            while True:
+        fails = 0
+        while True:
+            try:
                 await asyncio.sleep(1)
                 if self.brain:
                     await self.brain.tick()
-        except asyncio.CancelledError:
-            pass
+                fails = 0
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                fails += 1
+                log.exception("arcade tick 出错（连续第 %d 次）", fails)
+                # 连续异常时退避，避免每秒刷屏和持续打爆上游。
+                await asyncio.sleep(min(60, 2 ** min(fails, 6)))
 
     async def dispatch(self, game_id: str, cmd: str, args: Optional[Dict],
                        user_id: str) -> Dict[str, Any]:

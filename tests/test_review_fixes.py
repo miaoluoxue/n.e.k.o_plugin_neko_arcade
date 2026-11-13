@@ -13,9 +13,11 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import random
 from pathlib import Path
 
+import pytest
 from plugin.plugins.neko_arcade.core.brain import GameBrain
 from plugin.plugins.neko_arcade.core.companion import Companion
 from plugin.plugins.neko_arcade.core.memory import GameMemory
@@ -73,6 +75,16 @@ def test_llm_same_line_is_not_repeated():
     second = asyncio.run(comp.line("fishing", "win"))
     assert first == "喵又赢了。"
     assert second != first, "同一句台词不能连着复读"
+
+
+def test_no_duplicate_when_no_alternative_exists():
+    """没有模板也没有别的变体时宁可返回空串，也不能把上一句原样再播一次。"""
+    llm = _SameLLM("唯一一句")
+    comp = _companion({}, llm=llm)
+    first = asyncio.run(comp.line("fishing", "done"))
+    second = asyncio.run(comp.line("fishing", "done"))
+    assert first == "唯一一句"
+    assert second == "", "无替代句时必须交给调用方使用游戏原始结果"
 
 
 def test_prompt_lists_recent_lines():
@@ -214,7 +226,7 @@ def _make_brain(games, plugin=None):
     brain._last_anchor_ts = 0.0
     brain._anchor_interval = 20.0
     brain._last_invite = {}
-    brain._pending_switch = None
+    brain._pending_switch = {}
     brain._switch_confirm_ttl = 180.0
     brain._last_activity_ts = 0.0
     brain._background_active_window = 900.0
@@ -265,6 +277,85 @@ def test_sessions_persist_and_restore():
     assert n == 1
     assert fresh.session_game("alice") == "fishing"
     assert fresh.registry.get("fishing").started == ["alice"], "恢复时要跑 on_start"
+
+
+def test_brain_initializes_companion_with_same_persona():
+    plugin = _FakePlugin()
+    registry = _FakeRegistry([_FakeGame("fishing", "钓鱼")])
+    brain = GameBrain(plugin, registry, {}, None, _FakePush(), None)
+    assert brain.companion.persona is brain.persona
+    registry._companion = brain.companion
+    assert registry._companion is not None
+
+
+def test_post_action_failures_do_not_discard_game_result():
+    class BrokenPersona(_FakePersona):
+        def on_event(self, _kind):
+            raise RuntimeError("mood failed")
+
+    class BrokenEmotion:
+        async def render(self, *_a, **_k):
+            raise RuntimeError("lines failed")
+
+    class BrokenPush(_FakePush):
+        async def text(self, _text, **_kw):
+            raise RuntimeError("push failed")
+
+    game = _FakeGame("fishing", "钓鱼")
+    game.outcome = "done"
+
+    async def broken_milestone(*_a):
+        raise RuntimeError("milestone failed")
+
+    game.on_milestone = broken_milestone
+    brain = _make_brain([game])
+    brain.persona = BrokenPersona()
+    brain.emotion = BrokenEmotion()
+    brain.push = BrokenPush()
+    res = asyncio.run(brain.handle_action("fishing", "抛竿", {}, user_id="alice"))
+    assert res["game_result"] == "钓鱼收到"
+    assert res["outcome"] == "done"
+    assert "钓鱼收到" in res["summary"]
+
+
+def test_memory_save_error_is_not_silently_accepted():
+    class _Err:
+        def is_err(self):
+            return True
+
+    class _Store:
+        async def set(self, *_a, **_k):
+            return _Err()
+
+    memory = GameMemory(type("P", (), {"store": _Store()})())
+    with pytest.raises(RuntimeError, match="游戏记忆写入失败"):
+        asyncio.run(memory._save())
+
+
+def test_session_save_failure_logs_warning():
+    class _BrokenMemory:
+        async def save_sessions(self, _sessions):
+            raise OSError("disk full")
+
+    brain = _make_brain([_FakeGame("fishing", "钓鱼")])
+    brain.memory = _BrokenMemory()
+    records: list[logging.LogRecord] = []
+
+    class _Capture(logging.Handler):
+        def emit(self, record):
+            records.append(record)
+
+    logger = logging.getLogger("neko_arcade.brain")
+    old_level = logger.level
+    handler = _Capture()
+    logger.addHandler(handler)
+    logger.setLevel(logging.WARNING)
+    try:
+        assert asyncio.run(brain._persist_sessions()) is False
+    finally:
+        logger.removeHandler(handler)
+        logger.setLevel(old_level)
+    assert any("会话落盘失败" in record.getMessage() for record in records)
 
 
 def test_stale_session_for_removed_game_is_dropped():

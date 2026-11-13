@@ -98,7 +98,10 @@ class NekoArcadePlugin(NekoPluginBase):
 
     async def store_save_user(self, game_id: str, user_id: str, data: Any) -> None:
         key = f"{STORE_PREFIX}:{game_id}:{user_id}"
-        await self.store.set(key, data)
+        result = await self.store.set(key, data)
+        is_err = getattr(result, "is_err", None)
+        if callable(is_err) and is_err():
+            raise SdkError(f"玩家存档写入失败: {game_id}/{user_id}")
 
     @plugin_entry(id="list_games", name="游戏列表", description="列出所有可玩的小游戏名(按需查询, 一次调用即可, 不要反复调用)。",
                   input_schema={"type": "object", "properties": {}},

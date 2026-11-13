@@ -42,6 +42,9 @@ class _FakePersona:
 
 
 class _FakeMemory:
+    async def register_play(self, *a, **k):
+        pass
+
     def record(self, gid, outcome, facts, msg):
         pass
 
@@ -130,7 +133,7 @@ def _make_brain(game, current="boardgame"):
     brain._last_invite = {}
     brain._help_rend = None
     brain._persona_raw = None
-    brain._pending_switch = None
+    brain._pending_switch = {}
     return brain
 
 
@@ -175,7 +178,7 @@ def test_window_expiry_allows_retry():
 
         await brain.handle_action("boardgame", "我下在J9吧")
         # 把时间戳推到窗口外
-        brain._recent_inputs[("boardgame", "我下在J9吧")] = (
+        brain._recent_inputs[("default", "boardgame", "我下在J9吧")] = (
             0.0, "illegal")
         await brain.handle_action("boardgame", "我下在J9吧")
         assert game.calls == ["我下在J9吧", "我下在J9吧"]
@@ -194,5 +197,19 @@ def test_other_input_not_affected():
         await brain.handle_action("boardgame", "我下在J9吧")
         await brain.handle_action("boardgame", "我下在H8吧")
         assert game.calls == ["我下在J9吧", "我下在H8吧"]
+
+    asyncio.run(run())
+
+
+def test_same_input_for_different_users_is_not_deduplicated():
+    async def run():
+        game = _RecorderGame(outcome="illegal")
+        brain = _make_brain(game)
+
+        await brain.handle_action("boardgame", "我下在J9吧", user_id="alice")
+        await brain.handle_action("boardgame", "我下在J9吧", user_id="bob")
+        assert game.calls == ["我下在J9吧", "我下在J9吧"], (
+            "不同用户的相同输入不能当成同一个重复回调"
+        )
 
     asyncio.run(run())

@@ -169,7 +169,7 @@ def _make_brain(current=None):
     brain._last_anchor_ts = 0.0
     brain._anchor_interval = 20.0
     brain._last_invite = {}
-    brain._pending_switch = None
+    brain._pending_switch = {}
     brain._switch_confirm_ttl = 180.0
     brain._last_activity_ts = 0.0
     brain._background_active_window = 900.0
@@ -198,7 +198,7 @@ def test_confirmed_switch_ends_old_and_starts_new():
     assert xiuxian.started == 1, "新游戏要 on_start"
     assert xiuxian.last_cmd == "修仙", "用之前想玩的指令开新游戏"
     assert "[切换完成]" in res["summary"]
-    assert brain._pending_switch is None
+    assert brain.pending_switch_for("default") is None
 
 
 def test_switch_to_without_pending_still_asks_first():
@@ -215,7 +215,7 @@ def test_decline_clears_pending_and_keeps_current():
     brain, fishing, xiuxian = _make_brain(current="fishing")
     asyncio.run(brain.handle_action("xiuxian", "修仙"))
     asyncio.run(brain.handle_action("fishing", "继续钓鱼"))
-    assert brain._pending_switch is None
+    assert brain.pending_switch_for("default") is None
     assert brain._current_game == "fishing"
     assert xiuxian.started == 0 and xiuxian.stopped == 0
 
@@ -227,7 +227,7 @@ def test_pending_switch_reasks_when_current_game_rejects_input():
     fishing.unknown_cmds = {"好"}
     res = asyncio.run(brain.handle_action("fishing", "好"))
     assert res["outcome"] == "switch_confirm"
-    assert brain._pending_switch is not None
+    assert brain.pending_switch_for("default") is not None
     assert brain._current_game == "fishing"
     assert xiuxian.started == 0
 
@@ -240,10 +240,35 @@ def test_start_game_also_ends_old_session():
     assert brain._current_game == "xiuxian"
 
 
+def test_start_game_refuses_disabled_game():
+    brain, fishing, xiuxian = _make_brain(current="fishing")
+    xiuxian.enabled = False
+    res = asyncio.run(brain.start_game("xiuxian"))
+    assert "停用" in res["message"]
+    assert brain._current_game == "fishing"
+    assert fishing.stopped == 0 and xiuxian.started == 0
+
+
 def test_pending_switch_expires_and_does_not_hijack():
     brain, fishing, xiuxian = _make_brain(current="fishing")
     asyncio.run(brain.handle_action("xiuxian", "修仙"))
-    brain._pending_switch["ts"] = 0.0
+    brain.pending_switch_for("default")["ts"] = 0.0
     brain._switch_confirm_ttl = 1.0
     asyncio.run(brain.tick())
-    assert brain._pending_switch is None
+    assert brain.pending_switch_for("default") is None
+
+
+def test_pending_switch_is_isolated_per_user():
+    brain, fishing, xiuxian = _make_brain(current=None)
+    asyncio.run(brain.handle_action("fishing", "钓鱼", {}, user_id="alice"))
+    asyncio.run(brain.handle_action("xiuxian", "修仙", {}, user_id="bob"))
+
+    asyncio.run(brain.handle_action("xiuxian", "修仙", {}, user_id="alice"))
+    assert brain.pending_switch_for("alice")["to"] == "xiuxian"
+    assert brain.pending_switch_for("bob") is None
+
+    # Bob 的正常输入只能清自己的状态，不能把 Alice 的待确认切走。
+    asyncio.run(brain.handle_action("xiuxian", "继续", {}, user_id="bob"))
+    assert brain.pending_switch_for("alice") is not None
+    assert brain.session_game("alice") == "fishing"
+    assert brain.session_game("bob") == "xiuxian"
