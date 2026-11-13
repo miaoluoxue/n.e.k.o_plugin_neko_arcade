@@ -570,3 +570,19 @@ python tools\build_asset_manifest.py --max-side 720
 
 运行时代码同时禁止写死盘符、用户主目录或绝对安装路径。字体、浏览器和工具输出
 必须从环境变量、`shutil.which()`、宿主 API 或仓库相对路径推导。
+
+---
+
+## 20. 持久化必须做“读失败封锁 + 写失败回滚”
+
+游戏记忆不能把“读取失败”当成“没有存档”。否则下一次写入会用空对象覆盖真实旧档。
+
+- `_load()` 失败必须 warning，并标记写入封锁；
+- `_save()` 返回 `bool`，写入失败时恢复调用前深拷贝；
+- `_persist_sessions()` 必须检查保存结果，不能只看有没有抛异常；
+- `save_sessions()` 统一写 `SessionKey.storage_id`；
+- 异步统计写入任务必须保存引用、消费异常，并在 shutdown 收尾。
+
+素材下载若跟随重定向，必须在 `RedirectHandler.redirect_request()` 中先校验 HTTPS，
+不能等 urllib 已跟随后再检查。`asset_cache_mb` 必须是实际执行的缓存上限，
+但清理时要跳过正在写入的 `.part` 文件。
