@@ -19,7 +19,12 @@ from pathlib import Path
 from typing import Any, Dict
 
 import pytest
-from plugin.plugins.neko_arcade.adapters.photo_bridge import PhotoBridge
+from plugin.plugins.neko_arcade.adapters.photo_bridge import (
+    MAX_UPLOAD_B64_CHARS,
+    MAX_UPLOAD_FILES,
+    PhotoBridge,
+    upload_batch_error,
+)
 
 REPO = Path(__file__).resolve().parents[1]
 WORK = Path(__file__).resolve().parent / "_photo_tmp"
@@ -239,7 +244,7 @@ def test_default_config_is_llm_driven() -> None:
     assert cfg.get("auto_min_interval", 0) > 0
 
 
-@pytest.mark.parametrize("bad", ["../evil", "a/b", "a\\b", ".."])
+@pytest.mark.parametrize("bad", ["../evil", "a/b", "a\\b"])
 def test_category_is_sanitized(bad: str) -> None:
     bridge = _bridge()
     r = asyncio.run(bridge.upload_photo("u1", "x.png", data_bytes=b"\x89PNG" + b"0" * 8,
@@ -247,3 +252,47 @@ def test_category_is_sanitized(bad: str) -> None:
     assert r["ok"], r
     saved = list(GALLERY.rglob("x.png"))
     assert saved and ".." not in str(saved[0])
+
+
+@pytest.mark.parametrize("bad", [".", "..", "CON", "a:b", "坏\x01分类"])
+def test_unsafe_category_is_rejected(bad: str) -> None:
+    bridge = _bridge()
+    before = list(GALLERY.rglob("*")) if GALLERY.exists() else []
+    r = asyncio.run(bridge.upload_photo(
+        "u1", "safe.png", data_bytes=b"\x89PNG" + b"0" * 8, category=bad))
+    assert not r["ok"] and r.get("code") == "invalid_category", r
+    assert list(GALLERY.rglob("*")) == before
+
+
+def test_oversized_base64_is_rejected_before_decode(monkeypatch) -> None:
+    import plugin.plugins.neko_arcade.adapters.photo_bridge as photo_bridge
+
+    bridge = _bridge()
+    called = False
+
+    def should_not_decode(*_a, **_k):
+        nonlocal called
+        called = True
+        raise AssertionError("oversized payload must not reach b64decode")
+
+    monkeypatch.setattr(photo_bridge.base64, "b64decode", should_not_decode)
+    r = asyncio.run(bridge.upload_photo(
+        "u1", "huge.png", data_b64="A" * (MAX_UPLOAD_B64_CHARS + 4)))
+    assert not r["ok"] and r.get("code") == "too_large"
+    assert called is False
+
+
+def test_unsafe_filename_is_rejected() -> None:
+    bridge = _bridge()
+    for name in ("../evil.png", r"..\evil.png", "CON.png", "bad:name.png"):
+        r = asyncio.run(bridge.upload_photo(
+            "u1", name, data_bytes=b"\x89PNG" + b"0" * 8, category="安全"))
+        assert not r["ok"], (name, r)
+
+
+def test_batch_limit_is_declared_and_enforced_in_entry() -> None:
+    assert MAX_UPLOAD_FILES == 20
+    files = [{"name": f"{i}.png", "data_b64": "AAAA"} for i in range(MAX_UPLOAD_FILES + 1)]
+    payload = upload_batch_error(files)
+    assert payload and payload["error"] == "too_many_files"
+    assert payload["limit"] == MAX_UPLOAD_FILES

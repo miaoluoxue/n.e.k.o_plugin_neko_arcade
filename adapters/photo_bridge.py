@@ -16,9 +16,11 @@ markdown URL 通道显示(当前宿主唯一可靠的游戏图片显示通道)�
 
 from __future__ import annotations
 
+import base64
 import logging
 import os
 import random
+import re
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -26,6 +28,26 @@ from typing import Any, Dict, List, Optional
 log = logging.getLogger("neko_arcade.photo")
 
 IMG_EXTS = (".png", ".jpg", ".jpeg", ".webp", ".gif")
+MAX_UPLOAD_BYTES = 8 * 1024 * 1024
+MAX_UPLOAD_FILES = 20
+MAX_UPLOAD_B64_CHARS = ((MAX_UPLOAD_BYTES + 2) // 3) * 4
+_INVALID_NAME_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+_INVALID_CATEGORY_CHARS = re.compile(r'[<>:"|?*\x00-\x1f]')
+_WINDOWS_RESERVED = {
+    "CON", "PRN", "AUX", "NUL",
+    *(f"COM{i}" for i in range(1, 10)),
+    *(f"LPT{i}" for i in range(1, 10)),
+}
+
+
+def upload_batch_error(files: Any) -> Optional[Dict[str, Any]]:
+    """批量上传的统一入口校验，供宿主 entry 与测试复用。"""
+    count = len(files or [])
+    if count <= MAX_UPLOAD_FILES:
+        return None
+    return {"ok": False, "error": "too_many_files", "count": count,
+            "limit": MAX_UPLOAD_FILES, "results": [],
+            "message": f"一次最多上传 {MAX_UPLOAD_FILES} 张图片喵"}
 
 # 动态渲染兜底: 与 ImageRenderer.render_neko_avatar 支持的心情一致
 MOODS: List[str] = ["excitement", "curiosity", "proud", "upset", "sleepy", "calm"]
@@ -397,33 +419,44 @@ class PhotoBridge:
         支持 base64 字符串或原始 bytes。分类不存在会自动创建。
         保存后立即刷新扫描缓存。
         """
-        import base64
-
         raw = data_bytes
         if not raw and data_b64:
+            payload = str(data_b64).strip()
+            if payload.lower().startswith("data:") and "," in payload:
+                header, payload = payload.split(",", 1)
+                if ";base64" not in header.lower():
+                    return {"ok": False, "message": "图片数据不是 base64 格式喵"}
+            payload = "".join(payload.split())
+            if len(payload) > MAX_UPLOAD_B64_CHARS:
+                return {"ok": False, "code": "too_large",
+                        "message": "图片超过 8MB 了喵"}
             try:
-                raw = base64.b64decode(data_b64)
-            except Exception:
+                raw = base64.b64decode(payload, validate=True)
+            except (ValueError, TypeError):
                 return {"ok": False, "message": "图片数据解码失败喵"}
         if not raw:
             return {"ok": False, "message": "没有收到图片数据喵"}
 
-        ext = os.path.splitext(name or "")[1].lower()
-        if ext not in IMG_EXTS:
-            return {"ok": False, "message": "只支持 png/jpg/webp/gif 图片喵"}
-        if len(raw) > 8 * 1024 * 1024:
-            return {"ok": False, "message": "图片超过 8MB 了喵"}
+        if len(raw) > MAX_UPLOAD_BYTES:
+            return {"ok": False, "code": "too_large",
+                    "message": "图片超过 8MB 了喵"}
 
-        cat = self._sanitize_category(category) or "默认"
+        fname = self._safe_filename(name)
+        if fname is None:
+            return {"ok": False, "message": "只支持 png/jpg/webp/gif 图片喵"}
+
+        raw_category = str(category or "").strip()
+        cat = "默认" if not raw_category else self._sanitize_category(raw_category)
+        if not cat:
+            return {"ok": False, "code": "invalid_category",
+                    "message": "分类名包含不支持的字符喵"}
         base = self._ensure_root() / cat
         try:
             base.mkdir(parents=True, exist_ok=True)
         except OSError as exc:
             return {"ok": False, "message": f"无法创建分类目录: {exc}"}
 
-        stem = os.path.splitext(os.path.basename(name or "photo"))[0] or "photo"
         # 文件名保持原样; 目标分类已有同名文件 → 提示重复上传, 跳过不写入(避免重复图共存)
-        fname = f"{stem}{ext}"
         if (base / fname).exists():
             return {"ok": False, "duplicate": True, "filename": fname,
                     "category": cat,
@@ -443,6 +476,27 @@ class PhotoBridge:
 
     @staticmethod
     def _sanitize_category(category: str) -> str:
-        """清洗分类名: 去掉路径分隔符等危险字符。"""
-        cat = (category or "").strip().replace("/", "").replace("\\", "").replace("..", "")
-        return cat[:20]
+        """清洗分类名；精确的路径段与保留字符直接拒绝。"""
+        raw = (category or "").strip()
+        if not raw or raw in (".", "..") or _INVALID_CATEGORY_CHARS.search(raw):
+            return ""
+        cat = raw.replace("..", "").replace("/", "").replace("\\", "").strip(" .")[:20]
+        if not cat or cat.split(".", 1)[0].upper() in _WINDOWS_RESERVED:
+            return ""
+        return cat
+
+    @staticmethod
+    def _safe_filename(name: str) -> Optional[str]:
+        """只接受单一安全文件名，不再把危险路径 basename 后静默放行。"""
+        raw = str(name or "").strip()
+        if not raw or raw in (".", "..") or _INVALID_NAME_CHARS.search(raw):
+            return None
+        stem, ext = os.path.splitext(raw)
+        stem = stem.strip(" .")
+        ext = ext.lower()
+        if not stem or ext not in IMG_EXTS:
+            return None
+        if stem.split(".", 1)[0].upper() in _WINDOWS_RESERVED:
+            return None
+        fname = f"{stem}{ext}"
+        return fname if len(fname) <= 120 else None

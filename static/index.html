@@ -611,6 +611,7 @@ function showToast(t) { var el=document.getElementById('toast'); el.textContent=
 // ── 喵图相册: 用户上传图片(选文件夹 / 新建文件夹 / 多文件) ─────
 var _photoUploadCat = '';
 var _photoUploadFiles = [];
+var PHOTO_UPLOAD_MAX = 20;
 
 function uploadPhoto() {
   // 先拉取已有分类, 渲染上传抽屉
@@ -631,7 +632,7 @@ function uploadPhoto() {
       '<input id="photoNewCat" placeholder="如: 可爱 / 日常 / 泳装…" oninput="onPhotoCatChange(\'__new__\')"></div>'+
       '<div class="config-field"><label>选择图片(可多选)</label>'+
       '<input type="file" id="photoFiles" multiple accept="image/png,image/jpeg,image/webp,image/gif" style="padding:8px;border:1px solid var(--border);border-radius:var(--radius-sm);width:100%;background:rgba(255,255,255,0.04);color:var(--text);">'+
-      '<div style="color:var(--text2);font-size:0.7rem;margin-top:4px;">支持 png/jpg/webp/gif, 单张 ≤ 8MB</div></div>'+
+      '<div style="color:var(--text2);font-size:0.7rem;margin-top:4px;">支持 png/jpg/webp/gif, 单张 ≤ 8MB, 单次最多 '+PHOTO_UPLOAD_MAX+' 张</div></div>'+
       '<div class="config-field"><label>或选择整个文件夹</label>'+
       '<input type="file" id="photoFolder" webkitdirectory directory onchange="onPhotoFolderPick()" style="padding:8px;border:1px solid var(--border);border-radius:var(--radius-sm);width:100%;background:rgba(255,255,255,0.04);color:var(--text);">'+
       '<div style="color:var(--text2);font-size:0.7rem;margin-top:4px;">文件夹名自动成为分类, 图片按原名存入; 重复上传会提示并跳过, 不会产生重复图</div></div>'+
@@ -672,6 +673,14 @@ function doPhotoUpload() {
   var isFolder = files && files.length && (files[0].webkitRelativePath || '');
   if (!isFolder) files = document.getElementById('photoFiles').files;
   if (!files || !files.length) { showToast('❌ 请先选择图片或文件夹喵'); return; }
+  var selectedCount = files.length;
+  var overLimit = [];
+  if (selectedCount > PHOTO_UPLOAD_MAX) {
+    files = Array.prototype.slice.call(files, 0, PHOTO_UPLOAD_MAX);
+    for (var oi = PHOTO_UPLOAD_MAX; oi < selectedCount; oi++) {
+      overLimit.push(document.getElementById(isFolder ? 'photoFolder' : 'photoFiles').files[oi].name);
+    }
+  }
 
   // 确定目标文件夹
   var cat = _photoUploadCat;
@@ -682,7 +691,7 @@ function doPhotoUpload() {
   status.textContent = '⏳ 读取文件 ' + files.length + ' 张…';
 
   // 串行读文件为 base64(FileReader 并发上限); 跳过/失败都如实计入, 不静默丢图
-  var items = [], skipped = [];
+  var items = [], skipped = overLimit.slice();
   function readNext(i) {
     if (i >= files.length) {
       var skipNote = skipped.length ? ('; 跳过 ' + skipped.length + ' 张(' + skipped.join(',') + ')') : '';

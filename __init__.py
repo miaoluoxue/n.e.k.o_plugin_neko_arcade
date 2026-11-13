@@ -546,6 +546,10 @@ class NekoArcadePlugin(NekoPluginBase):
                                   category: str = "默认", **_) -> Any:
         if not self.rt:
             return Err(SdkError("猫娘小游戏还没准备好"))
+        from .adapters.photo_bridge import upload_batch_error
+        batch_error = upload_batch_error(files)
+        if batch_error:
+            return Ok(batch_error)
         game = self.rt.registry.get("neko_photo")
         if not game:
             return Err(SdkError("喵图相册还没加载喵"))
