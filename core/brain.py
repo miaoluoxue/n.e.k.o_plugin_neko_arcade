@@ -313,10 +313,12 @@ class GameBrain:
         """把「谁在玩什么」落盘, 重启后能接着玩。"""
         self._last_persist_failed = False
         try:
-            await self.memory.save_sessions({
+            saved = await self.memory.save_sessions({
                 key.storage_id: game_id
                 for key, game_id in self.active_sessions().items()
             })
+            if saved is False:
+                raise RuntimeError("会话表写入失败")
             self._sessions_dirty = False
             return True
         except Exception as exc:                # 存档失败不该影响对局

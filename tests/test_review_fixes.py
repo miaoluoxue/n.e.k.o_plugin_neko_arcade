@@ -17,7 +17,6 @@ import logging
 import random
 from pathlib import Path
 
-import pytest
 from plugin.plugins.neko_arcade.core.brain import GameBrain
 from plugin.plugins.neko_arcade.core.companion import Companion
 from plugin.plugins.neko_arcade.core.memory import GameMemory
@@ -398,8 +397,7 @@ def test_memory_save_error_is_not_silently_accepted():
             return _Err()
 
     memory = GameMemory(type("P", (), {"store": _Store()})())
-    with pytest.raises(RuntimeError, match="游戏记忆写入失败"):
-        asyncio.run(memory._save())
+    assert asyncio.run(memory._save({})) is False
 
 
 def test_session_save_failure_logs_warning():

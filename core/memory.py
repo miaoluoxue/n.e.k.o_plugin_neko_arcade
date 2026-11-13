@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import copy
+import logging
 import time
 from typing import Any, Dict, List
 
 from .session import SINGLE_SESSION, SessionKey, SessionLike, coerce_session_key
 
 STORE_KEY = "game_memories"
+log = logging.getLogger("neko_arcade.memory")
 
 
 class GameMemory:
@@ -18,25 +21,47 @@ class GameMemory:
         self._session_by_key: Dict[SessionKey, List[Dict[str, Any]]] = {}
         self._session = self._session_by_key.setdefault(SINGLE_SESSION, [])
         self._milestones: Dict[str, Any] = {}
+        self._loaded = False
+        self._load_failed = False
 
     async def _load(self) -> Dict[str, Any]:
-        if not self._milestones:
+        if self._loaded:
+            return self._milestones
+        try:
             data = await self.plugin.store.get(STORE_KEY)
             # SDK store.get 返回 Ok/Err 包装（数据在 Ok.value），统一解开
             if hasattr(data, "is_err") and callable(data.is_err) and data.is_err():
-                data = None
+                raise RuntimeError("store returned Err")
             elif hasattr(data, "value"):
                 data = data.value
             elif hasattr(data, "data"):
                 data = data.data
-            self._milestones = data if isinstance(data, dict) else {}
+            if data is not None and not isinstance(data, dict):
+                raise ValueError(f"unexpected store payload: {type(data).__name__}")
+        except Exception as exc:
+            self._load_failed = True
+            log.warning("读取游戏记忆失败，禁止后续覆盖写入: %s", exc)
+            return {}
+        self._milestones = data if isinstance(data, dict) else {}
+        self._loaded = True
+        self._load_failed = False
         return self._milestones
 
-    async def _save(self) -> None:
-        result = await self.plugin.store.set(STORE_KEY, self._milestones)
-        is_err = getattr(result, "is_err", None)
-        if callable(is_err) and is_err():
-            raise RuntimeError("游戏记忆写入失败")
+    async def _save(self, before: Dict[str, Any]) -> bool:
+        if self._load_failed:
+            self._milestones = copy.deepcopy(before)
+            log.warning("游戏记忆读取曾失败，拒绝用当前内存覆盖旧存档")
+            return False
+        try:
+            result = await self.plugin.store.set(STORE_KEY, self._milestones)
+            is_err = getattr(result, "is_err", None)
+            if callable(is_err) and is_err():
+                raise RuntimeError("store returned Err")
+            return True
+        except Exception as exc:
+            self._milestones = copy.deepcopy(before)
+            log.warning("游戏记忆写入失败，已回滚内存: %s", exc)
+            return False
 
     def _profile(self, key: SessionKey) -> Dict[str, Any]:
         profiles = self._milestones.setdefault("profiles", {})
@@ -81,44 +106,46 @@ class GameMemory:
         return "；".join(lines)
 
     async def bump_stat(self, game_id: str, key: str, amount: int = 1,
-                        *, session_key: SessionLike = SINGLE_SESSION) -> None:
+                        *, session_key: SessionLike = SINGLE_SESSION) -> bool:
         await self._load()
+        before = copy.deepcopy(self._milestones)
         profile = self._profile(coerce_session_key(session_key))
         stats = profile.setdefault("stats", {}).setdefault(game_id, {})
         stats[key] = stats.get(key, 0) + amount
-        await self._save()
+        return await self._save(before)
 
     async def set_record(self, game_id: str, key: str, value: Any, label: str = "",
                          *, session_key: SessionLike = SINGLE_SESSION) -> bool:
         await self._load()
+        before = copy.deepcopy(self._milestones)
         profile = self._profile(coerce_session_key(session_key))
         records = profile.setdefault("records", {}).setdefault(game_id, {})
         old = records.get(key)
         if old is None or (isinstance(value, (int, float)) and value > old):
             records[key] = {"value": value, "label": label, "ts": time.time()}
-            await self._save()
-            return True
+            return await self._save(before)
         return False
 
     async def record_species(self, game_id: str, name: str,
                              *, session_key: SessionLike = SINGLE_SESSION) -> bool:
         await self._load()
+        before = copy.deepcopy(self._milestones)
         profile = self._profile(coerce_session_key(session_key))
         seen = profile.setdefault("species", {}).setdefault(game_id, [])
         if name in seen:
             return False
         seen.append(name)
-        await self._save()
-        return True
+        return await self._save(before)
 
     async def register_play(self, game_id: str,
-                            *, session_key: SessionLike = SINGLE_SESSION) -> None:
+                            *, session_key: SessionLike = SINGLE_SESSION) -> bool:
         await self._load()
+        before = copy.deepcopy(self._milestones)
         profile = self._profile(coerce_session_key(session_key))
         stats = profile.setdefault("stats", {}).setdefault(game_id, {})
         stats["plays"] = stats.get("plays", 0) + 1
         stats["last_play_ts"] = time.time()
-        await self._save()
+        return await self._save(before)
 
     async def get_stats(self, game_id: str,
                         *, session_key: SessionLike = SINGLE_SESSION) -> Dict[str, Any]:
@@ -142,11 +169,15 @@ class GameMemory:
         return _ScopedGameMemory(self, coerce_session_key(session_key))
 
     # ── 会话指针持久化（谁在玩什么，重启后能接着玩）────────────
-    async def save_sessions(self, sessions: Dict[str, str]) -> None:
-        """把 user_id → game_id 的会话表落盘。"""
-        m = await self._load()
-        m["sessions"] = {str(k): str(v) for k, v in (sessions or {}).items()}
-        await self._save()
+    async def save_sessions(self, sessions: Dict[SessionLike, str]) -> bool:
+        """把 ``(channel,user_id)`` 会话表按稳定存储 ID 落盘。"""
+        await self._load()
+        before = copy.deepcopy(self._milestones)
+        self._milestones["sessions"] = {
+            coerce_session_key(key).storage_id: str(value)
+            for key, value in (sessions or {}).items()
+        }
+        return await self._save(before)
 
     async def load_sessions(self) -> Dict[str, str]:
         """读回会话表；没有就返回空表。"""
@@ -164,8 +195,8 @@ class _ScopedGameMemory:
         self._memory = memory
         self._key = key
 
-    async def bump_stat(self, game_id: str, name: str, amount: int = 1) -> None:
-        await self._memory.bump_stat(
+    async def bump_stat(self, game_id: str, name: str, amount: int = 1) -> bool:
+        return await self._memory.bump_stat(
             game_id, name, amount, session_key=self._key
         )
 
@@ -180,8 +211,10 @@ class _ScopedGameMemory:
             game_id, name, session_key=self._key
         )
 
-    async def register_play(self, game_id: str) -> None:
-        await self._memory.register_play(game_id, session_key=self._key)
+    async def register_play(self, game_id: str) -> bool:
+        return await self._memory.register_play(
+            game_id, session_key=self._key
+        )
 
     async def get_stats(self, game_id: str) -> Dict[str, Any]:
         return await self._memory.get_stats(game_id, session_key=self._key)
