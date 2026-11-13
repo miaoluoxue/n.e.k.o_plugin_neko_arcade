@@ -100,6 +100,17 @@ class GameBrain:
         self._help_rend: Optional[HelpRenderer] = None
         self._persona_raw: Optional[Dict[str, Any]] = None
         self._last_game_by_session: Dict[SessionKey, str] = {}
+        # 辅助缓存会随 (channel,user_id) 增长。对已离场会话做 TTL/上限清理，
+        # 但正在进行的游戏会话受保护，避免清缓存时把真实对局状态带走。
+        self._session_cache_ttl = float(cfg.get("session_cache_ttl", 86400.0))
+        self._session_cache_max = max(0, int(cfg.get("session_cache_max", 500)))
+        self._session_prune_interval = max(1.0, float(cfg.get("session_prune_interval", 60.0)))
+        self._last_session_prune_ts = 0.0
+        # 每会话主动邀请仍有 3 次/日上限；再加插件级总量，防止大量群聊合计刷屏。
+        self._proactive_global_limit = max(
+            0, int(cfg.get("proactive_daily_global_limit", 12)))
+        self._proactive_invite_day = ""
+        self._proactive_invite_count = 0
 
     @staticmethod
     def _clone_persona(base: Persona) -> Persona:
@@ -166,6 +177,99 @@ class GameBrain:
         if not hasattr(self, "_last_activity_ts_by_session"):
             self._last_activity_ts_by_session = {}
         self._last_activity_ts_by_session[session] = time.time()
+
+    @staticmethod
+    def _dict_pop(mapping: Any, key: Any) -> None:
+        if isinstance(mapping, dict):
+            mapping.pop(key, None)
+
+    def _drop_session_caches(self, key: SessionKey) -> None:
+        """清理某会话的全部辅助缓存；_sessions 由游戏生命周期单独管理。"""
+        for name in (
+            "_companions", "_proactive_by_session", "_last_anchor_ts_by_session",
+            "_last_activity_ts_by_session", "_pending_switch", "_last_game_by_session",
+        ):
+            self._dict_pop(getattr(self, name, None), key)
+        invites = getattr(self, "_last_invite", None)
+        if isinstance(invites, dict):
+            for invite_key in [k for k in invites if k and k[0] == key]:
+                invites.pop(invite_key, None)
+        recent = getattr(self, "_recent_inputs", None)
+        if isinstance(recent, dict):
+            for input_key in [k for k in recent if k and k[0] == key]:
+                recent.pop(input_key, None)
+
+    def _session_cache_last_seen(self, key: SessionKey, now: float) -> float:
+        stamps = [
+            self._last_activity(key),
+            self._last_anchor(key),
+            float(getattr(self, "_session_start_by_key", {}).get(key, 0.0)),
+        ]
+        pending = self._pending_switch_map().get(key)
+        if isinstance(pending, dict):
+            try:
+                stamps.append(float(pending.get("ts") or 0.0))
+            except (TypeError, ValueError):
+                pass
+        for invite_key, ts in getattr(self, "_last_invite", {}).items():
+            if invite_key and invite_key[0] == key:
+                try:
+                    stamps.append(float(ts or 0.0))
+                except (TypeError, ValueError):
+                    pass
+        return max([stamp for stamp in stamps if stamp] or [0.0])
+
+    def _prune_session_caches(self, now: Optional[float] = None,
+                              *, force: bool = False) -> int:
+        """按 TTL 与数量上限清理辅助缓存；活跃游戏/当前会话永不淘汰。"""
+        now = time.time() if now is None else float(now)
+        interval = float(getattr(self, "_session_prune_interval", 60.0))
+        last = float(getattr(self, "_last_session_prune_ts", 0.0))
+        if not force and now - last < interval:
+            return 0
+        self._last_session_prune_ts = now
+        protected = set(self._session_table())
+        current = getattr(self, "_current_session", None)
+        if current is not None:
+            protected.add(current)
+
+        keys: set[SessionKey] = set()
+        for name in (
+            "_companions", "_proactive_by_session", "_last_anchor_ts_by_session",
+            "_last_activity_ts_by_session", "_pending_switch", "_last_game_by_session",
+        ):
+            mapping = getattr(self, name, None)
+            if isinstance(mapping, dict):
+                keys.update(mapping)
+        for invite_key in getattr(self, "_last_invite", {}):
+            if invite_key:
+                keys.add(invite_key[0])
+        for input_key in getattr(self, "_recent_inputs", {}):
+            if input_key:
+                keys.add(input_key[0])
+
+        removed = 0
+        ttl = float(getattr(self, "_session_cache_ttl", 86400.0))
+        for key in list(keys):
+            if key in protected:
+                continue
+            seen = self._session_cache_last_seen(key, now)
+            if ttl > 0 and (not seen or now - seen > ttl):
+                self._drop_session_caches(key)
+                keys.discard(key)
+                removed += 1
+
+        limit = max(0, int(getattr(self, "_session_cache_max", 500)))
+        remaining = [k for k in keys if k not in protected]
+        if len(keys) > limit:
+            remaining.sort(key=lambda k: self._session_cache_last_seen(k, now))
+            for key in remaining:
+                if len(keys) <= limit:
+                    break
+                self._drop_session_caches(key)
+                keys.discard(key)
+                removed += 1
+        return removed
 
     def _maybe_refresh_persona(self) -> bool:
         """宿主随时可能换猫娘: 每次 tick 检查一次(带签名+TTL, 平时不开销)。
@@ -282,6 +386,7 @@ class GameBrain:
             starts[key] = time.time()
             self._current_session = key
             self._session_start = starts[key]
+            self._mark_activity(key)
         else:
             table.pop(key, None)
             starts.pop(key, None)
@@ -978,6 +1083,7 @@ class GameBrain:
                     "mood": persona.mood.snapshot(),
                     "game_commands": [c[0] for c in commands[:8] if isinstance(c, (list, tuple)) and c[0]]}
         self._last_invite[invite_key] = now
+        self._mark_activity(key)
 
         text = f"{call}要玩{game.name}吗？{game.icon}\n\n玩法说明：\n{docs}"
         # 邀请文本原样推到聊天框；AI 回应由宿主按 summary 触发（proactive 管线），
@@ -1148,6 +1254,8 @@ class GameBrain:
 
     async def tick(self) -> Optional[str]:
         self._maybe_refresh_persona()          # 猫娘可换: 每秒轻量检查一次
+        now = time.time()
+        self._prune_session_caches(now)
         focus = getattr(self, "_current_session", None) or SINGLE_SESSION
         sessions = self.active_sessions()
         active_keys = set(sessions) or {focus}
@@ -1155,7 +1263,6 @@ class GameBrain:
             self._companion_for(key).persona.mood.decay_all()
             self._proactive_for(key).tick()
         # 换游戏确认会过期：用户半天不回就不再提，避免旧的确认一直挂在上下文里。
-        now = time.time()
         for uid, pending in list(self._pending_switch_map().items()):
             if now - float(pending.get("ts") or 0) > self._switch_confirm_ttl:
                 self._clear_pending_switch(uid)
@@ -1300,8 +1407,16 @@ class GameBrain:
         # 注意: 游戏进行中(tick 已短路 return None), 不会到这里。
         # 非游戏状态才可能主动说话(久不玩邀请等)。
         proactive = self._proactive_for(session)
+        today = time.strftime("%Y-%m-%d")
+        if getattr(self, "_proactive_invite_day", "") != today:
+            self._proactive_invite_day = today
+            self._proactive_invite_count = 0
+        limit = max(0, int(getattr(self, "_proactive_global_limit", 12)))
+        if getattr(self, "_proactive_invite_count", 0) >= limit:
+            return None
         if await proactive.should_invite():
             proactive.mark_invited()
+            self._proactive_invite_count = getattr(self, "_proactive_invite_count", 0) + 1
             return "好久没一起玩游戏了喵，要不要来一局？"
         return None
 

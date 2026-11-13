@@ -121,6 +121,22 @@ N.E.K.O 插件 · 插件化小游戏聚合器 · 支持聊天/语音自然语言
 喵图相册的图库放在 `games/neko_photo/data/<分类>/`（**不进 git**，打包默认空图库）；
 上传的图只在你本地，不会被提交或打进发布包。
 
+主插件高级配置位于宿主数据目录的 `data/main/config.json`，缺省即安全值：
+
+| 配置键 | 默认值 | 作用 |
+|---|---:|---|
+| `llm_max_calls_per_minute` | `15` | 插件 LLM 每分钟调用上限 |
+| `asset_prefetch` | `false` | 是否启动时预取全部外置素材；默认只在游戏真正用图时下载 |
+| `asset_cache_mb` | 内置安全值 | 素材缓存上限，下载前按 LRU 清理 |
+| `game_anchor_interval` | `20` | 游戏中向 LLM 注入状态锚的最短间隔（秒） |
+| `background_active_window` | `900` | 主人多久没说话后停止后台自动动作（秒） |
+| `game_switch_confirm_ttl` | `180` | 换游戏确认的有效期（秒） |
+| `session_cache_ttl` | `86400` | 已离场会话辅助缓存的保留时间（秒） |
+| `session_cache_max` | `500` | 会话辅助缓存数量上限；活跃游戏会话不会被淘汰 |
+| `session_prune_interval` | `60` | 会话缓存清理检查间隔（秒） |
+| `proactive_daily_global_limit` | `12` | 所有会话合计每日主动邀请上限 |
+| `help_width` | `320` | 帮助图渲染宽度，面板可按聊天窗口需要调整 |
+
 ## 🧑‍💻 开发者
 
 - 📘 开发文档 / 接入规则 / 运行机制：见本仓库 [docs/](docs/) 目录

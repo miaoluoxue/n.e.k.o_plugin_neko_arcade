@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import random
+import time
 from pathlib import Path
 
 from plugin.plugins.neko_arcade.core.brain import GameBrain
@@ -355,6 +356,77 @@ def test_brain_initializes_companion_with_same_persona():
     assert brain.companion.persona is brain.persona
     registry._companion = brain.companion
     assert registry._companion is not None
+
+
+def test_idle_session_caches_are_pruned_with_related_state():
+    key = SessionKey("qq", "idle-user")
+    brain = _make_brain([_FakeGame("fishing", "钓鱼")])
+    brain._session_cache_ttl = 10
+    brain._session_cache_max = 100
+    brain._session_prune_interval = 1
+    brain._companions[key] = object()
+    brain._proactive_by_session[key] = object()
+    brain._last_anchor_ts_by_session[key] = 1.0
+    brain._last_activity_ts_by_session[key] = 1.0
+    brain._pending_switch[key] = {"to": "xiuxian", "ts": 1.0}
+    brain._last_game_by_session[key] = "fishing"
+    brain._last_invite[(key, "fishing")] = 1.0
+    brain._recent_inputs[(key, "fishing", "抛竿")] = (1.0, "done")
+
+    assert brain._prune_session_caches(now=100.0, force=True) == 1
+    assert key not in brain._companions
+    assert key not in brain._proactive_by_session
+    assert key not in brain._pending_switch
+    assert key not in brain._last_game_by_session
+    assert not any(k[0] == key for k in brain._last_invite)
+    assert not any(k[0] == key for k in brain._recent_inputs)
+
+
+def test_active_session_is_never_evicted_by_cache_limit():
+    active = SessionKey("qq", "active")
+    idle = SessionKey("web", "idle")
+    brain = _make_brain([_FakeGame("fishing", "钓鱼")])
+    brain._session_cache_ttl = 3600
+    brain._session_cache_max = 1
+    brain._session_prune_interval = 1
+    brain._sessions = {active: "fishing"}
+    brain._current_session = active
+    brain._companions[active] = object()
+    brain._proactive_by_session[active] = object()
+    brain._last_activity_ts_by_session[active] = 1.0
+    brain._companions[idle] = object()
+    brain._proactive_by_session[idle] = object()
+    brain._last_activity_ts_by_session[idle] = 2.0
+
+    brain._prune_session_caches(now=100.0, force=True)
+    assert active in brain._companions and active in brain._proactive_by_session
+    assert idle not in brain._companions and idle not in brain._proactive_by_session
+
+
+def test_proactive_global_daily_limit_caps_all_sessions():
+    class _Ready:
+        def __init__(self):
+            self.marked = 0
+
+        async def should_invite(self):
+            return True
+
+        def mark_invited(self):
+            self.marked += 1
+
+    brain = _make_brain([_FakeGame("fishing", "钓鱼")])
+    brain._proactive_global_limit = 2
+    brain._proactive_invite_day = time.strftime("%Y-%m-%d")
+    brain._proactive_invite_count = 0
+    keys = [SessionKey("qq", f"u{i}") for i in range(3)]
+    engines = [_Ready() for _ in keys]
+    for key, engine in zip(keys, engines):
+        brain._proactive_by_session[key] = engine
+
+    got = [asyncio.run(brain._proactive_text(key)) for key in keys]
+    assert got[0] and got[1] and got[2] is None
+    assert [engine.marked for engine in engines] == [1, 1, 0]
+    assert brain._proactive_invite_count == 2
 
 
 def test_post_action_failures_do_not_discard_game_result():
