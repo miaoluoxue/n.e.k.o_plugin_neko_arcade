@@ -13,6 +13,7 @@ exclude_dirs = [
     ".pytest_cache",
     ".ruff_cache",
     "tests",
+    ".tmp_*_test",
     ".tmp_neko_photo_test",
     ".tmp_push_sender_test",
     # 喵图相册图库: 用户上传/自建的图**绝不进包**(打包发布默认空图库)
