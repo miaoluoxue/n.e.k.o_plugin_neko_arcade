@@ -44,6 +44,7 @@ class ArcadeRuntime:
             config_manager=self.cfg_mgr, push_sender=self.push)
         self.brain: Optional[GameBrain] = None
         self._tick_task: Optional[asyncio.Task] = None
+        self._persist_tasks: set[asyncio.Task[Any]] = set()
 
     def _code_dir(self) -> str:
         """插件代码目录(只读, 放静态素材与默认配置)。"""
@@ -70,15 +71,9 @@ class ArcadeRuntime:
         # token 统计落盘: 写插件自身 store(键 game_user_data:llm_stats), 供 UI 查询
         try:
             store = self.plugin.store
-
-            def _persist_stats(s: Dict[str, Any]) -> None:
-                try:
-                    asyncio.get_event_loop().create_task(
-                        store.set("game_user_data:llm_stats", s)
-                    )
-                except Exception:
-                    pass
-            self.llm.set_persist(_persist_stats)
+            self.llm.set_persist(
+                lambda stats: self._persist_llm_stats(store, stats)
+            )
         except Exception as exc:
             log.warning("设置 token 统计落盘失败: %s", exc)
         self.brain = GameBrain(self.plugin, self.registry, self.cfg,
@@ -328,6 +323,32 @@ class ArcadeRuntime:
         # 时情感渲染降级到预制模板, 不影响对话(猫娘自然回应由宿主 LLM 按 summary 生成)。
         log.info("未配置自建 LLM, 情感渲染用模板兜底(对话由宿主按 summary 演绎)")
 
+    @staticmethod
+    async def _write_llm_stats(store: Any, stats: Dict[str, Any]) -> None:
+        result = await store.set("game_user_data:llm_stats", stats)
+        is_err = getattr(result, "is_err", None)
+        if callable(is_err) and is_err():
+            raise RuntimeError("token 统计写入返回 Err")
+
+    def _persist_llm_stats(self, store: Any, stats: Dict[str, Any]) -> None:
+        """保存异步任务引用，避免任务被 GC；无运行循环时明确告警。"""
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            log.warning("token 统计落盘失败：当前没有运行中的事件循环")
+            return
+        task = loop.create_task(self._write_llm_stats(store, dict(stats)))
+        self._persist_tasks.add(task)
+
+        def _done(completed: asyncio.Task[Any]) -> None:
+            self._persist_tasks.discard(completed)
+            try:
+                completed.result()
+            except Exception as exc:
+                log.warning("token 统计落盘失败: %s", exc)
+
+        task.add_done_callback(_done)
+
     async def shutdown(self) -> None:
         if self.assets is not None:
             try:
@@ -337,6 +358,11 @@ class ArcadeRuntime:
         if self._tick_task:
             self._tick_task.cancel()
             self._tick_task = None
+        persist_tasks = getattr(self, "_persist_tasks", set())
+        if persist_tasks:
+            tasks = list(persist_tasks)
+            await asyncio.gather(*tasks, return_exceptions=True)
+            persist_tasks.clear()
         for game in self.registry.games:
             try:
                 await game.on_unload()
