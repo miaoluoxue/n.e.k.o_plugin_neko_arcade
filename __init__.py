@@ -133,9 +133,9 @@ class NekoArcadePlugin(NekoPluginBase):
                    "message": f"可玩的小游戏：{names}。想玩哪个说游戏名就行喵"})
 
     @plugin_entry(id="play_game", name="玩游戏",
-                  description="猫娘小游戏的唯一游戏入口。用户说想玩小游戏、提到游戏名(塔罗牌/占卜/钓鱼/人生重开/猜硬币/海龟汤/修仙/俄罗斯轮盘/历史上的今天/猫猫进化路等)、要发图/看照片(发图/来张图/来一张/照片/自拍/喵图/图库/图鉴等)、或对当前游戏下指令(抛竿/开始/继续/再来一局/帮助)时，直接调用本入口，传用户原话，插件自动匹配游戏并执行。喵图相册是内置小游戏：用户要图就发图，说「图库」列分类，说「喵图 分类名」发指定分类。不要先查游戏列表或状态。",
+                  description="猫娘小游戏的唯一游戏入口。用户说想玩小游戏、提到游戏名(塔罗牌/占卜/钓鱼/人生重开/猜硬币/海龟汤/修仙/俄罗斯轮盘/历史上的今天/猫猫进化路/喵图相册等)、或对当前游戏下指令(抛竿/开始/继续/再来一局/帮助)时，直接调用本入口，传用户原话，插件自动匹配游戏并执行。用户明确索图走 send_photo，不走本入口。不要先查游戏列表或状态。",
                   input_schema={"type": "object", "properties": {
-                      "input": {"type": "string", "description": "用户说的原话，如「塔罗牌」「占卜」「钓鱼」「抛竿」「人生重开」「发图」「来张图」"},
+                      "input": {"type": "string", "description": "用户说的原话，如「塔罗牌」「占卜」「钓鱼」「抛竿」「人生重开」"},
                   }, "required": ["input"]},
                   # 宿主按 summary 字段拼装任务结果喂给对话 LLM，猫娘才能对游戏结果有反馈。
                   # ⚠️ 这是唯一对宿主 LLM 路由可见的 entry——list_games/game_status/game_help
@@ -452,9 +452,6 @@ class NekoArcadePlugin(NekoPluginBase):
             "调用规则：\n"
             "- 用户提到任何游戏名或游戏指令 = 明确的执行请求，直接调用本工具，"
             "**不要先问「要玩吗？」、不要自己扮演游戏流程**。\n"
-            "- 用户要发图/看照片/看相册（如「发图」「来张图」「来一张」「照片」「自拍」"
-            "「喵图」「图库」「图鉴」）也走本工具：传用户原话，喵图相册会自动发图，"
-            "不要自己编造图片或假装发图。\n"
             "- 多轮游戏中游戏返回选择提示后，用户说「可以/好的/随机/继续/对的/嗯」等"
             "表示继续或让 AI 决定时，同样调用本工具并传「随机」或用户原话。\n"
             "- 若当前有进行中的游戏（上下文可能出现 [游戏状态] 提示），用户说的原话"
@@ -497,11 +494,7 @@ class NekoArcadePlugin(NekoPluginBase):
     async def tool_send_photo(
         self, input: str = "", _ctx: dict[str, Any] | None = None
     ) -> Any:
-        """send_photo LLM 工具处理器（由 runtime._register_dynamic_llm_tool 注册）。
-
-        猫娘在聊天中自主决定何时调用: 想分享心情/活跃气氛/给主人惊喜时,
-        随机发一张图(动态猫娘表情或用户上传的图库照片)。
-        """
+        """send_photo LLM 工具处理器：仅响应用户明确的图片请求。"""
         if not self.rt:
             return {"error": "猫娘小游戏还没准备好"}
         game = self.rt.registry.get("neko_photo")

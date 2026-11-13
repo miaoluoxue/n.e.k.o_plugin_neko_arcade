@@ -138,11 +138,7 @@ class ArcadeRuntime:
         self._register_send_photo_tool(plugin, register, getattr(plugin, "unregister_llm_tool", None))
 
     def _register_send_photo_tool(self, plugin, register, unregister) -> None:
-        """注册 send_photo 工具: 猫娘聊天中自主随机发图。
-
-        不依赖用户关键词 —— 猫娘想分享心情/活跃气氛/给主人惊喜时自行调用。
-        工具描述刻意写得不强制: 让 LLM 自然决定频率。
-        """
+        """注册 send_photo 工具：只在用户明确索图时发图。"""
         photo = self.registry.get("neko_photo")
         if not photo:
             return
@@ -152,14 +148,11 @@ class ArcadeRuntime:
             except Exception as exc:
                 log.warning("注销静态 send_photo 工具失败: %s", exc)
         description = (
-            "给主人发一张照片时调用。适合这些时刻: 聊到开心想分享心情、"
-            "气氛有点安静想活跃一下、想给主人一个惊喜、或者主人提到想看你的照片/图片时。"
-            "**主人明确说「发图/来张图/来一张/照片/自拍/喵图/给我看看/看图」时，"
-            "必须立即调用本工具，不要闲聊绕开**。"
+            "仅在用户明确索要图片时调用。触发语义包括「发图/来张图/来一张/"
+            "照片/自拍/喵图/看图」；普通闲聊、问候、游戏进行中不要调用。"
             "调用后你会随机发一张照片给主人(可能是你的表情自拍, 也可能是主人上传的图库照片), "
-            "不要连续多次调用, 一次聊天里发一两张就够了。"
-            "频率由你自己拿捏: 想发就发, 但插件会拦下过密的调用(会返回 limited 提示), "
-            "收到提示就说明刚发过, 别再接着调用。"
+            "同一轮只调用一次；若插件返回 limited，就不要再调用。"
+            "本工具负责发图；不要改用 play_game 或自己编造图片。"
         )
         try:
             register(
@@ -185,6 +178,49 @@ class ArcadeRuntime:
         "再来一局", "再玩一局", "继续玩", "继续刚才的游戏", "接着玩",
         "再玩一次", "还想玩", "玩点什么", "随便玩", "来一局", "来一把", "开一局",
     )
+    _EXPLICIT_INTENT_PREFIXES = (
+        "陪我玩", "咱们玩", "一起玩", "我要玩", "我想玩", "再玩一次", "再玩一局",
+        "来一局", "来一把", "开一局", "开始", "打开", "启动", "体验", "试试",
+        "来玩", "想玩",
+        "陪我", "一起", "我要", "我想", "玩",
+    )
+    _COMMAND_SUFFIXES = (
+        "帮助", "状态", "背包", "菜单", "列表", "继续", "随机", "棋盘",
+        "悔棋", "认输", "下一步", "开始", "过", "正", "反", "正面", "反面",
+    )
+    _CONTEXT_COMMAND_MAX_CHARS = 12
+
+    @classmethod
+    def _explicit_keyword_intent(cls, raw: str, keyword: str) -> bool:
+        """判断关键词是明确游戏意图，而不是闲聊中顺手提到。"""
+        text = (raw or "").strip()
+        kw = str(keyword or "").strip()
+        if not text or not kw or kw not in text:
+            return False
+        if text == kw:
+            return True
+        for prefix in cls._EXPLICIT_INTENT_PREFIXES:
+            if text.startswith(prefix) and kw in text[len(prefix):]:
+                return True
+        if not text.startswith(kw):
+            return False
+        suffix_raw = text[len(kw):]
+        suffix = suffix_raw.strip()
+        if not suffix:
+            return True
+        if suffix_raw[:1].isspace() or suffix_raw[:1] in "：:，,、":
+            return True
+        if suffix[:1].isdigit() or suffix[:1].isascii() and suffix[:1].isalpha():
+            return True
+        return any(suffix.startswith(word) for word in cls._COMMAND_SUFFIXES)
+
+    @classmethod
+    def _looks_like_context_command(cls, raw: str) -> bool:
+        """会话内兜底只接短指令，长句留给正常聊天。"""
+        text = (raw or "").strip()
+        if not text or len(text) > cls._CONTEXT_COMMAND_MAX_CHARS:
+            return False
+        return not any(ch in text for ch in "。！？!?；;\n")
 
     def parse_input(
         self, input: str, session: SessionLike = SINGLE_SESSION
@@ -220,7 +256,9 @@ class ArcadeRuntime:
             """
             clean = raw.strip()
             # 剥掉「玩/来玩/我要玩/想玩/来把」前缀, 看剩下是否还有具体指令
-            for p in ("我要玩", "我想玩", "来玩", "来把", "来一局", "玩一下", "想玩"):
+            for p in ("陪我玩", "咱们玩", "一起玩", "我要玩", "我想玩", "来玩",
+                      "来把", "来一局", "玩一下", "想玩", "开始", "打开", "启动",
+                      "体验", "试试"):
                 if clean.startswith(p):
                     rest = clean[len(p):].strip()
                     if rest and rest not in game.get_keywords():
@@ -252,7 +290,7 @@ class ArcadeRuntime:
             cur_game = self.registry.get(cur)
             if cur_game:
                 for kw in cur_game.get_keywords():
-                    if kw and kw in input:
+                    if self._explicit_keyword_intent(input, kw):
                         return _normalize(cur_game, input)
 
         # 2. 全局关键词(先到先得, 允许切游戏)
@@ -260,11 +298,11 @@ class ArcadeRuntime:
             if cur and game.id == cur:
                 continue  # 当前游戏已在上面查过
             for kw in game.get_keywords():
-                if kw and kw in input:
+                if self._explicit_keyword_intent(input, kw):
                     return _normalize(game, input)
 
         # 3. current_game 兜底(多轮续接: 数字/随机等无关键词输入)
-        if cur:
+        if cur and self._looks_like_context_command(input):
             return cur, input
 
         # 4. last_game 弱指令兜底: 无会话 + 弱指令意图词 → 回最近游戏并换启动指令

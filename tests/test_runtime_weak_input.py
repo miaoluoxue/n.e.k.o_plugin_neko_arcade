@@ -88,6 +88,21 @@ def test_current_game_takes_priority():
     assert gid == "fishing", "当前会话优先于 last_game"
 
 
+def test_current_game_long_chat_is_not_routed():
+    """有会话时，长句仍应留给普通聊天，不能全塞给当前游戏。"""
+    rt = _make_runtime(_FakeBrain(current="fishing", last="remake"))
+    for text in ("今天天气不错，工作总算忙完了", "我觉得修仙那个话题挺有意思的",
+                 "刚才那条鱼看起来真的好大啊"):
+        gid, _ = rt.parse_input(text)
+        assert gid is None, f"长闲聊不应路由进游戏: {text!r}"
+
+
+def test_current_game_short_alias_still_routes():
+    rt = _make_runtime(_FakeBrain(current="fishing"))
+    gid, cmd = rt.parse_input("背包")
+    assert (gid, cmd) == ("fishing", "背包")
+
+
 def test_weak_input_not_triggered_by_plain_chat():
     """普通闲聊不含弱指令词 → 不路由(防误伤)。"""
     rt = _make_runtime(_FakeBrain(last="fishing"))
@@ -142,3 +157,36 @@ def test_play_prefix_normalized_to_start_cmd():
     gid, cmd = rt.parse_input("塔罗牌")
     assert gid == "tarot"
     assert cmd == "塔罗牌"
+
+
+def test_chat_mentions_do_not_start_games_without_intent():
+    rt = _make_runtime(_FakeBrain())
+    for text in ("我今天路过河边看到有人钓鱼", "钓鱼真有意思",
+                 "照片里那棵树很好看", "修仙小说最近很火"):
+        gid, _ = rt.parse_input(text)
+        assert gid is None, f"闲聊提及不应开游戏: {text!r}"
+
+
+def test_explicit_intent_and_command_phrases_still_start_games():
+    rt = _make_runtime(_FakeBrain())
+    for text, expected in (("玩钓鱼", "fishing"), ("开始钓鱼", "fishing"),
+                           ("来玩人生重开", "remake"), ("钓鱼3次", "fishing")):
+        gid, _ = rt.parse_input(text)
+        assert gid == expected, f"{text!r} 应路由 {expected}, got {gid}"
+
+
+def test_send_photo_tool_is_explicit_request_only():
+    rt = ArcadeRuntime.__new__(ArcadeRuntime)
+    rt.registry = _FakeRegistry([_FakeGame("neko_photo", ["喵图相册"])])
+    captured = {}
+
+    def register(**kwargs):
+        captured.update(kwargs)
+
+    plugin = type("P", (), {"tool_send_photo": object()})()
+    rt._register_send_photo_tool(plugin, register, None)
+    description = captured["description"]
+    assert "仅在用户明确索要图片时调用" in description
+    assert "不要改用 play_game" in description
+    assert "必须立即调用" not in description
+    assert "想给主人一个惊喜" not in description
