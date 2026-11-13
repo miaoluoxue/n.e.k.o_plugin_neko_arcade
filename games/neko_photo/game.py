@@ -59,14 +59,15 @@ class NekoPhotoGame(GameAdapter):
         #   「喵图相册」里含「喵图」，旧顺序会把它当成分类「相册」，
         #   于是明明有「猫娘博士」等分类却报「分类「相册」里还没有图」。
         if (not c) or c in (self.name, self.id, "喵图相册", "喵图"):
-            if self.photo_categories():
+            if await self.photo_categories_async():
                 return await self._send_photo(user_id)
             return await self._categories(user_id)
 
         # 发图: 喵图/发图/来张图/照片/自拍(专属前缀, 避免泛化词误路由)
         # 支持分类: 「喵图 可爱」「发张 日常 的图」
         if any(k in c for k in ("喵图", "发图", "来张", "来一张", "照片", "自拍")):
-            category = self._extract_category(c)
+            category = self._extract_category(
+                c, cats=await self.photo_categories_async())
             if category is None and any(k in c for k in ("图库", "分类", "有哪些图")):
                 return await self._categories(user_id)
             return await self._send_photo(user_id, category=category)
@@ -81,7 +82,7 @@ class NekoPhotoGame(GameAdapter):
 
         return {"facts": [], "outcome": "unknown", "message": ""}
 
-    def _extract_category(self, cmd: str) -> Optional[str]:
+    def _extract_category(self, cmd: str, cats: Optional[List[str]] = None) -> Optional[str]:
         """从指令里提取分类名。例: 「喵图 可爱」→ 可爱; 「发张日常的图」→ 日常。
 
         两步策略:
@@ -90,7 +91,7 @@ class NekoPhotoGame(GameAdapter):
         2. 回退: 若指令是「喵图 X / 发张X的图」这类明确带分类意图的形式, 且 X
            不是已有分类, 把 X 原样返回(由上层提示该分类无图)。
         """
-        cats = self.photo_categories()
+        cats = list(cats) if cats is not None else self.photo_categories()
         # 1. 直接匹配已有分类(原始指令, 不剥词)
         for cat in sorted(cats, key=len, reverse=True):
             if cat and cat in cmd:
@@ -284,12 +285,12 @@ class NekoPhotoGame(GameAdapter):
 
     async def _categories(self, user_id: str) -> Dict[str, Any]:
         """列出图库分类(走桥接)。"""
-        cats = self.photo_categories()
+        cats = await self.photo_categories_async()
         if not cats:
             return {"facts": [build_fact("categories", count=0)], "outcome": "categories",
                     "message": "图库还是空的喵, 去面板上传几张图吧~"}
         lines = ["📂 猫娘图库分类:"]
-        imgs = self._photo.scan_images() if self._photo else []
+        imgs = await self._photo.scan_images_async() if self._photo else []
         for cat in cats:
             n = len([i for i in imgs if i.get("category") == cat])
             lines.append(f"  · {cat} ({n} 张)")
@@ -344,12 +345,13 @@ class NekoPhotoGame(GameAdapter):
     async def get_status(self, user_id: str = "default") -> Dict[str, Any]:
         data = await self._load_data(user_id)
         stats = data.get("stats", {})
-        imgs = self._photo.scan_images() if self._photo else []
+        imgs = await self._photo.scan_images_async() if self._photo else []
+        categories = await self.photo_categories_async()
         return {"collected": len(data.get("collection", {})),
                 "total": stats.get("total", 0),
                 "rare": stats.get("rare", 0),
                 "today": data.get("today_count", 0),
-                "categories": self.photo_categories(),
+                "categories": categories,
                 "image_count": len(imgs)}
 
     def classify_event(self, outcome: str, facts: List[Dict[str, Any]]) -> str:

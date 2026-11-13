@@ -15,6 +15,7 @@ import asyncio
 import json
 import shutil
 import subprocess
+import time
 from pathlib import Path
 from typing import Any, Dict
 
@@ -296,3 +297,44 @@ def test_batch_limit_is_declared_and_enforced_in_entry() -> None:
     payload = upload_batch_error(files)
     assert payload and payload["error"] == "too_many_files"
     assert payload["limit"] == MAX_UPLOAD_FILES
+
+
+def test_photo_scan_runs_off_event_loop(monkeypatch) -> None:
+    bridge = _bridge()
+
+    def slow_scan():
+        time.sleep(0.05)
+        return []
+
+    monkeypatch.setattr(bridge, "scan_images", slow_scan)
+
+    async def run():
+        task = asyncio.create_task(bridge.scan_images_async())
+        await asyncio.sleep(0.005)
+        assert not task.done(), "扫描应在线程池运行，不能阻塞事件循环"
+        assert await task == []
+
+    asyncio.run(run())
+
+
+def test_photo_upload_write_runs_off_event_loop(monkeypatch) -> None:
+    bridge = _bridge()
+    monkeypatch.setattr(bridge, "_write_upload", PhotoBridge._write_upload)
+    original = bridge._write_upload
+
+    def slow_write(path, raw):
+        time.sleep(0.05)
+        return original(path, raw)
+
+    monkeypatch.setattr(bridge, "_write_upload", slow_write)
+
+    async def run():
+        task = asyncio.create_task(bridge.upload_photo(
+            "u1", "slow.png", data_bytes=b"\x89PNG" + b"0" * 8,
+            category="异步"))
+        await asyncio.sleep(0.005)
+        assert not task.done(), "文件写入应在线程池运行"
+        result = await task
+        assert result["ok"], result
+
+    asyncio.run(run())

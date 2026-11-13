@@ -16,11 +16,13 @@ markdown URL 通道显示(当前宿主唯一可靠的游戏图片显示通道)�
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import logging
 import os
 import random
 import re
+import threading
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -95,6 +97,7 @@ class PhotoBridge:
         self._img_root_override = img_root  # 自定义图库根目录(默认 games/neko_photo/data)
         self._img_cache: List[Dict[str, Any]] = []
         self._img_scan_ts = 0.0
+        self._cache_lock = threading.Lock()
 
     def bind(self, push: Any = None, img: Any = None) -> None:
         """绑定推送/渲染服务(由 runtime 注入)。"""
@@ -106,8 +109,12 @@ class PhotoBridge:
     def set_img_root(self, path) -> None:
         """设置图库根目录(游戏资源在 games/<game>/data/ 下时调用)。"""
         self._img_root_override = str(path)
-        self._img_cache = []
-        self._img_scan_ts = 0.0
+        self._invalidate_scan_cache()
+
+    def _invalidate_scan_cache(self) -> None:
+        with self._cache_lock:
+            self._img_cache = []
+            self._img_scan_ts = 0.0
 
     # ── 图库根目录 ─────────────────────────
 
@@ -194,51 +201,60 @@ class PhotoBridge:
                 continue
         return sorted(names)
 
+    async def get_categories_async(self) -> List[str]:
+        """目录遍历走线程池，避免阻塞宿主事件循环。"""
+        return await asyncio.to_thread(self.get_categories)
+
     def scan_images(self) -> List[Dict[str, Any]]:
         """递归扫描图库目录下所有分类的图片(带 10s 缓存)。
 
         每张图带 category(分类) + bytes(交 brain 统一推送)。
         """
-        now = time.time()
-        if self._img_cache and now - self._img_scan_ts < 10.0:
-            return self._img_cache
-        self._img_cache = []
-        self._img_scan_ts = now
-        seen: set = set()
-        for root in self._scan_roots():
-            try:
-                cat_dirs = sorted(root.iterdir())
-            except OSError:
-                continue
-            for cat_dir in cat_dirs:
-                if not cat_dir.is_dir():
-                    continue
-                cat = cat_dir.name
+        with self._cache_lock:
+            now = time.time()
+            if self._img_cache and now - self._img_scan_ts < 10.0:
+                return self._img_cache
+            self._img_cache = []
+            self._img_scan_ts = now
+            seen: set = set()
+            for root in self._scan_roots():
                 try:
-                    fnames = sorted(os.listdir(str(cat_dir)))
+                    cat_dirs = sorted(root.iterdir())
                 except OSError:
                     continue
-                for fname in fnames:
-                    key = (cat, fname)
-                    if key in seen:
+                for cat_dir in cat_dirs:
+                    if not cat_dir.is_dir():
                         continue
-                    ext = os.path.splitext(fname)[1].lower()
-                    if ext not in IMG_EXTS:
-                        continue
-                    path = cat_dir / fname
+                    cat = cat_dir.name
                     try:
-                        self._img_cache.append({
-                            "bytes": path.read_bytes(),
-                            "mime": _img_ext(str(path)),
-                            "style": os.path.splitext(fname)[0],
-                            "rarity": "rare",
-                            "source": "local",
-                            "category": cat,
-                        })
-                        seen.add(key)
+                        fnames = sorted(os.listdir(str(cat_dir)))
                     except OSError:
                         continue
-        return self._img_cache
+                    for fname in fnames:
+                        key = (cat, fname)
+                        if key in seen:
+                            continue
+                        ext = os.path.splitext(fname)[1].lower()
+                        if ext not in IMG_EXTS:
+                            continue
+                        path = cat_dir / fname
+                        try:
+                            self._img_cache.append({
+                                "bytes": path.read_bytes(),
+                                "mime": _img_ext(str(path)),
+                                "style": os.path.splitext(fname)[0],
+                                "rarity": "rare",
+                                "source": "local",
+                                "category": cat,
+                            })
+                            seen.add(key)
+                        except OSError:
+                            continue
+            return self._img_cache
+
+    async def scan_images_async(self) -> List[Dict[str, Any]]:
+        """递归扫描和整图读取都放到线程池。"""
+        return await asyncio.to_thread(self.scan_images)
 
     # ── 挑图 ──────────────────────────────
 
@@ -249,7 +265,7 @@ class PhotoBridge:
         优先级: 本地图库 → 动态猫娘表情(PIL) → 插件自带默认图(assets/icon.png)。
         最后一档让"默认空图库"也能发图——打包发出去是空库, 但猫娘照样能晒图。
         """
-        local = self.scan_images()
+        local = await self.scan_images_async()
         if category:
             in_cat = [i for i in local if i.get("category") == category]
             if in_cat:
@@ -292,7 +308,7 @@ class PhotoBridge:
             if not path.is_file():
                 continue
             try:
-                data = path.read_bytes()
+                data = await asyncio.to_thread(path.read_bytes)
             except OSError:
                 continue
             if not data:
@@ -450,29 +466,34 @@ class PhotoBridge:
         if not cat:
             return {"ok": False, "code": "invalid_category",
                     "message": "分类名包含不支持的字符喵"}
-        base = self._ensure_root() / cat
-        try:
-            base.mkdir(parents=True, exist_ok=True)
-        except OSError as exc:
-            return {"ok": False, "message": f"无法创建分类目录: {exc}"}
-
-        # 文件名保持原样; 目标分类已有同名文件 → 提示重复上传, 跳过不写入(避免重复图共存)
-        if (base / fname).exists():
+        path = self._ensure_root() / cat / fname
+        write_state = await asyncio.to_thread(self._write_upload, path, raw)
+        if write_state == "duplicate":
             return {"ok": False, "duplicate": True, "filename": fname,
                     "category": cat,
                     "message": f"「{fname}」已在「{cat}」分类里了, 重复上传已跳过喵"}
-        path = base / fname
-        try:
-            path.write_bytes(raw)
-        except OSError as exc:
-            return {"ok": False, "message": f"保存失败: {exc}"}
+        if write_state:
+            return {"ok": False, "message": f"保存失败: {write_state}"}
 
         # 立即刷新缓存
-        self._img_cache = []
-        self._img_scan_ts = 0.0
+        self._invalidate_scan_cache()
+        count = len(await self.scan_images_async())
         return {"ok": True, "message": f"图片已存入「{cat}」分类喵({fname})",
                 "filename": fname, "category": cat,
-                "count": len(self.scan_images())}
+                "count": count}
+
+    @staticmethod
+    def _write_upload(path: Path, raw: bytes) -> str:
+        """线程池内独占创建文件；返回空串成功、duplicate 或错误文本。"""
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with path.open("xb") as handle:
+                handle.write(raw)
+            return ""
+        except FileExistsError:
+            return "duplicate"
+        except OSError as exc:
+            return str(exc)
 
     @staticmethod
     def _sanitize_category(category: str) -> str:

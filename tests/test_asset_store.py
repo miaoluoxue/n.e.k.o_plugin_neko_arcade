@@ -96,6 +96,31 @@ def test_downloads_then_serves_from_cache():
     asyncio.run(run())
 
 
+def test_verified_cache_hit_skips_repeated_content_hash(monkeypatch):
+    """下载/首次校验后，后续命中只比 size+mtime，不再重读整文件算 SHA。"""
+    import plugin.plugins.neko_arcade.adapters.asset_store as asset_mod
+
+    async def run():
+        tmp = _tmp_dir("fast-hit")
+        f = _Fetcher({"https://primary/manifest.json": _manifest_bytes(),
+                      "https://primary/tarot/": PAYLOAD})
+        store = _store(tmp, f)
+        assert await store.ensure("tarot/ba/card.webp") is not None
+
+        original = asset_mod.hashlib.sha256
+        calls = {"n": 0}
+
+        def counted(*args, **kwargs):
+            calls["n"] += 1
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr(asset_mod.hashlib, "sha256", counted)
+        assert await store.ensure("tarot/ba/card.webp") is not None
+        assert calls["n"] == 0, "已验证且 size+mtime 未变的缓存不应重算哈希"
+
+    asyncio.run(run())
+
+
 def test_sha_mismatch_is_rejected():
     """sha256 不符 → 不落盘、返回 None（宁缺勿错图）。"""
     async def run():

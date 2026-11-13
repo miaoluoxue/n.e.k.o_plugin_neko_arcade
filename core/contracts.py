@@ -119,6 +119,15 @@ class GameAdapter(abc.ABC):
         """图库分类列表(桥接)。"""
         return self._photo.get_categories() if self._photo else []
 
+    async def photo_categories_async(self) -> List[str]:
+        """图库分类列表(异步入口，目录遍历走线程池)。"""
+        if not self._photo:
+            return []
+        getter = getattr(self._photo, "get_categories_async", None)
+        if callable(getter):
+            return await getter()
+        return self.photo_categories()
+
     async def upload_photo(self, user_id: str, name: str,
                            data_b64: str = "", data_bytes: bytes = b"",
                            category: str = "默认") -> Dict[str, Any]:

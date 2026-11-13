@@ -106,6 +106,8 @@ class AssetStore:
         self._local_map: Dict[str, str] = dict(local_map or DEFAULT_LOCAL_MAP)
         self._manifest: Optional[Dict[str, Any]] = None
         self._index: Dict[str, Dict[str, Any]] = {}
+        # path -> (size, mtime_ns)：首次/变更后完整校验，命中时只做廉价 stat。
+        self._verified: Dict[Path, tuple[int, int]] = {}
         self._sem = asyncio.Semaphore(DEFAULT_CONCURRENCY)
         self._prefetch_task: Optional[asyncio.Task] = None
         self.stats: Dict[str, int] = {"hit": 0, "download": 0, "fail": 0, "skip": 0,
@@ -272,7 +274,7 @@ class AssetStore:
             return local
         target = self.local_path(rel)
         entry = (await self.manifest()).get("files") and self._index.get(rel)
-        if entry and target.is_file() and self._file_matches(target, entry):
+        if entry and await asyncio.to_thread(self._file_matches, target, entry):
             self.stats["hit"] += 1
             return target
         if not entry:
@@ -317,6 +319,7 @@ class AssetStore:
                     tmp = target.with_suffix(target.suffix + ".part")
                     tmp.write_bytes(blob)
                     os.replace(tmp, target)   # 原子替换，避免半截文件被当成缓存
+                    self._record_verified(target)
                     return True
                 except Exception as exc:  # noqa: BLE001
                     self._log("warning", "资源落盘失败 %s: %s", rel, exc)
@@ -351,6 +354,7 @@ class AssetStore:
                 break
             try:
                 path.unlink()
+                self._verified.pop(path, None)
                 total -= size
             except OSError as exc:
                 self._log("debug", "清理素材缓存失败 %s: %s", path, exc)
@@ -358,17 +362,33 @@ class AssetStore:
             self._log("warning", "单素材超过缓存上限 %d，仍保留当前文件: %s",
                       limit, protected)
 
-    @staticmethod
-    def _file_matches(path: Path, entry: Dict[str, Any]) -> bool:
+    def _record_verified(self, path: Path) -> None:
         try:
-            if path.stat().st_size != int(entry.get("size", -1)):
+            stat = path.stat()
+            self._verified[path] = (stat.st_size, stat.st_mtime_ns)
+        except OSError:
+            self._verified.pop(path, None)
+
+    def _file_matches(self, path: Path, entry: Dict[str, Any]) -> bool:
+        """先比 size+mtime，变化时才重算 SHA-256。"""
+        try:
+            stat = path.stat()
+            if stat.st_size != int(entry.get("size", -1)):
                 return False
+            fingerprint = (stat.st_size, stat.st_mtime_ns)
+            if self._verified.get(path) == fingerprint:
+                return True
             digest = hashlib.sha256()
             with path.open("rb") as handle:
                 for chunk in iter(lambda: handle.read(1024 * 1024), b""):
                     digest.update(chunk)
-            return digest.hexdigest() == str(entry.get("sha256") or "").lower()
+            if digest.hexdigest() != str(entry.get("sha256") or "").lower():
+                self._verified.pop(path, None)
+                return False
+            self._verified[path] = fingerprint
+            return True
         except OSError:
+            self._verified.pop(path, None)
             return False
 
     def _fetch(self, url: str, timeout: float = DEFAULT_TIMEOUT,

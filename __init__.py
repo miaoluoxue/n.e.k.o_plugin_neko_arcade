@@ -579,8 +579,8 @@ class NekoArcadePlugin(NekoPluginBase):
         if not bridge:
             return Ok({"ok": False, "count": 0, "categories": [], "uploaded": []})
         try:
-            imgs = bridge.scan_images()
-            cats = bridge.get_categories()
+            imgs = await bridge.scan_images_async()
+            cats = await bridge.get_categories_async()
             by_cat = {}
             for cat in cats:
                 n = len([i for i in imgs if i.get("category") == cat])
