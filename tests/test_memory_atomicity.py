@@ -93,3 +93,39 @@ def test_session_table_uses_storage_id_not_bare_username():
         "bob": "xiuxian",
     }
     assert asyncio.run(memory.load_sessions()) == store.value["sessions"]
+
+
+def test_concurrent_failed_write_does_not_rollback_other_user():
+    """A 写失败时只能撤销 A，不能把 B 已完成的修改一起回滚。"""
+    qq = SessionKey("qq", "alice")
+    web = SessionKey("web", "bob")
+
+    class _ConcurrentStore:
+        def __init__(self):
+            self.value = {"profiles": {}}
+            self.calls = 0
+
+        async def get(self, _key):
+            return self.value
+
+        async def set(self, _key, value):
+            self.calls += 1
+            await asyncio.sleep(0.02)
+            if self.calls == 1:
+                raise OSError("first writer fails")
+            self.value = copy.deepcopy(value)
+
+    store = _ConcurrentStore()
+    memory = _memory(store)
+
+    async def run():
+        return await asyncio.gather(
+            memory.register_play("fishing", session_key=qq),
+            memory.register_play("xiuxian", session_key=web),
+        )
+
+    first, second = asyncio.run(run())
+    assert (first, second) == (False, True)
+    assert asyncio.run(memory.get_stats("fishing", session_key=qq)) == {}
+    assert asyncio.run(memory.get_stats("xiuxian", session_key=web))["plays"] == 1
+    assert store.value["profiles"][web.storage_id]["stats"]["xiuxian"]["plays"] == 1

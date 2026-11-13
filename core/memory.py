@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import copy
 import logging
 import time
@@ -23,6 +24,9 @@ class GameMemory:
         self._milestones: Dict[str, Any] = {}
         self._loaded = False
         self._load_failed = False
+        # store 是所有用户共享的单对象；load/mutate/save 必须串行，失败回滚
+        # 只能撤销本次修改，不能覆盖并发用户已完成的内存状态。
+        self._write_lock = asyncio.Lock()
 
     async def _load(self) -> Dict[str, Any]:
         if self._loaded:
@@ -107,63 +111,71 @@ class GameMemory:
 
     async def bump_stat(self, game_id: str, key: str, amount: int = 1,
                         *, session_key: SessionLike = SINGLE_SESSION) -> bool:
-        await self._load()
-        before = copy.deepcopy(self._milestones)
-        profile = self._profile(coerce_session_key(session_key))
-        stats = profile.setdefault("stats", {}).setdefault(game_id, {})
-        stats[key] = stats.get(key, 0) + amount
-        return await self._save(before)
+        async with self._write_lock:
+            await self._load()
+            before = copy.deepcopy(self._milestones)
+            profile = self._profile(coerce_session_key(session_key))
+            stats = profile.setdefault("stats", {}).setdefault(game_id, {})
+            stats[key] = stats.get(key, 0) + amount
+            return await self._save(before)
 
     async def set_record(self, game_id: str, key: str, value: Any, label: str = "",
                          *, session_key: SessionLike = SINGLE_SESSION) -> bool:
-        await self._load()
-        before = copy.deepcopy(self._milestones)
-        profile = self._profile(coerce_session_key(session_key))
-        records = profile.setdefault("records", {}).setdefault(game_id, {})
-        old = records.get(key)
-        if old is None or (isinstance(value, (int, float)) and value > old):
-            records[key] = {"value": value, "label": label, "ts": time.time()}
-            return await self._save(before)
-        return False
+        async with self._write_lock:
+            await self._load()
+            before = copy.deepcopy(self._milestones)
+            profile = self._profile(coerce_session_key(session_key))
+            records = profile.setdefault("records", {}).setdefault(game_id, {})
+            old = records.get(key)
+            if old is None or (isinstance(value, (int, float)) and value > old):
+                records[key] = {"value": value, "label": label, "ts": time.time()}
+                return await self._save(before)
+            return False
 
     async def record_species(self, game_id: str, name: str,
                              *, session_key: SessionLike = SINGLE_SESSION) -> bool:
-        await self._load()
-        before = copy.deepcopy(self._milestones)
-        profile = self._profile(coerce_session_key(session_key))
-        seen = profile.setdefault("species", {}).setdefault(game_id, [])
-        if name in seen:
-            return False
-        seen.append(name)
-        return await self._save(before)
+        async with self._write_lock:
+            await self._load()
+            before = copy.deepcopy(self._milestones)
+            profile = self._profile(coerce_session_key(session_key))
+            seen = profile.setdefault("species", {}).setdefault(game_id, [])
+            if name in seen:
+                return False
+            seen.append(name)
+            return await self._save(before)
 
     async def register_play(self, game_id: str,
                             *, session_key: SessionLike = SINGLE_SESSION) -> bool:
-        await self._load()
-        before = copy.deepcopy(self._milestones)
-        profile = self._profile(coerce_session_key(session_key))
-        stats = profile.setdefault("stats", {}).setdefault(game_id, {})
-        stats["plays"] = stats.get("plays", 0) + 1
-        stats["last_play_ts"] = time.time()
-        return await self._save(before)
+        async with self._write_lock:
+            await self._load()
+            before = copy.deepcopy(self._milestones)
+            profile = self._profile(coerce_session_key(session_key))
+            stats = profile.setdefault("stats", {}).setdefault(game_id, {})
+            stats["plays"] = stats.get("plays", 0) + 1
+            stats["last_play_ts"] = time.time()
+            return await self._save(before)
 
     async def get_stats(self, game_id: str,
                         *, session_key: SessionLike = SINGLE_SESSION) -> Dict[str, Any]:
-        await self._load()
-        return self._profile(coerce_session_key(session_key)).get(
-            "stats", {}
-        ).get(game_id, {})
+        async with self._write_lock:
+            await self._load()
+            return copy.deepcopy(
+                self._profile(coerce_session_key(session_key)).get(
+                    "stats", {}
+                ).get(game_id, {})
+            )
 
     async def snapshot(
         self, *, session_key: SessionLike = SINGLE_SESSION
     ) -> Dict[str, Any]:
-        await self._load()
-        key = coerce_session_key(session_key)
-        profile = self._profile(key)
-        summary = {}
-        for gid, st in (profile.get("stats", {}) or {}).items():
-            summary[gid] = {"plays": st.get("plays", 0), "last": st.get("last_play_ts")}
-        return {"games": summary, "session": self.recent_session(session_key=key)}
+        async with self._write_lock:
+            await self._load()
+            key = coerce_session_key(session_key)
+            profile = self._profile(key)
+            summary = {}
+            for gid, st in (profile.get("stats", {}) or {}).items():
+                summary[gid] = {"plays": st.get("plays", 0), "last": st.get("last_play_ts")}
+            return {"games": summary, "session": self.recent_session(session_key=key)}
 
     def scoped(self, session_key: SessionLike) -> "_ScopedGameMemory":
         return _ScopedGameMemory(self, coerce_session_key(session_key))
@@ -171,21 +183,23 @@ class GameMemory:
     # ── 会话指针持久化（谁在玩什么，重启后能接着玩）────────────
     async def save_sessions(self, sessions: Dict[SessionLike, str]) -> bool:
         """把 ``(channel,user_id)`` 会话表按稳定存储 ID 落盘。"""
-        await self._load()
-        before = copy.deepcopy(self._milestones)
-        self._milestones["sessions"] = {
-            coerce_session_key(key).storage_id: str(value)
-            for key, value in (sessions or {}).items()
-        }
-        return await self._save(before)
+        async with self._write_lock:
+            await self._load()
+            before = copy.deepcopy(self._milestones)
+            self._milestones["sessions"] = {
+                coerce_session_key(key).storage_id: str(value)
+                for key, value in (sessions or {}).items()
+            }
+            return await self._save(before)
 
     async def load_sessions(self) -> Dict[str, str]:
         """读回会话表；没有就返回空表。"""
-        m = await self._load()
-        got = m.get("sessions")
-        if not isinstance(got, dict):
-            return {}
-        return {str(k): str(v) for k, v in got.items() if v}
+        async with self._write_lock:
+            m = await self._load()
+            got = m.get("sessions")
+            if not isinstance(got, dict):
+                return {}
+            return {str(k): str(v) for k, v in got.items() if v}
 
 
 class _ScopedGameMemory:
