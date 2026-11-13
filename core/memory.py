@@ -46,7 +46,8 @@ class GameMemory:
             self._load_failed = True
             log.warning("读取游戏记忆失败，禁止后续覆盖写入: %s", exc)
             return {}
-        self._milestones = data if isinstance(data, dict) else {}
+        # 与 store 返回对象彻底脱钩：失败写入时 store 中未提交的引用不能被改脏。
+        self._milestones = copy.deepcopy(data) if isinstance(data, dict) else {}
         self._loaded = True
         self._load_failed = False
         return self._milestones
@@ -57,7 +58,8 @@ class GameMemory:
             log.warning("游戏记忆读取曾失败，拒绝用当前内存覆盖旧存档")
             return False
         try:
-            result = await self.plugin.store.set(STORE_KEY, self._milestones)
+            result = await self.plugin.store.set(
+                STORE_KEY, copy.deepcopy(self._milestones))
             is_err = getattr(result, "is_err", None)
             if callable(is_err) and is_err():
                 raise RuntimeError("store returned Err")

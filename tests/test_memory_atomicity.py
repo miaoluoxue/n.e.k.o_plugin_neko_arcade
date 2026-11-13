@@ -129,3 +129,15 @@ def test_concurrent_failed_write_does_not_rollback_other_user():
     assert asyncio.run(memory.get_stats("fishing", session_key=qq)) == {}
     assert asyncio.run(memory.get_stats("xiuxian", session_key=web))["plays"] == 1
     assert store.value["profiles"][web.storage_id]["stats"]["xiuxian"]["plays"] == 1
+
+
+def test_failed_session_save_does_not_restore_speculative_state():
+    """会话表写入失败时，新实例只能恢复 store 中真实成功落盘的数据。"""
+    store = _Store({"profiles": {}, "sessions": {}},
+                   set_error=OSError("disk full"))
+    memory = _memory(store)
+    qq = SessionKey("qq", "alice")
+    assert asyncio.run(memory.save_sessions({qq: "fishing"})) is False
+
+    fresh = _memory(store)
+    assert asyncio.run(fresh.load_sessions()) == {}

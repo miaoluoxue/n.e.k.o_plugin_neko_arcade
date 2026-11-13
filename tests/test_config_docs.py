@@ -16,6 +16,7 @@ def test_documented_main_config_keys_exist_in_code():
     }
     keys = {
         "llm_max_calls_per_minute": "runtime",
+        "llm_timeout": "runtime",
         "asset_prefetch": "runtime",
         "asset_cache_mb": "assets",
         "game_anchor_interval": "brain",

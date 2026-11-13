@@ -126,6 +126,7 @@ N.E.K.O 插件 · 插件化小游戏聚合器 · 支持聊天/语音自然语言
 | 配置键 | 默认值 | 作用 |
 |---|---:|---|
 | `llm_max_calls_per_minute` | `15` | 插件 LLM 每分钟调用上限 |
+| `llm_timeout` | `30` | 单次 LLM 调用超时；超时回退游戏模板或文本结果 |
 | `asset_prefetch` | `false` | 是否启动时预取全部外置素材；默认只在游戏真正用图时下载 |
 | `asset_cache_mb` | 内置安全值 | 素材缓存上限，下载前按 LRU 清理 |
 | `game_anchor_interval` | `20` | 游戏中向 LLM 注入状态锚的最短间隔（秒） |

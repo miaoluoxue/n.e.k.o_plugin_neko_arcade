@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 
+from plugin.plugins.neko_arcade.adapters.llm_client import LLMProvider
 from plugin.plugins.neko_arcade.core.llm_gateway import LLMGateway
 
 
@@ -47,6 +48,53 @@ def test_scene_failure_returns_fallback_and_no_cache() -> None:
 def test_gateway_without_provider_is_safe() -> None:
     gw = LLMGateway(None)
     assert asyncio.run(gw.scene("x", "p", fallback="f")) == "f"
+
+
+def test_gateway_timeout_returns_fallback_without_leaking_error() -> None:
+    class HangingProvider:
+        async def call(self, _prompt):
+            await asyncio.sleep(5)
+            return "太晚了"
+
+    gw = LLMGateway(HangingProvider(), call_timeout=0.01)
+    out = asyncio.run(gw.scene("soup.puzzle", "出题", fallback="游戏原文兜底"))
+    assert out == "游戏原文兜底"
+    assert gw.stats["soup.puzzle"]["fail"] == 1
+
+
+def test_provider_timeout_returns_none_for_template_fallback() -> None:
+    class HangingClient:
+        last_usage = None
+
+        async def call(self, _prompt):
+            await asyncio.sleep(5)
+            return "太晚了"
+
+    provider = LLMProvider(15, call_timeout=0.01)
+    provider._client = HangingClient()
+    assert asyncio.run(provider.call("说话")) is None
+
+
+def test_provider_rate_limit_returns_none_without_calling_client() -> None:
+    class CountingClient:
+        last_usage = None
+
+        def __init__(self):
+            self.calls = 0
+
+        async def call(self, _prompt):
+            self.calls += 1
+            return "答"
+
+    client = CountingClient()
+    provider = LLMProvider(1, call_timeout=0.1)
+    provider._client = client
+
+    async def run():
+        return await provider.call("一"), await provider.call("二")
+
+    assert asyncio.run(run()) == ("答", None)
+    assert client.calls == 1
 
 
 def test_game_call_llm_goes_through_gateway() -> None:

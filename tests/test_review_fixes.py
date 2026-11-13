@@ -349,6 +349,21 @@ def test_sessions_persist_and_restore():
     assert fresh.registry.get("fishing").started == ["alice"], "恢复时要跑 on_start"
 
 
+def test_cross_channel_sessions_restore_with_scoped_storage_ids():
+    plugin = _FakePlugin()
+    qq = SessionKey("qq", "alice")
+    web = SessionKey("web", "alice")
+    brain = _make_brain([_FakeGame("fishing", "钓鱼")], plugin=plugin)
+    asyncio.run(brain.handle_action("fishing", "钓鱼", {}, session=qq))
+    asyncio.run(brain.handle_action("fishing", "钓鱼", {}, session=web))
+
+    fresh_game = _FakeGame("fishing", "钓鱼")
+    fresh = _make_brain([fresh_game], plugin=plugin)
+    assert asyncio.run(fresh.restore_sessions()) == 2
+    assert fresh.session_game(qq) == fresh.session_game(web) == "fishing"
+    assert set(fresh_game.started) == {qq.storage_id, web.storage_id}
+
+
 def test_brain_initializes_companion_with_same_persona():
     plugin = _FakePlugin()
     registry = _FakeRegistry([_FakeGame("fishing", "钓鱼")])
@@ -457,6 +472,20 @@ def test_post_action_failures_do_not_discard_game_result():
     assert res["game_result"] == "钓鱼收到"
     assert res["outcome"] == "done"
     assert "钓鱼收到" in res["summary"]
+
+
+def test_help_without_browser_or_pil_falls_back_to_text():
+    game = _FakeGame("fishing", "钓鱼")
+    brain = _make_brain([game])
+    brain._help_rend = None
+
+    async def get_help(_gid):
+        return {"commands": [["钓鱼", "开始钓鱼"], ["抛竿", "抛一次竿"]]}
+
+    brain.registry.get_help = get_help
+    res = asyncio.run(brain.show_help("fishing"))
+    assert not res.get("image")
+    assert "抛竿：抛一次竿" in brain.push.texts[-1]
 
 
 def test_memory_save_error_is_not_silently_accepted():

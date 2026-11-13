@@ -166,6 +166,20 @@ def test_line_returns_empty_when_nothing_available() -> None:
     assert asyncio.run(_comp().line("nope", "win")) == ""
 
 
+def test_llm_failure_falls_back_to_game_template():
+    class BrokenLLM:
+        _client = object()
+
+        async def call(self, _prompt):
+            raise RuntimeError("provider secret error")
+
+    templates = {"boardgame": {"win": ["这局赢啦喵！"]}}
+    comp = _comp(templates=templates, llm=BrokenLLM())
+    out = asyncio.run(comp.line("boardgame", "win"))
+    assert out == "这局赢啦喵！"
+    assert "provider secret error" not in out
+
+
 def test_chat_reply_never_cached() -> None:
     """主人说话要新鲜回应: 不读缓存。"""
     comp = _comp()

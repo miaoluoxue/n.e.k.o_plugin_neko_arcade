@@ -67,7 +67,11 @@ class ArcadeRuntime:
             self.cfg = cfg.get("neko_arcade", cfg)
         else:
             self.cfg = {}
-        self.llm = LLMProvider(self.cfg.get("llm_max_calls_per_minute", 15))
+        llm_timeout = self.cfg.get("llm_timeout", 30)
+        self.llm = LLMProvider(
+            self.cfg.get("llm_max_calls_per_minute", 15),
+            call_timeout=llm_timeout,
+        )
         # token 统计落盘: 写插件自身 store(键 game_user_data:llm_stats), 供 UI 查询
         try:
             store = self.plugin.store
@@ -83,7 +87,7 @@ class ArcadeRuntime:
         self.registry._companion = getattr(self.brain, "companion_router", None)
         # 统一 LLM 入口: 所有游戏的 call_llm 都走它(场景缓存/限流/token 统计)
         from .llm_gateway import LLMGateway
-        self.llm_gateway = LLMGateway(self.llm)
+        self.llm_gateway = LLMGateway(self.llm, call_timeout=llm_timeout)
         self.registry._llm_gateway = self.llm_gateway
         # 将插件服务注入注册表，游戏注册后可调用
         self.registry._push = self.push

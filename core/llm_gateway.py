@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import logging
 import time
@@ -20,11 +21,12 @@ class LLMGateway:
     """包一层现有 LLMProvider, 加上按场景的缓存与统计。"""
 
     def __init__(self, provider: Any = None, *, cache_cap: int = 128,
-                 default_ttl: float = 600.0) -> None:
+                 default_ttl: float = 600.0, call_timeout: float = 30.0) -> None:
         self.provider = provider
         self._cache: Dict[str, tuple] = {}          # key -> (text, ts)
         self._cap = max(8, int(cache_cap))
         self._ttl = float(default_ttl)
+        self._call_timeout = max(1.0, float(call_timeout))
         self.stats: Dict[str, Dict[str, int]] = {}   # scene -> {calls, cache, fail}
 
     def bind(self, provider: Any) -> None:
@@ -47,7 +49,8 @@ class LLMGateway:
             return fallback
         st["calls"] += 1
         try:
-            out = await self.provider.call(prompt)
+            out = await asyncio.wait_for(
+                self.provider.call(prompt), timeout=self._call_timeout)
         except Exception as exc:
             log.debug("LLM 场景 %s 调用失败: %s", name, exc)
             out = None

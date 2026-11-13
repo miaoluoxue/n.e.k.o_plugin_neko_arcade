@@ -97,10 +97,12 @@ class LLMClient:
 class LLMProvider:
     """装配宿主注入或配置自建的 LLM，提供限流调用 + token 统计。"""
 
-    def __init__(self, max_calls_per_minute: int = 15) -> None:
+    def __init__(self, max_calls_per_minute: int = 15,
+                 call_timeout: float = 30.0) -> None:
         self._host_call: Optional[Callable[[str], Any]] = None
         self._client: Optional[LLMClient] = None
         self._throttle = LLMThrottle(max_calls_per_minute)
+        self._call_timeout = max(1.0, float(call_timeout))
         # token 统计(内存累计 + 定期落盘)
         self._stats: Dict[str, Any] = {
             "calls": 0, "prompt_tokens": 0, "completion_tokens": 0,
@@ -198,16 +200,25 @@ class LLMProvider:
         try:
             if self._client:
                 self._scene_override = None  # 自建客户端 scene 由 prompt 判断
-                out = await self._client.call(prompt)
+                out = await asyncio.wait_for(
+                    self._client.call(prompt), timeout=self._call_timeout)
                 usage = getattr(self._client, "last_usage", None)
                 if out is not None:
                     await self._record(prompt, out, usage)
                 return out
             if self._host_call:
-                result = self._host_call(prompt)
-                out = await result if asyncio.iscoroutine(result) else str(result)
+                result = await asyncio.wait_for(
+                    asyncio.to_thread(self._host_call, prompt),
+                    timeout=self._call_timeout,
+                )
+                if asyncio.iscoroutine(result):
+                    out = await asyncio.wait_for(result, timeout=self._call_timeout)
+                else:
+                    out = str(result)
                 await self._record(prompt, out, None)  # 宿主不返回 usage, 估算
                 return out
+        except asyncio.TimeoutError:
+            log.warning("LLM 调用超时")
         except Exception as exc:
             log.warning("LLM 调用失败: %s", exc)
         return None
