@@ -87,3 +87,18 @@ class GameMemory:
         for gid, st in (m.get("stats", {}) or {}).items():
             summary[gid] = {"plays": st.get("plays", 0), "last": st.get("last_play_ts")}
         return {"games": summary, "session": self.recent_session()}
+
+    # ── 会话指针持久化（谁在玩什么，重启后能接着玩）────────────
+    async def save_sessions(self, sessions: Dict[str, str]) -> None:
+        """把 user_id → game_id 的会话表落盘。"""
+        m = await self._load()
+        m["sessions"] = {str(k): str(v) for k, v in (sessions or {}).items()}
+        await self._save()
+
+    async def load_sessions(self) -> Dict[str, str]:
+        """读回会话表；没有就返回空表。"""
+        m = await self._load()
+        got = m.get("sessions")
+        if not isinstance(got, dict):
+            return {}
+        return {str(k): str(v) for k, v in got.items() if v}

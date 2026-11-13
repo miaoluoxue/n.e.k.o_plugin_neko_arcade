@@ -99,15 +99,29 @@ class ArcadeRuntime:
         # 外部素材库：塔罗牌面等大素材不进包 → 首次运行后台拉一次，之后走本地缓存。
         # 配置: asset_base_url(主源) / asset_mirrors(备源) / asset_auto_download /
         #       asset_prefetch / asset_cache_mb
-        from adapters.asset_store import build_store_from_cfg
-        self.assets = build_store_from_cfg(
-            self.plugin, self.cfg,
-            bundled_manifest=os.path.join(self._code_dir(), "assets.manifest.json"),
-            logger=log)
+        # 注意：这里**必须用相对导入**（插件以 plugin.plugins.neko_arcade 挂载，
+        # 绝对导入 `adapters.*` 只在宿主 sys.path 恰好含插件目录时才成立），
+        # 且素材库不可用不能拖垮启动（退化为无外置素材，走包内/占位图）。
+        try:
+            from ..adapters.asset_store import build_store_from_cfg
+            self.assets = build_store_from_cfg(
+                self.plugin, self.cfg,
+                bundled_manifest=os.path.join(self._code_dir(), "assets.manifest.json"),
+                logger=log)
+        except Exception as exc:  # noqa: BLE001 - 素材库是增强能力，不该阻断启动
+            log.warning("外部素材库初始化失败，降级为仅本地素材: %s", exc)
+            self.assets = None
         self.registry._assets = self.assets
-        if self.cfg.get("asset_prefetch", True):
+        if self.assets is not None and self.cfg.get("asset_prefetch", True):
             self.assets.start_prefetch()
         count = await self.registry.discover()
+        # 恢复上次的会话(谁在玩什么): 重启/宿主重连后能直接接着玩, 不必重新开局
+        try:
+            restored = await self.brain.restore_sessions() if self.brain else 0
+            if restored:
+                log.info("已恢复 %d 个进行中的游戏会话", restored)
+        except Exception as exc:  # noqa: BLE001 - 恢复失败不该影响启动
+            log.warning("恢复游戏会话失败: %s", exc)
         self._register_dynamic_llm_tool()
         self._tick_task = asyncio.create_task(self._tick_loop())
         log.info("猫娘小游戏就绪，加载 %d 个小游戏", count)

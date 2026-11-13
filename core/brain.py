@@ -46,9 +46,14 @@ class GameBrain:
         self.emotion = EmotionRenderer(llm_provider, cfg.get("llm_max_calls_per_minute", 15))
         self.memory = GameMemory(plugin)
         self.proactive = ProactiveEngine()
-        self._current_game: Optional[str] = None
-        self._current_user: Optional[str] = None
-        self._session_start = 0.0
+        # 会话按 user_id 分槽: user_id → game_id。
+        # 旧实现只有一个全局槽(_current_game/_current_user), 多人/多群同时玩会互相
+        # 覆盖(还在玩 A 却被 B 的输入顶掉), 而且只存内存、重启即丢。
+        self._sessions: Dict[str, str] = {}
+        self._session_start_by_user: Dict[str, float] = {}
+        self._current_user: Optional[str] = None   # 最近活跃用户(tick/状态锚/快照用)
+        self._session_start = 0.0                  # 最近活跃用户的开始时间(兼容旧字段)
+        self._sessions_dirty = False
         # 每个游戏最近一次推送完整邀请的时间戳（秒），用于抑制重复刷屏
         self._last_invite: Dict[str, float] = {}
         # 重复回调守门: (game_id, 输入原文) → (时间戳, 上次 outcome)，见模块注释
@@ -90,9 +95,13 @@ class GameBrain:
         if changed:
             self._persona_raw = dict(raw)
             comp = getattr(self, "companion", None)
-            cache = getattr(comp, "_cache", None)
-            if isinstance(cache, dict):
-                cache.clear()
+            clear = getattr(comp, "clear_line_cache", None)
+            if callable(clear):
+                clear()                      # 清台词变体池 + "最近说过" 记录
+            else:
+                cache = getattr(comp, "_cache", None)
+                if isinstance(cache, dict):
+                    cache.clear()
             log.info("检测到猫娘人设变化, 已刷新: %s", raw.get("name"))
         return changed
 
@@ -149,13 +158,93 @@ class GameBrain:
         except Exception:
             return None
 
+    # ── 会话分槽(每个 user 各自一个当前游戏) ──────────────
+    def _session_table(self) -> Dict[str, str]:
+        table = getattr(self, "_sessions", None)
+        if table is None:                       # 测试里有 __new__ 直接构造的实例
+            table = {}
+            self._sessions = table
+        return table
+
+    def session_game(self, user_id: Optional[str] = None) -> Optional[str]:
+        """某用户当前在玩的游戏; 不给 user_id 就取最近活跃用户。"""
+        uid = user_id or getattr(self, "_current_user", None) or "default"
+        return self._session_table().get(uid)
+
+    def set_session(self, user_id: str, game_id: Optional[str]) -> None:
+        """写入/清除某用户的会话槽(只影响这个 user)。"""
+        table = self._session_table()
+        uid = user_id or "default"
+        starts = getattr(self, "_session_start_by_user", None)
+        if starts is None:
+            starts = {}
+            self._session_start_by_user = starts
+        if game_id:
+            table[uid] = str(game_id)
+            starts[uid] = time.time()
+            self._current_user = uid
+            self._session_start = starts[uid]
+        else:
+            table.pop(uid, None)
+            starts.pop(uid, None)
+            if getattr(self, "_current_user", None) == uid:
+                self._current_user = next(iter(table), None)
+                self._session_start = starts.get(self._current_user, 0.0) if self._current_user else 0.0
+        self._sessions_dirty = True
+
+    def active_sessions(self) -> Dict[str, str]:
+        """所有在玩中的会话(user_id → game_id), tick 用。"""
+        return dict(self._session_table())
+
+    @property
+    def _current_game(self) -> Optional[str]:
+        """兼容旧字段/旧调用 = 最近活跃用户的当前游戏。"""
+        return self.session_game(None)
+
+    @_current_game.setter
+    def _current_game(self, value: Optional[str]) -> None:
+        self.set_session(getattr(self, "_current_user", None) or "default", value)
+
+    async def _persist_sessions(self) -> None:
+        """把「谁在玩什么」落盘, 重启后能接着玩。"""
+        try:
+            await self.memory.save_sessions(self.active_sessions())
+            self._sessions_dirty = False
+        except Exception as exc:                # 存档失败不该影响对局
+            log.debug("会话落盘失败: %s", exc)
+
+    async def restore_sessions(self) -> int:
+        """启动时恢复上次的会话(各自游戏的数据由游戏自己的存档负责)。"""
+        try:
+            saved = await self.memory.load_sessions()
+        except Exception as exc:
+            log.debug("读取会话存档失败: %s", exc)
+            return 0
+        n = 0
+        for uid, gid in (saved or {}).items():
+            game = self.registry.get(gid)
+            if game is None or not getattr(game, "enabled", True):
+                continue
+            self.set_session(str(uid), gid)
+            try:
+                starter = getattr(game, "on_start", None)
+                if callable(starter):
+                    await starter(str(uid))
+            except Exception as exc:
+                log.debug("恢复 %s 的 %s on_start 失败: %s", uid, gid, exc)
+            n += 1
+        if n:
+            self._sessions_dirty = False
+            log.info("恢复了 %d 个游戏会话: %s", n, dict(self.active_sessions()))
+        return n
+
     @property
     def in_session(self) -> bool:
-        return self._current_game is not None
+        return bool(self.active_sessions())
 
     @property
     def current_game(self) -> Optional[str]:
-        return self._current_game
+        return self.session_game(None)
 
     async def start_game(self, game_id: str, user_id: str = "default") -> Dict[str, Any]:
         """开始游戏会话，不直接推送文本，返回上下文让 LLM 生成开场白。"""
@@ -165,10 +254,9 @@ class GameBrain:
         # 面板直接开新游戏：旧会话要完整收尾（含 on_stop），不能只清字段。
         await self._end_current_game(user_id)
         self._pending_switch = None
-        self._current_game = game_id
-        self._current_user = user_id
-        self._session_start = time.time()
+        self.set_session(user_id, game_id)
         await self.memory.register_play(game_id)
+        await self._persist_sessions()
         self.persona.on_event("invite")
         if hasattr(game, "on_start"):
             try:
@@ -181,27 +269,25 @@ class GameBrain:
 
     async def stop_game(self, user_id: str = "default") -> Dict[str, Any]:
         """结束游戏会话，不直接推送文本，返回上下文让 LLM 生成告别。"""
-        if not self._current_game:
+        game_id = self.session_game(user_id)
+        if not game_id:
             return {"message": "没有在玩喵"}
-        game = self.registry.get(self._current_game)
-        game_id = self._current_game
+        game = self.registry.get(game_id)
         game_name = game.name if game else "游戏"
         await self._end_current_game(user_id)
         self._pending_switch = None
         return {"game": game_id, "game_name": game_name, "stopped": True,
                 "mood": self.persona.mood.snapshot()}
 
-    async def _end_session(self) -> None:
-        self._current_game = None
-        self._current_user = None
-        self._session_start = 0.0
+    async def _end_session(self, user_id: str = "default") -> None:
+        self.set_session(user_id, None)
         self._last_anchor_ts = 0.0
 
     async def _end_current_game(self, user_id: str = "default") -> Optional[str]:
-        """结束当前会话（含旧游戏的 on_stop），返回被结束的 game_id。"""
-        old_id = self._current_game
+        """结束该用户的会话（含旧游戏的 on_stop），返回被结束的 game_id。"""
+        old_id = self.session_game(user_id)
         if not old_id:
-            await self._end_session()
+            await self._end_session(user_id)
             return None
         old = self.registry.get(old_id)
         if old is not None and hasattr(old, "on_stop"):
@@ -209,7 +295,8 @@ class GameBrain:
                 await old.on_stop(user_id)
             except Exception as exc:
                 log.warning("游戏 %s on_stop 异常: %s", old_id, exc)
-        await self._end_session()
+        await self._end_session(user_id)
+        await self._persist_sessions()
         return old_id
 
     async def _ask_switch(self, game, cmd: str, user_id: str) -> Dict[str, Any]:
@@ -219,10 +306,11 @@ class GameBrain:
         自己的口吻问「要换吗」。用户确认后 LLM 再调 play_game 并填 switch_to，
         才真正切换（见 :meth:`_switch_confirmed`）。
         """
-        old = self.registry.get(self._current_game) if self._current_game else None
-        old_name = old.name if old else str(self._current_game or "")
-        self._pending_switch = {"from": self._current_game, "to": game.id,
-                                "cmd": cmd, "ts": time.time()}
+        old_id = self.session_game(user_id)
+        old = self.registry.get(old_id) if old_id else None
+        old_name = old.name if old else str(old_id or "")
+        self._pending_switch = {"from": old_id, "to": game.id,
+                                "user": user_id, "cmd": cmd, "ts": time.time()}
         # 让下一次 tick 立刻注入「切换待确认」状态锚（不等 20s 节流）。
         self._last_anchor_ts = 0.0
         summary = (
@@ -238,7 +326,7 @@ class GameBrain:
             "outcome": "switch_confirm", "level": "routine", "facts": [],
             "game_result": "", "emotion_suggestion": "",
             "summary": summary, "mood": self.persona.mood.snapshot(),
-            "pending_switch": {"from": self._current_game, "to": game.id},
+            "pending_switch": {"from": old_id, "to": game.id},
             "game_commands": [],
         }
 
@@ -265,7 +353,7 @@ class GameBrain:
             kws = target.get_keywords() or []
             target_cmd = kws[0] if kws else target.name
 
-        from_id = self._current_game
+        from_id = self.session_game(user_id)
         from_name = ""
         if from_id:
             old = self.registry.get(from_id)
@@ -318,7 +406,8 @@ class GameBrain:
 
         # ② 会话进行中用户点名别的游戏：先看是不是「XX帮助」——帮助直接出图，
         #    不算换游戏；否则返回确认语义，由 LLM 用猫娘口吻问「要换吗」。
-        if self._current_game and game_id != self._current_game:
+        cur_game = self.session_game(user_id)
+        if cur_game and game_id != cur_game:
             help_topic = split_help_intent(cmd, strip_words=self._help_strip_words(game))
             if help_topic is not None and len((cmd or "").strip()) <= 14:
                 return await self.show_help(game_id, topic=help_topic)
@@ -331,7 +420,7 @@ class GameBrain:
         if not cmd or not cmd.strip():
             return await self._invite_game(game, user_id)
 
-        if not self._current_game:
+        if not cur_game:
             await self._start_session(game_id, user_id)
 
         # 帮助意图统一由插件拦截(游戏无需实现): 「修仙帮助」「修仙帮助 战斗」都能定位
@@ -382,7 +471,7 @@ class GameBrain:
         if outcome not in ("unknown", "idle", "error"):
             self._last_game = game_id
 
-        if self._current_game and game_id == self._current_game:
+        if self.session_game(user_id) == game_id:
             if outcome == "unknown" and pending_before and self._pending_switch:
                 # 有换游戏待确认，这条输入当前游戏又不认 → 不当成放弃切换，
                 # 重新把「要不要换到 X」交给 LLM（不硬编码确认词）。
@@ -515,10 +604,9 @@ class GameBrain:
         game = self.registry.get(game_id)
         if not game:
             return
-        self._current_game = game_id
-        self._current_user = user_id
-        self._session_start = time.time()
+        self.set_session(user_id, game_id)
         await self.memory.register_play(game_id)
+        await self._persist_sessions()
         self.persona.on_event("invite")
         if hasattr(game, "on_start"):
             try:
@@ -739,17 +827,24 @@ class GameBrain:
         # 后台自动发图: 不依赖游戏会话, 聊天过程中猫娘也会随机发图。
         # neko_photo 开启 auto_send 时, 无论当前在不在玩它都定期触发。
         await self._tick_background_games()
-        # 当前游戏的每秒钩子（海龟汤用于不活跃提醒 / 超时揭晓）
-        if self._current_game:
-            game = self.registry.get(self._current_game)
-            if game is not None and hasattr(game, "on_tick"):
-                try:
-                    said = await game.on_tick(self._current_user or "default")
-                    # 局中主动搭话: 游戏只返回文字, 推送统一由本体做
-                    if isinstance(said, str) and said.strip():
-                        await self.push.text(said)
-                except Exception as exc:
-                    log.warning("游戏 %s on_tick 异常: %s", self._current_game, exc)
+        # 每个用户的会话各自跑每秒钩子(多人同时玩不同游戏互不影响)
+        sessions = self.active_sessions()
+        if sessions:
+            for uid, gid in list(sessions.items()):
+                game = self.registry.get(gid)
+                if game is None:                 # 游戏被删/改名 → 清掉这个槽
+                    self.set_session(uid, None)
+                    continue
+                if hasattr(game, "on_tick"):
+                    try:
+                        said = await game.on_tick(uid)
+                        # 局中主动搭话: 游戏只返回文字, 推送统一由本体做
+                        if isinstance(said, str) and said.strip():
+                            await self.push.text(said)
+                    except Exception as exc:
+                        log.warning("游戏 %s on_tick 异常: %s", gid, exc)
+            if self._sessions_dirty:
+                await self._persist_sessions()
             # 状态锚：游戏进行中且 LLM 长时间没调工具(脱节) → 注入只含当前游戏的
             # 状态文本(read, 不触发 AI 发言、用户不可见)。借鉴 MC 插件 keep-going
             # nudge 的思路, 但只取当前游戏的指令, 绝不含全部游戏(防炸 LLM)。
@@ -778,7 +873,7 @@ class GameBrain:
         每次主人说话(@message 监听 → on_owner_speak)都会刷新 _last_activity_ts,
         超过窗口后后台发图自动停止, 避免无人聊天时猫娘持续刷图。
         """
-        if self._current_game:
+        if self.active_sessions():
             return  # 有会话时, 当前游戏的 on_tick 已由主 tick 调用
         if not self._last_activity_ts:
             return  # 从未聊过天, 不自动发图
@@ -866,10 +961,13 @@ class GameBrain:
         return None
 
     async def snapshot(self) -> Dict[str, Any]:
+        sessions = self.active_sessions()
+        focus = self.session_game(None)
         return {
             "persona": self.persona.snapshot(),
-            "session": {"active": bool(self._current_game), "game": self._current_game,
-                        "elapsed": round(time.time() - self._session_start, 1) if self._session_start else 0},
+            "session": {"active": bool(sessions), "game": focus,
+                        "elapsed": round(time.time() - self._session_start, 1) if self._session_start else 0,
+                        "sessions": sessions},
             "pending_switch": self._pending_switch,
             "proactive": self.proactive.snapshot(),
             "memory": await self.memory.snapshot(),

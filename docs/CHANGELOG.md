@@ -2,6 +2,48 @@
 
 > 完整迭代记录，供开发者查阅。插件市场门面 README.md 只保留最新版本。
 
+## v0.5.11 (2026-10)
+
+**一句话主题**：**陪伴质量修复** —— 治复读、治多人串台、重连能接着玩；
+另修掉启动期绝对导入隐患与猜硬币误判。外部深评（7.4/10）指出的四条逐条落地。
+
+### 修复
+
+- **台词复读（扣分主因）** —— `core/companion.py`
+  - 旧：缓存 key `游戏|事件|心情|bucket` → **单个字符串**，命中就原样返回；变体被挤掉前
+    同一事件同一心情永远同一句；模板兜底纯随机、没有"刚说过"记忆。
+  - 新：每个 key 存**多条变体轮换**（`line_variants`，默认 4 条/key，key 上限 `line_cache`
+    默认 48 → LRU 淘汰整 key）；全层共享"最近说过"队列（`line_recent`，默认 10 句），
+    候选里优先挑没刚说过的；**连上一句都避开**，避开不了就换 LLM/模板另一句。
+  - LLM 提示词里追加"你刚才已经说过这些（不要重复）"，模型不再换个语序说同一件事。
+- **会话只用一个全局槽（多人串台 + 重启丢）** —— `core/brain.py` / `core/memory.py`
+  - 旧：`_current_game`/`_current_user` 单值，A 还在玩、B 一开新游戏就把 A 顶掉；只存内存。
+  - 新：`_sessions: {user_id → game_id}` 分槽，每人各自一个当前游戏；`tick` 逐个会话跑
+    各自游戏的每秒钩子；`stop/切换`只影响本人；当前游戏落盘（`game_memories.sessions`），
+    启动时 `restore_sessions()` 自动恢复（含 `on_start`），断线重连/重启能接着玩。
+  - 旧字段 `_current_game` 变成本用户/最近活跃用户的只读视图，老调用与面板不改。
+- **`core/runtime.py` 绝对导入** —— `from adapters.asset_store import ...` 改为相对导入
+  `..adapters.asset_store`，并包 try/except：宿主 `sys.path` 不含插件目录时不再整个插件
+  启动即 `ImportError`，素材库不可用只是退化为仅本地素材。
+- **猜硬币误判** —— `games/coinflip/game.py`
+  - 旧：`pick = "正" if "正" in c else "反"` —— 随便打一句都算"反"，还照样扣一次机会。
+  - 新：`parse_pick()` 只认明确的正/反（正/正面/heads、反/反面/tails），认不出返回
+    `outcome="need_pick"` 再问一次，**不读存档、不扣次数、不算对局**。
+
+### 重构
+
+- **`core/emotion.py` 不再认识具体游戏** —— 删掉写死的 `catch/trash/empty` 钓鱼分支。
+  改为通用解析顺序：`<kind>_rare`/`<kind>_common`（按 fact.rarity 选档）→ `<kind>` →
+  `fact`/`event` → fact 自带的 `text` 字段；都没有才按 outcome 兜底。钓鱼的
+  `catch_rare/catch_common/trash/empty` 本来就在 `data/config/fishing/emotion.json` 里，
+  行为不变；新游戏只需按同一约定写键，核心零改动。
+
+### 测试
+
+- 新增 `tests/test_review_fixes.py`（9 项）：模板不复读、LLM 同句不复读、提示词带最近台词、
+  会话按用户隔离、会话落盘+恢复、存档指向已删游戏时跳过、猜硬币只认明确正反、
+  乱输入不扣次数、`runtime.py` 无绝对导入。
+
 ## v0.5.10 (2026-10)
 
 **一句话主题**：发布包 **4.37 MB → 1.72 MB** —— 塔罗牌面（251 MB）移出包体、首次运行

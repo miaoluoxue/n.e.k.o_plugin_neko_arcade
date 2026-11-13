@@ -52,36 +52,51 @@ class EmotionRenderer:
                 return "highlight"
         return "routine"
 
+    # fact 的稀有度 → 模板后缀(游戏在自己的 emotion.json 里写 <kind>_rare / <kind>_common)
+    _RARE_VALUES = {"legendary", "epic", "rare", "highlight", "？", "ur", "ssr"}
+    _FACT_FALLBACK_KEYS = ("fact", "event")
+
+    def _fact_text(self, fact: Dict, templates: Dict[str, List[str]]) -> str:
+        """把一条 fact 渲染成一句话（**完全不认识具体是哪个游戏**）。
+
+        解析顺序（游戏只需按约定在 emotion.json 里写键）：
+          ① ``<kind>_rare`` / ``<kind>_common`` —— 按 fact.rarity 选稀有档
+          ② ``<kind>``                          —— 不分档的统一说法
+          ③ ``fact`` / ``event``                —— 任意 fact 的通用说法
+          ④ fact 自带 ``text`` 字段             —— 游戏自己渲染好的整句
+        都没有就返回空串(交给上层按 outcome 兜底), 不再猜"这是钓鱼/这是塔罗"。
+        """
+        kind = str(fact.get("kind") or "").strip()
+        rarity = str(fact.get("rarity") or "").strip().lower()
+        group = "rare" if rarity in self._RARE_VALUES else "common"
+        keys = []
+        if kind:
+            keys.extend((f"{kind}_{group}", kind))
+        keys.extend(self._FACT_FALLBACK_KEYS)
+        for key in keys:
+            if key in templates:
+                return self._fill(self._pick(templates, key), fact)
+        return self._fill(str(fact.get("text") or ""), fact, quiet=True)
+
+    @staticmethod
+    def _fill(line: str, fact: Dict, *, quiet: bool = False) -> str:
+        """用 fact 的字段填模板占位符; 缺字段就原样返回(不炸)。"""
+        if not line:
+            return ""
+        table = {k: v for k, v in fact.items() if isinstance(v, (str, int, float))}
+        for key in ("name", "item", "size", "value", "card", "position"):
+            table.setdefault(key, "")
+        try:
+            return str(line).format(**table)
+        except Exception:
+            return "" if quiet else str(line)
+
     def _template_render(self, facts: List[Dict], outcome: str,
                          game_templates: Optional[Dict[str, List[str]]] = None) -> str:
-        """使用游戏模板渲染，无匹配时使用兜底模板。"""
+        """使用游戏模板渲染；无匹配时使用兜底模板。"""
         templates = game_templates or {}
-        lines = []
-        for f in facts:
-            k = f.get("kind", "")
-            # 优先使用游戏模板
-            if k in templates:
-                lines.append(self._pick(templates, k))
-                continue
-            # 特殊处理 fishing 兼容
-            if k == "catch":
-                r = str(f.get("rarity", "")).lower()
-                if r in ("legendary", "？") and "catch_rare" in templates:
-                    lines.append(self._pick(templates, "catch_rare"))
-                elif r in ("epic", "rare") and "catch_rare" in templates:
-                    lines.append(self._pick(templates, "catch_rare"))
-                elif "catch_common" in templates:
-                    lines.append(self._pick(templates, "catch_common").format(
-                        name=f.get("name", ""), size=f.get("size", "")))
-                else:
-                    lines.append(f"钓到{f.get('name', '')}了喵")
-            elif k == "trash" and "trash" in templates:
-                lines.append(self._pick(templates, "trash").format(item=f.get("item", "垃圾")))
-            elif k == "empty" and "empty" in templates:
-                lines.append(self._pick(templates, "empty"))
-            else:
-                # 未知 fact kind，用兜底
-                pass
+        lines = [text for text in (self._fact_text(f, templates) for f in facts
+                                   if isinstance(f, dict)) if text]
 
         if not lines:
             oc = (outcome or "").lower()

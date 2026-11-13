@@ -2,10 +2,30 @@
 
 import random
 import time
+from typing import Optional
 
 from ...core.contracts import GameAdapter, build_fact
 
 game_class = "CoinFlipGame"
+
+_HEADS = ("正", "正面", "heads", "head")
+_TAILS = ("反", "反面", "tails", "tail")
+
+
+def parse_pick(text: str) -> Optional[str]:
+    """从输入里认出「正/反」；认不出返回 None。
+
+    旧实现是 `"正" in c else "反"` —— 随便打一句话都会被当成「反」并白扣一局，
+    这里改成**只认明确的正/反**，认不出就再问一次（不消耗次数）。
+    """
+    t = (text or "").strip().lower()
+    if not t:
+        return None
+    if any(w in t for w in _HEADS):
+        return "正"
+    if any(w in t for w in _TAILS):
+        return "反"
+    return None
 
 
 class CoinFlipGame(GameAdapter):
@@ -21,6 +41,12 @@ class CoinFlipGame(GameAdapter):
             return {"facts": [], "outcome": "done",
                     "message": "说「猜硬币 正」或「猜硬币 反」喵"}
 
+        # 先认出正/反：认不出就再问一次，**不扣次数、不算对局**
+        pick = parse_pick(c)
+        if pick is None:
+            return {"facts": [], "outcome": "need_pick",
+                    "message": "要猜正面还是反面喵？说「猜硬币 正」或「猜硬币 反」~"}
+
         data = await self.get_user_data(user_id, {"stats": {"wins": 0, "plays": 0}})
         # 每日次数限制（读 config.json，缺省 20）
         max_plays = int((getattr(self, "_config", None) or {}).get("max_plays_per_day", 20) or 20)
@@ -33,7 +59,6 @@ class CoinFlipGame(GameAdapter):
                     "message": f"今天已经玩够 {max_plays} 局啦，明天再来喵~"}
         data["plays_today"] = data.get("plays_today", 0) + 1
 
-        pick = "正" if ("正" in c) else "反"
         result = random.choice(["正", "反"])
         win = pick == result
         fact = build_fact("win" if win else "lose", pick=pick, result=result)

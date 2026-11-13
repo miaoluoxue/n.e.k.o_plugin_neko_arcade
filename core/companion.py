@@ -4,7 +4,10 @@
   · 游戏只报「事件键 + 局面描述 + 可选的主人原话」;
   · 提示词、LLM 调用、缓存、模板兜底、心情弧线、静默催prompt, 全部在这里。
 
-三级台词: LRU 缓存 → LLM 生成 → data/config/<game>/emotion.json 模板。
+三级台词: **变体池轮换**(同一事件缓存多条, 优先挑最近没说过的) → LLM 生成 →
+data/config/<game>/emotion.json 模板(同样带"最近说过就换一句")。
+最近说过的 N 句全层共享(模板/LLM 共用), 提示词里也会告诉模型别重复——
+这是"同一事件同一心情反复拿到一模一样的一句"的根因修复。
 心情用 core/persona.py 的 Mood(五条情绪弧), 不再让各游戏自己存 mood 字段。
 """
 
@@ -13,7 +16,8 @@ from __future__ import annotations
 import logging
 import random
 import time
-from typing import Any, Dict, List, Optional
+from collections import deque
+from typing import Any, Deque, Dict, List, Optional
 
 log = logging.getLogger("neko_arcade.companion")
 
@@ -82,8 +86,12 @@ class Companion:
         self.cfg_mgr = config_manager
         self.cfg = cfg or {}
         self._rng = rng or random.Random()
-        self._cache: Dict[str, str] = {}
-        self._cache_cap = int(self.cfg.get("line_cache", 48))
+        # 每个缓存 key 存**多条变体**(同一事件同一心情也有好几个说法), 按最近使用排序
+        self._cache: Dict[str, List[str]] = {}
+        self._cache_cap = int(self.cfg.get("line_cache", 48))         # key 上限
+        self._variants = int(self.cfg.get("line_variants", 4))        # 每个 key 留几条
+        # 最近说过的台词(全层共享), 用来避免"刚说完又来一句一样的"
+        self._recent: Deque[str] = deque(maxlen=int(self.cfg.get("line_recent", 10)))
         self._last_ts = 0.0
 
     # ── 台词 ────────────────────────────────
@@ -104,21 +112,24 @@ class Companion:
     async def line(self, game_id: str, event: str, *, ctx: Optional[Dict[str, Any]] = None,
                    user_text: str = "", situation: str = "", cache: bool = True,
                    style_hint: str = "") -> str:
-        """一句台词: 缓存 → LLM → 模板。任何一步失败都退到模板, 不抛异常。"""
+        """一句台词: 变体池 → LLM → 模板。任何一步失败都退到下一种, 不抛异常。
+
+        去重(治复读): 同一 key 的候选里优先挑 `_recent` 里没有的; 模板兜底
+        也换一句刚没说的; LLM 提示词里带上最近几句让它避开。
+        """
         table = {k: str(v) for k, v in (ctx or {}).items() if v is not None}
-        pool = self.templates(game_id, event)
-        fallback = ""
-        if pool:
-            fallback = self._rng.choice(pool)
-            try:
-                fallback = fallback.format(**table)
-            except Exception:
-                pass
-        if not self._llm_ready() or not self.cfg.get("enable_llm_lines", True):
-            return fallback
         ck = f"{game_id}|{event}|{self.mood()}|{table.get('bucket', '')}"
-        if cache and ck in self._cache:
-            return self._cache[ck]
+        # ① 变体池命中: 挑一条最近没说过的(池子里有多条时自然轮换)
+        if cache:
+            hit = self._pick_fresh(self._cache.get(ck) or [])
+            if hit:
+                return self._remember(hit)
+
+        pool = self.templates(game_id, event)
+        fallback = self._pick_template(pool, table)
+        if not self._llm_ready() or not self.cfg.get("enable_llm_lines", True):
+            return self._remember(fallback)
+
         prompt = self._prompt(event, table, user_text, situation, style_hint)
         try:
             out = await self.llm.call(prompt)
@@ -132,12 +143,68 @@ class Companion:
             if control:
                 self.apply_control(control)
         if not text:
-            return fallback
+            return self._remember(fallback)
+        if text in self._recent:
+            # 模型给的正是刚说过的话: 有别的变体就用变体, 否则用模板换一句
+            alt = self._pick_fresh(self._cache.get(ck) or []) or fallback
+            if alt and alt != text:
+                return self._remember(alt)
         if cache:
-            if len(self._cache) >= self._cache_cap:
-                self._cache.pop(next(iter(self._cache)))
-            self._cache[ck] = text
+            self._store_variant(ck, text)
+        return self._remember(text)
+
+    # ── 去重工具 ─────────────────────────────
+    def _pick_fresh(self, variants: List[str]) -> str:
+        """从候选里挑一条最近没说过的; 实在都说过也不能跟上一句一模一样。"""
+        if not variants:
+            return ""
+        fresh = [v for v in variants if v not in self._recent]
+        if fresh:
+            return self._rng.choice(fresh)
+        # 全都刚说过(变体池只有一两条时很常见): 至少避开**上一句**,
+        # 避开不了就返回 "", 让调用方去 LLM/模板换一句。
+        last = self._recent[-1] if self._recent else ""
+        older = [v for v in variants if v != last]
+        return older[0] if older else ""
+
+    def _pick_template(self, pool: List[str], table: Dict[str, str]) -> str:
+        """模板兜底: 随机取几条, 挑一条不在"最近说过"里的。"""
+        if not pool:
+            return ""
+        picks: List[str] = []
+        for _ in range(min(6, len(pool))):
+            raw = self._rng.choice(pool)
+            try:
+                text = str(raw).format(**table).strip()
+            except Exception:
+                text = str(raw).strip()
+            if text and text not in self._recent:
+                return text
+            if text:
+                picks.append(text)
+        return picks[0] if picks else ""
+
+    def _remember(self, text: str) -> str:
+        """记一句"刚说过"并原样返回(方便链式 return)。"""
+        if text:
+            self._recent.append(text)
         return text
+
+    def _store_variant(self, ck: str, text: str) -> None:
+        """把新台词并进该 key 的变体池(去重, 只留最近 N 条); key 超上限按 LRU 淘汰。"""
+        bucket = self._cache.setdefault(ck, [])
+        if text in bucket:
+            bucket.remove(text)
+        bucket.append(text)                      # 最近用过的排尾部
+        if len(bucket) > self._variants:
+            del bucket[:len(bucket) - self._variants]
+        while len(self._cache) > self._cache_cap:
+            self._cache.pop(next(iter(self._cache)))
+
+    def clear_line_cache(self) -> None:
+        """清空台词缓存与"最近说过"记录(换人设/换模型时调用)。"""
+        self._cache.clear()
+        self._recent.clear()
 
     def persona_block(self, style_hint: str = "") -> str:
         """把宿主猫娘的人设拼成一段(游戏不参与; 没读到就用配置提示/通用兜底)。"""
@@ -209,6 +276,10 @@ class Companion:
         if user_text:
             parts.append(f"{call}刚跟你说：「{user_text}」")
             parts.append("先回应他这句话（吐槽/撒娇/嘴硬/搭话都行），不要答非所问、不要只回一个「嗯」。")
+        recent = [x for x in list(self._recent)[-4:] if x]
+        if recent:
+            parts.append("你刚才已经说过这些（不要重复、也不要只换个语序说同一件事）："
+                         + " / ".join(f"「{x}」" for x in recent))
         parts.append("要求：1~2 句话，合计不超过 40 个字；不要引号；不要解释规则；"
                      "不要复述数据/坐标清单；可以有语气词。只输出台词本身。")
         return "\n".join(parts)
