@@ -539,6 +539,16 @@ class GameBrain:
             if card_img and not pushed_any:
                 await self.push.text_with_image(neko_text, card_img)
 
+        # ── 一局结束 → 退出游戏模式 ──
+        # 游戏用 end_session_outcomes 声明"哪些 outcome 代表整局结束"(如棋类赢/输/
+        # 和/认输、猜硬币赌完、轮盘中枪)。命中就收尾会话: on_stop + 清该用户槽 +
+        # 落盘。否则线上会出现"认输了还赖在游戏里, 要自己说结束"。
+        session_ended = False
+        end_set = tuple(getattr(game, "end_session_outcomes", ()) or ())
+        if end_set and str(outcome) in end_set and self.session_game(user_id) == game_id:
+            await self._end_current_game(user_id)
+            session_ended = True
+
         # 构建完整上下文返回给 LLM，让 LLM 自然生成猫娘情感陪伴回应
         help_data = await self.registry.get_help(game.id) if hasattr(self.registry, "get_help") else {}
         cmds = (help_data.get("commands", []) or [])[:5]
@@ -554,6 +564,9 @@ class GameBrain:
         facts_hint = self._facts_to_hint(facts)
         if facts_hint:
             summary = f"{summary}\n[结果要点] {facts_hint}"
+        if session_ended:
+            summary += (f"\n[本局已结束] 已经退出{game.name}游戏模式。"
+                        f"想再来一局直接说「{game.name}」就行；现在可以正常聊天了。")
         return {
             "game": game_id,
             "game_name": game.name,
@@ -565,6 +578,7 @@ class GameBrain:
             "emotion_suggestion": neko_text,
             "summary": summary,
             "mood": mood,
+            "session_ended": session_ended,
             "game_commands": [c[0] for c in cmds if isinstance(c, (list, tuple)) and c[0]],
             "card_image": bool(card_img),
         }

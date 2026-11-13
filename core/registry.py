@@ -39,6 +39,15 @@ class GameRegistry:
         gc = self.cfg_mgr.load(game.id)
         game._config = gc.config
         game._help = gc.help
+        # 配置迁移: 游戏可声明 migrate_config(cfg)->bool, 老配置就地升级并落盘。
+        # (踩过的坑: 改了默认值只影响全新安装, 老用户配置里存着旧默认值永远不生效)
+        try:
+            migrate = getattr(game, "migrate_config", None)
+            if callable(migrate) and migrate(gc.config):
+                self.cfg_mgr.save(game.id, gc.config)
+                log.info("已迁移 %s 的配置到新默认值", game.id)
+        except Exception as exc:            # 迁移失败不该影响游戏加载
+            log.debug("迁移 %s 配置失败: %s", game.id, exc)
         # 关键词 = data/config/{id}/keywords.json + 游戏名(兜底, 保证游戏名一定能路由)
         kws = list(gc.get_keywords() or [])
         if game.name and game.name not in kws:

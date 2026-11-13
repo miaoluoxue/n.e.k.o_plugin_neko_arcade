@@ -34,6 +34,10 @@ class CoinFlipGame(GameAdapter):
     description = "和猫娘玩猜硬币正反面"
     icon = "🪙"
 
+    #: 猜完一局就结束会话（一局定胜负的玩法，不该一直挂在游戏模式里）。
+    #: need_pick / limit 不算整局结束，所以不列。
+    end_session_outcomes = ("win", "lose")
+
     async def handle_action(self, user_id, cmd, args=None):
         c = (cmd or "").strip()
         # 只说游戏名没给正反 → 提示

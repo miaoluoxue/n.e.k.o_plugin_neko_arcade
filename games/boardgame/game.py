@@ -45,12 +45,37 @@ class BoardGame(GameAdapter):
     version = "0.1.0"
     icon = "🎴"
 
+    #: 赢/输/和/认输 = 整局结束 → 本体自动退出游戏模式。
+    #: 旧版认输后会话还挂着，用户得自己说「结束」，体验很别扭。
+    end_session_outcomes = ("win", "lose", "draw", "finished", "resign")
+
     def __init__(self, plugin: Any) -> None:
         super().__init__(plugin)
         self._rng = random.Random()
         self._comp: Any = None
 
     # ── 配置 / 模式 ──────────────────────────
+    #: 配置 schema 版本: 2 = 出图默认改成「每走一步一张」
+    _CFG_SCHEMA = 2
+
+    def migrate_config(self, cfg: Dict[str, Any]) -> bool:
+        """v1 → v2: 出图默认从「关键节点+每 5 步一张」改成「每走一步一张」。
+
+        只改还停在旧默认值(key)的配置; 用户自己选过 never/always 的不动。
+        """
+        if not isinstance(cfg, dict):
+            return False
+        try:
+            ver = int(cfg.get("cfg_schema") or 1)
+        except (TypeError, ValueError):
+            ver = 1
+        if ver >= self._CFG_SCHEMA:
+            return False
+        if cfg.get("show_image") in (None, "key"):
+            cfg["show_image"] = "always"
+        cfg["cfg_schema"] = self._CFG_SCHEMA
+        return True
+
     def _cfg(self, key: str, default: Any = None) -> Any:
         cur: Any = getattr(self, "_config", None) or {}
         for part in key.split("."):
@@ -60,20 +85,24 @@ class BoardGame(GameAdapter):
                 return default
         return cur
 
-    #: 出图档位: always=每步 / key=关键节点(默认) / never=只看文字
+    #: 出图档位: always=每走一步一张 / key=只关键节点 / never=只看文字
     #: board=显式说"棋盘"; 这些时刻一定出图
     _KEY_OUTCOMES = ("start", "board", "win", "lose", "draw", "finished", "resign")
     _KEY_SUBSTR = ("capture", "check", "promote", "castle", "hang")
 
     def _image_mode(self) -> str:
-        """出图档位。兼容老配置: true→always, false→never, 缺省→key。"""
-        raw = self._cfg("show_image", "key")
+        """出图档位。兼容老配置: true→always, false→never, 缺省→**always(每步一张)**。
+
+        默认档位从 key 改成 always: 盘面是这类游戏的"主画面"，隔 5 步才给一张
+        用户根本跟不上棋局。想要少图的老用户可以自己在面板里选回 key/never。
+        """
+        raw = self._cfg("show_image", "always")
         if raw is True:
             return "always"
         if raw is False or raw is None:
             return "never"
         text = str(raw).strip().lower()
-        return text if text in ("always", "key", "never") else "key"
+        return text if text in ("always", "key", "never") else "always"
 
     def _should_render(self, state: Dict[str, Any], outcome: str) -> bool:
         mode = self._image_mode()
@@ -458,10 +487,11 @@ class BoardGame(GameAdapter):
             {"label": "说话与出图", "component": "Group"},
             {"field": "enable_llm_lines", "label": "用 LLM 生成台词", "component": "Switch"},
             {"field": "show_image", "label": "棋盘出图时机", "component": "Select",
-             "props": {"options": [{"label": "关键节点(推荐)", "value": "key"},
-                                   {"label": "每步都出", "value": "always"},
+             "props": {"options": [{"label": "每走一步都出(推荐)", "value": "always"},
+                                   {"label": "只关键节点", "value": "key"},
                                    {"label": "只看文字", "value": "never"}]},
-             "help": "关键节点=开局/吃子/将军/胜负，另外每 5 步补一张；说「棋盘」随时出图"},
+             "help": "默认每走一步出一张棋盘图，跟着棋局看最直观；"
+                     "选「只关键节点」= 只在开局/吃子/将军/胜负等时刻出图（另每 5 步补一张）"},
             {"field": "persona_hint", "label": "台词人设提示", "component": "InputTextArea"},
         ]}
 

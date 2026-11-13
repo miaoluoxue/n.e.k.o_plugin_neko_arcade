@@ -1,8 +1,9 @@
 {
+  "cfg_schema": 2,
   "level": 2,
   "undo_limit": 3,
   "enable_llm_lines": true,
-  "show_image": "key",
+  "show_image": "always",
   "persona_hint": "",
   "modes": {
     "gomoku": {

@@ -38,6 +38,10 @@ class RussianGame(GameAdapter):
     version = "0.1.0"
     icon = "🎰"
 
+    #: 一分出胜负（中枪/对手中枪/平局）就结束这一局会话；装弹、开枪、签到等
+    #: 过程态不算结束。
+    end_session_outcomes = ("win", "lose", "draw")
+
     # ── 指令表 (关键词, 说明, handler名)；最长关键词优先匹配 ──
     _RULES: List[Tuple[List[str], str, str]] = [
         (["轮盘签到", "轮盘打卡", "领猫粮"], "每日签到领猫粮", "sign"),

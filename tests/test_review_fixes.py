@@ -137,6 +137,7 @@ class _FakeGame:
         self.started = []
         self.stopped = []
         self.last_cmd = None
+        self.outcome = "done"
 
     def get_keywords(self):
         return [self.name]
@@ -161,7 +162,7 @@ class _FakeGame:
 
     async def handle_action(self, uid, cmd, args=None):
         self.last_cmd = cmd
-        return {"facts": [], "outcome": "done", "message": f"{self.name}收到"}
+        return {"facts": [], "outcome": self.outcome, "message": f"{self.name}收到"}
 
 
 class _FakeRegistry:
@@ -312,8 +313,42 @@ def test_coinflip_garbage_input_does_not_consume_a_play():
     assert played["alice"]["plays_today"] == 1
 
 
-# ── 4. runtime 只用相对导入 ───────────────────
-def test_runtime_has_no_absolute_package_imports():
+# ── 3b. 一局结束就退出游戏模式 ─────────────────
+def test_round_end_finishes_session():
+    """认输/分胜负 = 整局结束 → 自动收尾会话（旧版认输后还赖在游戏里）。"""
+    bg = _FakeGame("boardgame", "棋类对弈")
+    bg.end_session_outcomes = ("win", "lose", "draw", "finished", "resign")
+    bg.outcome = "lose"                       # 认输
+    brain = _make_brain([bg])
+    res = asyncio.run(brain.handle_action("boardgame", "认输", {}, user_id="alice"))
+    assert res["session_ended"] is True
+    assert brain.session_game("alice") is None, "整局结束后要退出游戏模式"
+    assert bg.stopped == ["alice"], "结束会话要跑 on_stop"
+    assert "本局已结束" in res["summary"]
+
+
+def test_mid_game_outcome_keeps_session():
+    """中盘事件(普通落子/将军/悔棋)不能把会话结束掉。"""
+    bg = _FakeGame("boardgame", "棋类对弈")
+    bg.end_session_outcomes = ("lose",)
+    bg.outcome = "board"
+    brain = _make_brain([bg])
+    res = asyncio.run(brain.handle_action("boardgame", "H8", {}, user_id="alice"))
+    assert res["session_ended"] is False
+    assert brain.session_game("alice") == "boardgame"
+
+
+def test_endless_game_never_auto_ends():
+    """钓鱼/修仙这类长期玩法(没声明 end_session_outcomes)永远不会被自动结束。"""
+    fish = _FakeGame("fishing", "钓鱼")
+    fish.outcome = "win"
+    brain = _make_brain([fish])
+    res = asyncio.run(brain.handle_action("fishing", "抛竿", {}, user_id="alice"))
+    assert res["session_ended"] is False
+    assert brain.session_game("alice") == "fishing"
+
+
+# ── 4. runtime 只用相对导入 ───────────────────def test_runtime_has_no_absolute_package_imports():
     """宿主 sys.path 不含插件目录时, 绝对导入会让插件启动即 ImportError。"""
     src = (ROOT / "core" / "runtime.py").read_text(encoding="utf-8")
     offenders = [ln.strip() for ln in src.splitlines()

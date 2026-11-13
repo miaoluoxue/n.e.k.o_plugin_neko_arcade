@@ -49,6 +49,9 @@ class SoupBubbleGame(GameAdapter):
     icon = "🍲"
     version = "0.1.0"
 
+    #: 揭晓汤底 = 这碗汤喝完了 → 结束会话（猜错/提问/提醒都还是这一局）。
+    end_session_outcomes = ("reveal", "big_win")
+
     # ── 指令路由 ──────────────────────────
 
     async def handle_action(self, user_id: str, cmd: str,

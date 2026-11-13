@@ -365,6 +365,12 @@ class GameAdapter(abc.ABC):
         """高亮事件是否要生成卡片。默认有 facts 时生成。"""
         return bool(facts)
 
+    #: 一局结束就当"游戏结束"处理 —— 命中这些 outcome 时本体自动结束该用户的
+    #: 游戏会话(踩过的坑: 下棋认输后还赖在游戏模式里, 用户得自己说"结束")。
+    #: 留空 = 一直陪着玩(钓鱼 / 修仙 / 人生重开 / 喵图相册这类长期玩法)。
+    #: 注意只放**整局结束**的 outcome; 中盘事件(悔棋/将军/提示)不要放。
+    end_session_outcomes: Tuple[str, ...] = ()
+
     # ── 状态（可选覆写） ─────────────────────
 
     async def get_status(self, user_id: str = "default") -> Dict[str, Any]:

@@ -267,6 +267,29 @@ def test_image_modes_control_spam() -> None:
     assert not never._render.specs                      # 一次都没渲染
 
 
+def test_default_config_renders_every_move() -> None:
+    """默认档 = 每走一步一张（v0.6.0 起；旧默认是「关键节点 + 每 5 步一张」）。"""
+    game = _game()                                   # 用出货 config.json，不改 show_image
+    assert game._image_mode() == "always"
+    start = asyncio.run(game.handle_action("u", "五子棋"))
+    assert start.get("images"), "开局要出图"
+    for mv in ("A1", "A2", "B1", "B2"):              # 随便几步都要有棋盘图
+        out = asyncio.run(game.handle_action("u", mv))
+        assert out.get("images"), f"默认档每步都要出图: {mv}"
+
+
+def test_old_key_config_migrates_to_always() -> None:
+    """老用户配置里存着旧默认值(key) → 迁移成 always，自己选的 never 要保留。"""
+    game = BoardGame(StubPlugin())
+    old = {"show_image": "key", "level": 2}
+    assert game.migrate_config(old) is True
+    assert old["show_image"] == "always" and old["cfg_schema"] == 2
+    assert game.migrate_config(old) is False, "已经是新 schema 就不要反复迁移"
+    picked = {"show_image": "never"}
+    assert game.migrate_config(picked) is True
+    assert picked["show_image"] == "never", "用户自己选的「只看文字」不能被改掉"
+
+
 # ── 对局交互体验: 开局带履历 + 悔棋余量 ──
 def test_start_line_carries_record_and_last_result() -> None:
     game = _game()
