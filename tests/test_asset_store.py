@@ -19,12 +19,17 @@ import hashlib
 import json
 import re
 import shutil
+import urllib.error
+import urllib.request
 from pathlib import Path
 
+import pytest
 from plugin.plugins.neko_arcade.adapters.asset_store import (
     DEFAULT_BASE_URLS,
     DEFAULT_MAX_ASSET_BYTES,
     AssetStore,
+    _HttpsRedirectHandler,
+    build_store_from_cfg,
 )
 
 _TMP = Path(__file__).resolve().parent.parent / ".tmp_asset_store_test"
@@ -150,6 +155,62 @@ def test_rejects_path_traversal_and_non_https_sources():
         assert await store.ensure(f"{chr(67)}:/outside.webp") is None
         assert await store.ensure("tarot/card.webp:stream") is None
         assert not (tmp / "outside.webp").exists()
+
+    asyncio.run(run())
+
+
+def test_invalid_configured_sources_fall_back_to_defaults():
+    store = AssetStore(
+        object(),
+        cache_dir=str(_TMP / "fallback-sources"),
+        base_urls=["file:///tmp/assets", "http://insecure/"],
+    )
+    assert store.base_urls == list(DEFAULT_BASE_URLS)
+
+
+def test_build_store_reads_asset_cache_mb():
+    plugin = _FakePlugin(_tmp_dir("build-cache-config"))
+    store = build_store_from_cfg(
+        plugin,
+        {
+            "asset_base_url": "http://invalid/",
+            "asset_cache_mb": 64,
+        },
+    )
+    assert store.cache_limit_bytes == 64 * 1024 * 1024
+    assert store.base_urls == list(DEFAULT_BASE_URLS)
+
+
+def test_redirect_target_is_checked_before_following():
+    handler = _HttpsRedirectHandler()
+    request = urllib.request.Request("https://primary/start")
+    with pytest.raises(urllib.error.HTTPError):
+        handler.redirect_request(
+            request, None, 302, "Found",
+            {"Location": "http://insecure/asset.webp"},
+            "http://insecure/asset.webp",
+        )
+
+
+def test_cache_limit_evicts_old_files_before_download():
+    async def run():
+        tmp = _tmp_dir("cache-limit")
+        f = _Fetcher({"https://primary/manifest.json": _manifest_bytes(),
+                      "https://primary/tarot/": PAYLOAD})
+        store = _store(tmp, f, cache_limit_mb=90 / (1024 * 1024))
+        old1 = tmp / "cache" / "tarot" / "old-1.webp"
+        old2 = tmp / "cache" / "tarot" / "old-2.webp"
+        old1.parent.mkdir(parents=True, exist_ok=True)
+        old1.write_bytes(b"A" * 50)
+        old2.write_bytes(b"B" * 50)
+        old1.touch()
+        old2.touch()
+
+        got = await store.ensure("tarot/ba/card.webp")
+        assert got is not None and got.read_bytes() == PAYLOAD
+        remaining = [p for p in (old1, old2) if p.exists()]
+        assert len(remaining) == 1, "应只淘汰最旧的缓存文件"
+        assert sum(p.stat().st_size for p in remaining) + len(PAYLOAD) <= 90
 
     asyncio.run(run())
 

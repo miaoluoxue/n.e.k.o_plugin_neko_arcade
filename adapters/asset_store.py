@@ -44,6 +44,20 @@ DEFAULT_CONCURRENCY = 3
 DEFAULT_RETRIES = 2
 DEFAULT_MAX_ASSET_BYTES = 64 * 1024 * 1024
 DEFAULT_MAX_MANIFEST_BYTES = 2 * 1024 * 1024
+DEFAULT_CACHE_LIMIT_MB = 128.0
+
+
+class _HttpsRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """只允许 HTTPS 重定向，并在跟随前验证目标地址。"""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        target = urllib.parse.urljoin(req.full_url, newurl)
+        parsed = urllib.parse.urlsplit(target)
+        if parsed.scheme.lower() != "https" or not parsed.hostname:
+            raise urllib.error.HTTPError(
+                target, code, "redirect target is not HTTPS", headers, fp
+            )
+        return super().redirect_request(req, fp, code, msg, headers, target)
 
 #: 分类 → 插件代码目录里的对应子目录。
 #: 用途：**本地优先** —— 素材若仍随包（图标/面板图这类小件），就不必再下载；
@@ -63,16 +77,31 @@ class AssetStore:
                  base_urls: Optional[Sequence[str]] = None,
                  bundled_manifest: Optional[str] = None,
                  local_map: Optional[Dict[str, str]] = None,
-                 enabled: bool = True, logger: Any = None) -> None:
+                 enabled: bool = True, logger: Any = None,
+                 cache_limit_mb: float = DEFAULT_CACHE_LIMIT_MB) -> None:
         self.plugin = plugin
         self.log = logger
         self.enabled = bool(enabled)
-        self.base_urls: List[str] = []
-        for raw in base_urls or DEFAULT_BASE_URLS:
+        configured: List[str] = []
+        for raw in base_urls or ():
             base = self._normalize_base_url(str(raw or ""))
-            if base and base not in self.base_urls:
-                self.base_urls.append(base)
+            if base and base not in configured:
+                configured.append(base)
+        if configured:
+            self.base_urls = configured
+        else:
+            self.base_urls = [
+                base for raw in DEFAULT_BASE_URLS
+                if (base := self._normalize_base_url(raw))
+            ]
         self._cache_root = Path(cache_dir) if cache_dir else self._default_cache_dir()
+        try:
+            cache_mb = float(cache_limit_mb)
+        except (TypeError, ValueError):
+            cache_mb = DEFAULT_CACHE_LIMIT_MB
+        self.cache_limit_bytes = (
+            int(max(0.0, min(cache_mb, 4096.0)) * 1024 * 1024)
+        )
         self._bundled_manifest = Path(bundled_manifest) if bundled_manifest else None
         self._local_map: Dict[str, str] = dict(local_map or DEFAULT_LOCAL_MAP)
         self._manifest: Optional[Dict[str, Any]] = None
@@ -283,6 +312,7 @@ class AssetStore:
                     continue
                 try:
                     target = self.local_path(rel)
+                    self._enforce_cache_limit(target, want_size)
                     target.parent.mkdir(parents=True, exist_ok=True)
                     tmp = target.with_suffix(target.suffix + ".part")
                     tmp.write_bytes(blob)
@@ -295,6 +325,38 @@ class AssetStore:
                 time.sleep(0.6 * (attempt + 1))
         self._log("warning", "资源下载失败: %s", rel)
         return False
+
+    def _enforce_cache_limit(self, protected: Path, incoming_size: int) -> None:
+        """下载前按 LRU 清理旧缓存；单个素材本身超限时仍允许写入。"""
+        limit = self.cache_limit_bytes
+        if limit <= 0 or not self._cache_root.is_dir():
+            return
+        root = self._cache_root.resolve()
+        protected_resolved = protected.resolve()
+        files: List[tuple[float, int, Path]] = []
+        for path in self._cache_root.rglob("*"):
+            if not path.is_file() or path.suffix == ".part":
+                continue
+            try:
+                resolved = path.resolve()
+                if not resolved.is_relative_to(root) or resolved == protected_resolved:
+                    continue
+                stat = path.stat()
+            except OSError:
+                continue
+            files.append((stat.st_mtime, stat.st_size, path))
+        total = sum(size for _, size, _ in files)
+        for _, size, path in sorted(files):
+            if total + incoming_size <= limit:
+                break
+            try:
+                path.unlink()
+                total -= size
+            except OSError as exc:
+                self._log("debug", "清理素材缓存失败 %s: %s", path, exc)
+        if incoming_size > limit:
+            self._log("warning", "单素材超过缓存上限 %d，仍保留当前文件: %s",
+                      limit, protected)
 
     @staticmethod
     def _file_matches(path: Path, entry: Dict[str, Any]) -> bool:
@@ -320,6 +382,7 @@ class AssetStore:
             return None
         try:
             opener = urllib.request.build_opener(
+                _HttpsRedirectHandler(),
                 urllib.request.ProxyHandler({
                     "https": os.getenv("HTTPS_PROXY") or os.getenv("https_proxy") or "",
                     "http": os.getenv("HTTP_PROXY") or os.getenv("http_proxy") or "",
@@ -383,7 +446,9 @@ class AssetStore:
 
     def snapshot(self) -> Dict[str, Any]:
         return {"enabled": self.enabled, "cache": str(self._cache_root),
-                "sources": list(self.base_urls), "files": len(self._index), **self.stats}
+                "sources": list(self.base_urls), "files": len(self._index),
+                "cache_limit_mb": round(self.cache_limit_bytes / 1024 / 1024, 2),
+                **self.stats}
 
     # ── 日志 ─────────────────────────────────────────
 
@@ -408,7 +473,8 @@ def build_store_from_cfg(plugin: Any, cfg: Dict[str, Any], *,
     urls: List[str] = [u for u in [base, *mirrors] if str(u).strip()]
     enabled = cfg.get("asset_auto_download", True)
     store = AssetStore(plugin, base_urls=urls or None, bundled_manifest=bundled_manifest,
-                       enabled=bool(enabled), logger=logger)
+                       enabled=bool(enabled), logger=logger,
+                       cache_limit_mb=cfg.get("asset_cache_mb", DEFAULT_CACHE_LIMIT_MB))
     set_active_store(store)
     return store
 
