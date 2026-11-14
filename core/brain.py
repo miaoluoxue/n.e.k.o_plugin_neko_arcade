@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -79,6 +80,10 @@ class GameBrain:
         self._last_invite: Dict[tuple[SessionKey, str], float] = {}
         # 重复回调守门: (game_id, 输入原文) → (时间戳, 上次 outcome)，见模块注释
         self._recent_inputs: Dict[Any, Any] = {}
+        # 同一会话的动作必须原子执行；限次、货币和存档更新都不能在 await 处交错。
+        self._action_locks: Dict[
+            tuple[SessionKey, asyncio.AbstractEventLoop], asyncio.Lock
+        ] = {}
         # 游戏状态锚节流：游戏进行中且 LLM 长时间未调工具时，向 LLM 上下文
         # 注入「当前游戏 + 可用指令」（只含当前游戏，绝不含全部游戏，防炸上下文）。
         # 每次工具调用(handle_action)都会刷新，所以锚只在 LLM 脱节时出现。
@@ -367,6 +372,14 @@ class GameBrain:
             self._session_start_by_key = starts
         return starts
 
+    def _action_lock(self, key: SessionKey) -> asyncio.Lock:
+        locks = getattr(self, "_action_locks", None)
+        if locks is None:
+            locks = {}
+            self._action_locks = locks
+        cache_key = (key, asyncio.get_running_loop())
+        return locks.setdefault(cache_key, asyncio.Lock())
+
     def session_game(self, session: Optional[SessionLike] = None) -> Optional[str]:
         """某会话当前在玩的游戏；不给会话就取最近活跃会话。"""
         key = (
@@ -476,6 +489,12 @@ class GameBrain:
         if user_id is not None:
             session = user_id
         key = coerce_session_key(session)
+        async with self._action_lock(key):
+            return await self._start_game_unlocked(game_id, key)
+
+    async def _start_game_unlocked(
+        self, game_id: str, key: SessionKey
+    ) -> Dict[str, Any]:
         game = self.registry.get(game_id)
         if not game:
             return {"message": f"没有找到游戏「{game_id}」喵"}
@@ -510,6 +529,10 @@ class GameBrain:
         if user_id is not None:
             session = user_id
         key = coerce_session_key(session)
+        async with self._action_lock(key):
+            return await self._stop_game_unlocked(key)
+
+    async def _stop_game_unlocked(self, key: SessionKey) -> Dict[str, Any]:
         game_id = self.session_game(key)
         if not game_id:
             return {"message": "没有在玩喵"}
@@ -625,7 +648,9 @@ class GameBrain:
         self._clear_pending_switch(key)
 
         inner_args = {k: v for k, v in args.items() if k != "switch_to"}
-        result = await self.handle_action(target.id, target_cmd, inner_args, key)
+        result = await self._handle_action_unlocked(
+            target.id, target_cmd, inner_args, key
+        )
         if isinstance(result, dict) and from_id and from_id != target.id:
             note = (
                 f"[切换完成] 已从「{from_name}」切到「{target.name}」。"
@@ -694,6 +719,19 @@ class GameBrain:
         if user_id is not None:
             session = user_id
         session_key = coerce_session_key(session)
+        lock = self._action_lock(session_key)
+        async with lock:
+            return await self._handle_action_unlocked(
+                game_id, cmd, args, session_key
+            )
+
+    async def _handle_action_unlocked(
+        self,
+        game_id: str,
+        cmd: str,
+        args: Optional[Dict[str, Any]],
+        session_key: SessionKey,
+    ) -> Dict[str, Any]:
         storage_user_id = session_key.storage_id
         args = dict(args or {})
         switch_to = str(args.get("switch_to") or "").strip()
@@ -1428,18 +1466,18 @@ class GameBrain:
             else (getattr(self, "_current_session", None) or SINGLE_SESSION)
         )
         focus = self.session_game(key)
+        started = float(self._session_start_table().get(key, 0.0) or 0.0)
+        pending = self._pending_switch_map().get(key)
         return {
             "persona": self._companion_for(key).persona.snapshot(),
-            "session": {"active": bool(sessions), "game": focus,
-                        "elapsed": round(time.time() - self._session_start, 1) if self._session_start else 0,
-                        "sessions": {
-                            session_key.storage_id: game_id
-                            for session_key, game_id in sessions.items()
-                        }},
-            "pending_switch": {
-                session_key.storage_id: pending
-                for session_key, pending in self._pending_switch_map().items()
+            "session": {
+                "active": key in sessions,
+                "game": focus,
+                "elapsed": round(time.time() - started, 1) if started else 0,
+                "session_count": len(sessions),
+                "sessions": {key.storage_id: focus} if focus else {},
             },
+            "pending_switch": {key.storage_id: pending} if pending else {},
             "proactive": self._proactive_for(key).snapshot(),
             "memory": await self.memory.snapshot(session_key=key),
         }

@@ -351,14 +351,12 @@ class ArcadeRuntime:
             return
         provider = model = api_key = base_url = ""
         try:
-            main_cfg = self.cfg_mgr.load_main_config()
-            if isinstance(main_cfg, dict):
-                llm = main_cfg.get("llm") or {}
-                if isinstance(llm, dict):
-                    provider = str(llm.get("provider", "") or "")
-                    model = str(llm.get("model", "") or "")
-                    api_key = str(llm.get("api_key", "") or "")
-                    base_url = str(llm.get("base_url", "") or "")
+            llm = self.cfg_mgr.load_llm_config()
+            if isinstance(llm, dict):
+                provider = str(llm.get("provider", "") or "")
+                model = str(llm.get("model", "") or "")
+                api_key = str(llm.get("api_key", "") or "")
+                base_url = str(llm.get("base_url", "") or "")
         except Exception:
             pass
         if not provider or not model:

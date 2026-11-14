@@ -12,7 +12,10 @@ from __future__ import annotations
 import json
 import os
 import shutil
+from copy import deepcopy
 from typing import Any, Dict, List, Optional
+
+from .secrets import protect_secret, unprotect_secret
 
 # 兜底默认值(代码目录旁的 data/)，仅在拿不到 SDK 数据目录时使用
 _PLUGIN_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -163,12 +166,66 @@ class ConfigManager:
 
     def load_main_config(self) -> Dict[str, Any]:
         """读取主插件配置 data/main/config.json。"""
-        return self._read_json(os.path.join(self._main_dir(), "config.json"), {})
+        path = os.path.join(self._main_dir(), "config.json")
+        cfg = self._read_json(path, {})
+        if not isinstance(cfg, dict):
+            cfg = {}
+        cfg = deepcopy(cfg)
+        llm = cfg.get("llm")
+        if isinstance(llm, dict):
+            llm = dict(llm)
+            plain = str(llm.pop("api_key", "") or "")
+            if plain:
+                llm["api_key_enc"] = protect_secret(plain)
+                try:
+                    migrated = deepcopy(cfg)
+                    migrated["llm"] = llm
+                    self._write_main_config(migrated)
+                except OSError:
+                    pass
+            cfg["llm"] = llm
+        return cfg
 
     def save_main_config(self, cfg: Dict[str, Any]) -> None:
         """保存主插件配置 data/main/config.json。"""
-        with open(os.path.join(self._main_dir(), "config.json"), "w", encoding="utf-8") as f:
+        safe = deepcopy(cfg if isinstance(cfg, dict) else {})
+        llm = safe.get("llm")
+        if isinstance(llm, dict):
+            llm = dict(llm)
+            plain = str(llm.pop("api_key", "") or "")
+            if plain:
+                llm["api_key_enc"] = protect_secret(plain)
+            safe["llm"] = llm
+        self._write_main_config(safe)
+
+    def _write_main_config(self, cfg: Dict[str, Any]) -> None:
+        path = os.path.join(self._main_dir(), "config.json")
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
             json.dump(cfg, f, ensure_ascii=False, indent=2)
+            f.write("\n")
+        os.replace(tmp, path)
+
+    def load_llm_config(self) -> Dict[str, Any]:
+        """返回解密后的 LLM 配置，仅供运行时使用。"""
+        cfg = self.load_main_config()
+        llm = cfg.get("llm") if isinstance(cfg.get("llm"), dict) else {}
+        out = dict(llm)
+        encrypted = str(out.pop("api_key_enc", "") or "")
+        out["api_key"] = unprotect_secret(encrypted) if encrypted else ""
+        return out
+
+    def public_main_config(self) -> Dict[str, Any]:
+        """返回可安全发送到面板的配置，永不包含 Key 或密文。"""
+        cfg = self.load_main_config()
+        llm = cfg.get("llm")
+        if isinstance(llm, dict):
+            llm = dict(llm)
+            encrypted = str(llm.pop("api_key_enc", "") or "")
+            llm.pop("api_key", None)
+            llm["api_key_set"] = bool(encrypted)
+            cfg["llm"] = llm
+        return cfg
 
     def load_game_states(self) -> Dict[str, Any]:
         """读取游戏启停配置 data/main/games.json。"""

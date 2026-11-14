@@ -273,6 +273,34 @@ def test_sessions_are_isolated_per_user():
     assert fishing.stopped == ["alice"]
 
 
+def test_same_user_actions_are_serialized():
+    class _SlowGame(_FakeGame):
+        def __init__(self):
+            super().__init__("slow", "慢游戏")
+            self.active = 0
+            self.max_active = 0
+
+        async def handle_action(self, uid, cmd, args=None):
+            self.active += 1
+            self.max_active = max(self.max_active, self.active)
+            await asyncio.sleep(0.02)
+            self.active -= 1
+            return {"facts": [], "outcome": "done", "message": cmd}
+
+    game = _SlowGame()
+    brain = _make_brain([game])
+
+    async def run():
+        return await asyncio.gather(
+            brain.handle_action("slow", "一", {}, user_id="alice"),
+            brain.handle_action("slow", "二", {}, user_id="alice"),
+        )
+
+    first, second = asyncio.run(run())
+    assert first["outcome"] == second["outcome"] == "done"
+    assert game.max_active == 1, "同一用户动作不能在 await 处并发执行"
+
+
 def test_same_user_on_different_channels_uses_different_game_state():
     fishing = _FakeGame("fishing", "钓鱼")
     brain = _make_brain([fishing])
@@ -286,6 +314,23 @@ def test_same_user_on_different_channels_uses_different_game_state():
     assert brain.session_game(web) == "fishing"
     assert fishing.seen_users[-2:] == [qq.storage_id, web.storage_id]
     assert len(set(fishing.seen_users[-2:])) == 2
+
+
+def test_brain_snapshot_does_not_expose_other_session_ids():
+    brain = _make_brain([
+        _FakeGame("fishing", "钓鱼"),
+        _FakeGame("xiuxian", "修仙"),
+    ])
+    alice = SessionKey("qq", "alice")
+    bob = SessionKey("web", "bob")
+    asyncio.run(brain.handle_action("fishing", "钓鱼", {}, session=alice))
+    asyncio.run(brain.handle_action("xiuxian", "修仙", {}, session=bob))
+
+    snap = asyncio.run(brain.snapshot(alice))
+    serialized = str(snap)
+    assert alice.storage_id in snap["session"]["sessions"]
+    assert bob.storage_id not in serialized
+    assert snap["session"]["session_count"] == 2
 
 
 def test_real_game_save_is_separate_for_same_user_on_two_channels():

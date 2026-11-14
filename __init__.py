@@ -308,13 +308,13 @@ class NekoArcadePlugin(NekoPluginBase):
                   metadata={"agent_hidden": True})
     async def entry_get_llm_config(self, **_) -> Any:
         """读取主插件配置 data/config/main/config.json 的 llm 段。"""
-        cfg = self.rt.cfg_mgr.load_main_config() if self.rt else {}
+        cfg = self.rt.cfg_mgr.public_main_config() if self.rt else {}
         llm = cfg.get("llm", {}) if isinstance(cfg, dict) else {}
         help_sec = cfg.get("help", {}) if isinstance(cfg, dict) else {}
         return Ok({"config": {
             "provider": llm.get("provider", ""),
             "model": llm.get("model", ""),
-            "api_key": llm.get("api_key", ""),
+            "api_key_set": bool(llm.get("api_key_set")),
             "base_url": llm.get("base_url", ""),
             "max_calls_per_minute": llm.get("max_calls_per_minute", 15),
             "help_width": help_sec.get("width", ""),
@@ -338,12 +338,17 @@ class NekoArcadePlugin(NekoPluginBase):
         main_cfg = self.rt.cfg_mgr.load_main_config()
         if not isinstance(main_cfg, dict):
             main_cfg = {}
+        current = main_cfg.get("llm") if isinstance(main_cfg.get("llm"), dict) else {}
         llm = {
             "provider": str(cfg.get("provider", "") or ""),
             "model": str(cfg.get("model", "") or ""),
-            "api_key": str(cfg.get("api_key", "") or ""),
             "base_url": str(cfg.get("base_url", "") or ""),
         }
+        new_key = str(cfg.get("api_key", "") or "").strip()
+        if new_key:
+            llm["api_key"] = new_key
+        elif not cfg.get("clear_api_key") and current.get("api_key_enc"):
+            llm["api_key_enc"] = current["api_key_enc"]
         if cfg.get("max_calls_per_minute"):
             try:
                 llm["max_calls_per_minute"] = int(cfg["max_calls_per_minute"])
@@ -435,7 +440,7 @@ class NekoArcadePlugin(NekoPluginBase):
         try:
             main_config = {
                 "game_states": self.rt.cfg_mgr.load_game_states(),
-                "config": self.rt.cfg_mgr.load_main_config(),
+                "config": self.rt.cfg_mgr.public_main_config(),
             }
         except Exception:
             main_config = {}
@@ -580,8 +585,9 @@ class NekoArcadePlugin(NekoPluginBase):
         if not bridge:
             return Ok({"ok": False, "count": 0, "categories": [], "uploaded": []})
         try:
-            imgs = await bridge.scan_images_async()
-            cats = await bridge.get_categories_async()
+            user_id = self._session_for(_).storage_id
+            imgs = await bridge.scan_images_async(user_id)
+            cats = await bridge.get_categories_async(user_id)
             by_cat = {}
             for cat in cats:
                 n = len([i for i in imgs if i.get("category") == cat])
