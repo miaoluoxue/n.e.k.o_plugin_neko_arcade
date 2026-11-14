@@ -365,7 +365,7 @@ def test_neko_photo_brain_on_owner_speak_refreshes_activity():
 
 
 def test_neko_photo_bridge_scan_categories():
-    """PhotoBridge 桥接: 分类扫描 + bytes(资源在 games/<game>/data/ 下)。"""
+    """PhotoBridge 桥接: 分类扫描只返回路径元数据，发送时才读 bytes。"""
     async def run():
         game, plugin = _make_game(_TMP)
         bridge = game._photo
@@ -374,8 +374,26 @@ def test_neko_photo_bridge_scan_categories():
         assert any(i["style"] == "daily_photo" and i["category"] == "日常" for i in imgs), imgs
         cats = bridge.get_categories()
         assert "可爱" in cats and "日常" in cats, cats
-        # 图片返回 bytes(交 brain 统一推送)
-        assert any(i.get("bytes") for i in imgs), imgs
+        assert imgs and all("bytes" not in item for item in imgs), imgs
+        assert all(Path(item["path"]).is_file() for item in imgs), imgs
+        sent = await bridge.pick_photo(category="可爱")
+        assert sent is not None and sent["bytes"] == _FAKE_IMG
+
+    asyncio.run(run())
+
+
+def test_gallery_scan_does_not_read_image_bytes(monkeypatch):
+    def should_not_read(_path):
+        raise AssertionError("scan_images must not read image content")
+
+    async def run():
+        game, _plugin = _make_game(_TMP)
+        bridge = game._photo
+        bridge._img_cache = []
+        bridge._img_scan_ts = 0.0
+        monkeypatch.setattr("pathlib.Path.read_bytes", should_not_read)
+        imgs = bridge.scan_images()
+        assert imgs and all("path" in item for item in imgs)
 
     asyncio.run(run())
 
@@ -394,6 +412,21 @@ def test_neko_photo_send_random_photo_tool():
         # 计入图鉴
         data = await game.get_user_data(uid, {})
         assert data.get("stats", {}).get("total", 0) >= 1, data
+
+    asyncio.run(run())
+
+
+def test_neko_photo_limited_result_does_not_push_again():
+    async def run():
+        game, plugin = _make_game(_TMP)
+        uid = "user_limited"
+        first = await game.send_random_photo(uid, caption="先发一张")
+        assert first["ok"] is True, first
+        pushes = len(plugin.pushes)
+        second = await game.send_random_photo(uid, caption="立刻再发")
+        assert second["ok"] is False and second["limited"] is True, second
+        assert len(plugin.pushes) == pushes, "limited 不应再次推送图片"
+        assert second["summary"]
 
     asyncio.run(run())
 

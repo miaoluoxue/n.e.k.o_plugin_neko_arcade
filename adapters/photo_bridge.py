@@ -42,6 +42,30 @@ _WINDOWS_RESERVED = {
 }
 
 
+def _data_root_info(plugin: Any) -> Dict[str, Any]:
+    """适配层本地探测，避免 adapters → core 的循环导入。"""
+    data_path = getattr(plugin, "data_path", None)
+    if callable(data_path):
+        try:
+            resolved = data_path()
+            if resolved:
+                return {"path": str(resolved), "warning": "", "available": True}
+            warning = "宿主 data_path() 返回空路径，图库使用插件目录回退。"
+        except Exception as exc:  # noqa: BLE001 - 可选宿主能力
+            warning = f"宿主 data_path() 调用失败，图库使用插件目录回退：{exc}"
+    else:
+        warning = (
+            "宿主未提供 data_path()，图库使用插件目录回退；"
+            "安装目录只读时上传图片可能失败。"
+        )
+    base = (
+        getattr(plugin, "config_dir", None)
+        or getattr(plugin, "plugin_dir", None)
+        or Path(__file__).resolve().parent.parent
+    )
+    return {"path": str(base), "warning": warning, "available": False}
+
+
 def upload_batch_error(files: Any) -> Optional[Dict[str, Any]]:
     """批量上传的统一入口校验，供宿主 entry 与测试复用。"""
     count = len(files or [])
@@ -98,6 +122,7 @@ class PhotoBridge:
         self._img_cache: List[Dict[str, Any]] = []
         self._img_scan_ts = 0.0
         self._cache_lock = threading.Lock()
+        self._capability_warning_logged = False
 
     def bind(self, push: Any = None, img: Any = None) -> None:
         """绑定推送/渲染服务(由 runtime 注入)。"""
@@ -138,14 +163,13 @@ class PhotoBridge:
             return root
         except OSError:
             # 只读安装位置: 退到宿主私有存储, 保证发图/上传仍可用
-            data_path = getattr(self.plugin, "data_path", None)
-            if callable(data_path):
+            fallback = self._user_gallery_root()
+            if fallback is not None:
                 try:
-                    fallback = Path(data_path("neko_photo"))
                     fallback.mkdir(parents=True, exist_ok=True)
                     log.info("图库目录只读, 改用宿主私有存储: %s", fallback)
                     return fallback
-                except Exception as exc:
+                except OSError as exc:
                     log.warning("私有存储也不可用: %s", exc)
             return root
 
@@ -163,13 +187,14 @@ class PhotoBridge:
     def _user_gallery_root(self) -> Optional[Path]:
         """宿主私有存储里的图库根(0.9.0.2 代码在 .neko-plugin-installations，
         用户可能把图丢在旧根或私有存储 —— 两个都要扫)。"""
-        data_path = getattr(self.plugin, "data_path", None)
-        if callable(data_path):
-            try:
-                return Path(data_path("neko_photo"))
-            except Exception:  # noqa: BLE001 - 老的/不完整的宿主没有 data_path
-                return None
-        return None
+        info = _data_root_info(self.plugin)
+        warning = str(info.get("warning") or "")
+        if warning and not self._capability_warning_logged:
+            self._capability_warning_logged = True
+            log.warning("图库宿主能力降级: %s", warning)
+        if not info.get("available"):
+            return None
+        return Path(str(info["path"])) / "neko_photo"
 
     def _scan_roots(self) -> List[Path]:
         """所有可能放图的根目录(去重, 只保留存在的)。"""
@@ -208,7 +233,7 @@ class PhotoBridge:
     def scan_images(self) -> List[Dict[str, Any]]:
         """递归扫描图库目录下所有分类的图片(带 10s 缓存)。
 
-        每张图带 category(分类) + bytes(交 brain 统一推送)。
+        缓存只保存路径与元数据；真正发送时才读取图片字节。
         """
         with self._cache_lock:
             now = time.time()
@@ -239,8 +264,11 @@ class PhotoBridge:
                             continue
                         path = cat_dir / fname
                         try:
+                            stat = path.stat()
                             self._img_cache.append({
-                                "bytes": path.read_bytes(),
+                                "path": str(path),
+                                "size": stat.st_size,
+                                "mtime_ns": stat.st_mtime_ns,
                                 "mime": _img_ext(str(path)),
                                 "style": os.path.splitext(fname)[0],
                                 "rarity": "rare",
@@ -253,8 +281,39 @@ class PhotoBridge:
             return self._img_cache
 
     async def scan_images_async(self) -> List[Dict[str, Any]]:
-        """递归扫描和整图读取都放到线程池。"""
+        """目录扫描放到线程池；返回项不包含图片字节。"""
         return await asyncio.to_thread(self.scan_images)
+
+    async def _materialize_photo(
+        self, photo: Optional[Dict[str, Any]]
+    ) -> Optional[Dict[str, Any]]:
+        """把扫描元数据读成可发送图片；文件消失/损坏时返回 None。"""
+        if not photo:
+            return None
+        if photo.get("bytes"):
+            return photo
+        raw_path = str(photo.get("path") or "").strip()
+        if not raw_path:
+            return None
+        try:
+            data = await asyncio.to_thread(Path(raw_path).read_bytes)
+        except OSError:
+            return None
+        if not data:
+            return None
+        return {**photo, "bytes": data}
+
+    async def _materialize_random(
+        self, photos: List[Dict[str, Any]]
+    ) -> Optional[Dict[str, Any]]:
+        """随机挑一个仍可读的本地文件，避免扫描后文件被移走导致发图失败。"""
+        candidates = list(photos)
+        random.shuffle(candidates)
+        for photo in candidates:
+            loaded = await self._materialize_photo(photo)
+            if loaded is not None:
+                return loaded
+        return None
 
     # ── 挑图 ──────────────────────────────
 
@@ -269,19 +328,21 @@ class PhotoBridge:
         if category:
             in_cat = [i for i in local if i.get("category") == category]
             if in_cat:
-                return random.choice(in_cat)
+                return await self._materialize_random(in_cat)
             # 指定分类为空 → 如实返回 None(不拿默认图冒充), 由调用方提示"该分类还没图"
             return None
         if local:
             if auto:
-                return random.choice(local)
+                return await self._materialize_random(local)
             if random.random() < 0.5:
-                return random.choice(local)
+                selected = await self._materialize_random(local)
+                if selected is not None:
+                    return selected
         avatar = await self._render_avatar_photo()
         if avatar:
             return avatar
         if local:
-            return random.choice(local)
+            return await self._materialize_random(local)
         return await self._default_photo()
 
     async def _default_photo(self, prefer_category: str = "") -> Optional[Dict[str, Any]]:
