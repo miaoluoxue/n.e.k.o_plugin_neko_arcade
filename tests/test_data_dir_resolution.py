@@ -13,7 +13,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from plugin.plugins.neko_arcade.core.config_manager import ConfigManager, resolve_data_dir
+from plugin.plugins.neko_arcade.core.config_manager import (
+    ConfigManager,
+    resolve_data_dir,
+    resolve_data_dir_info,
+)
+from plugin.plugins.neko_arcade.core.runtime import ArcadeRuntime
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -42,10 +47,44 @@ def test_sdk_data_path_takes_priority(tmp_path: Path) -> None:
     data_dir = tmp_path / "storage" / "data"
     data_dir.mkdir(parents=True)
     assert Path(resolve_data_dir(_NewHost(data_dir))) == data_dir
+    info = resolve_data_dir_info(_NewHost(data_dir))
+    assert info["source"] == "host_data_path"
+    assert info["warnings"] == []
 
 
 def test_falls_back_to_code_dir_without_sdk_api() -> None:
     assert Path(resolve_data_dir(_OldHost(ROOT))) == ROOT / "data"
+    info = resolve_data_dir_info(_OldHost(ROOT))
+    assert info["source"] == "plugin_dir_fallback"
+    assert info["warnings"] and "data_path()" in info["warnings"][0]
+
+
+def test_broken_data_path_reports_actionable_warning(tmp_path: Path) -> None:
+    class _BrokenHost:
+        config_dir = tmp_path / "plugin"
+
+        def data_path(self):
+            raise PermissionError("denied")
+
+    info = resolve_data_dir_info(_BrokenHost())
+    assert info["source"] == "plugin_dir_fallback"
+    assert info["warnings"] and "无法持久化" in info["warnings"][0]
+
+
+def test_runtime_and_panel_expose_data_path_warning(tmp_path: Path) -> None:
+    rt = ArcadeRuntime.__new__(ArcadeRuntime)
+    rt.data_dir = str(tmp_path / "data")
+    rt.data_dir_info = {
+        "path": rt.data_dir,
+        "source": "plugin_dir_fallback",
+        "warnings": ["宿主未提供 data_path()，配置可能无法保存。"],
+    }
+    caps = rt.capabilities()
+    assert caps["data_dir_source"] == "plugin_dir_fallback"
+    assert caps["warnings"]
+    html = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
+    assert 'id="runtimeWarning"' in html
+    assert "state.runtime" in html
 
 
 def test_fresh_data_dir_gets_seeded_defaults(tmp_path: Path) -> None:

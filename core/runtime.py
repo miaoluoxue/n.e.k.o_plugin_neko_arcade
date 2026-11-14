@@ -9,7 +9,7 @@ from typing import Any, Dict, Optional
 
 from ..adapters import ImageRenderer, LLMProvider, PhotoBridge, PushSender, TTSClient
 from .brain import GameBrain
-from .config_manager import ConfigManager, resolve_data_dir
+from .config_manager import ConfigManager, resolve_data_dir_info
 from .help import HelpRenderer, RenderBridge
 from .registry import GameRegistry
 from .session import SINGLE_SESSION, SessionLike
@@ -24,7 +24,10 @@ class ArcadeRuntime:
         self.plugin = plugin
         self.cfg: Dict[str, Any] = {}
         # 数据目录走 SDK storage dir(0.9.0.2+ 插件代码目录不含 data/), 老宿主回退代码目录旁 data/
-        self.data_dir = resolve_data_dir(plugin)
+        self.data_dir_info = resolve_data_dir_info(plugin)
+        self.data_dir = str(self.data_dir_info["path"])
+        for warning in self.data_dir_info.get("warnings") or []:
+            log.warning("宿主能力降级: %s", warning)
         self.cfg_mgr = ConfigManager(self.data_dir)
         self.registry = GameRegistry(plugin, self.cfg_mgr)
         self.llm = LLMProvider(15)
@@ -45,6 +48,14 @@ class ArcadeRuntime:
         self.brain: Optional[GameBrain] = None
         self._tick_task: Optional[asyncio.Task] = None
         self._persist_tasks: set[asyncio.Task[Any]] = set()
+
+    def capabilities(self) -> Dict[str, Any]:
+        """面板/日志可读的宿主能力与降级原因。"""
+        return {
+            "data_dir": self.data_dir,
+            "data_dir_source": self.data_dir_info.get("source", ""),
+            "warnings": list(self.data_dir_info.get("warnings") or []),
+        }
 
     def _code_dir(self) -> str:
         """插件代码目录(只读, 放静态素材与默认配置)。"""
@@ -185,8 +196,7 @@ class ArcadeRuntime:
     _EXPLICIT_INTENT_PREFIXES = (
         "陪我玩", "咱们玩", "一起玩", "我要玩", "我想玩", "再玩一次", "再玩一局",
         "来一局", "来一把", "开一局", "开始", "打开", "启动", "体验", "试试",
-        "来玩", "想玩",
-        "陪我", "一起", "我要", "我想", "玩",
+        "来玩", "想玩", "玩一下",
     )
     _COMMAND_SUFFIXES = (
         "帮助", "状态", "背包", "菜单", "列表", "继续", "随机", "棋盘",
@@ -204,8 +214,10 @@ class ArcadeRuntime:
         if text == kw:
             return True
         for prefix in cls._EXPLICIT_INTENT_PREFIXES:
-            if text.startswith(prefix) and kw in text[len(prefix):]:
+            if text.startswith(prefix) and text[len(prefix):].lstrip().startswith(kw):
                 return True
+        if text.startswith("玩") and text[1:].lstrip().startswith(kw):
+            return True
         if not text.startswith(kw):
             return False
         suffix_raw = text[len(kw):]

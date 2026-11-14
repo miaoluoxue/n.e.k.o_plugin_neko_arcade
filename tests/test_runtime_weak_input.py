@@ -170,9 +170,21 @@ def test_chat_mentions_do_not_start_games_without_intent():
 def test_explicit_intent_and_command_phrases_still_start_games():
     rt = _make_runtime(_FakeBrain())
     for text, expected in (("玩钓鱼", "fishing"), ("开始钓鱼", "fishing"),
-                           ("来玩人生重开", "remake"), ("钓鱼3次", "fishing")):
+                           ("一起玩人生重开", "remake"), ("钓鱼3次", "fishing")):
         gid, _ = rt.parse_input(text)
         assert gid == expected, f"{text!r} 应路由 {expected}, got {gid}"
+
+
+def test_broad_intent_words_do_not_hijack_related_chat():
+    rt = _make_runtime(_FakeBrain())
+    for text in (
+        "我们一起讨论钓鱼剧情",
+        "我想了解修仙小说",
+        "开始研究钓鱼技巧",
+        "陪我看看这幅钓鱼画",
+    ):
+        gid, _ = rt.parse_input(text)
+        assert gid is None, f"宽泛聊天不应启动游戏: {text!r} -> {gid}"
 
 
 def test_send_photo_tool_is_explicit_request_only():
@@ -190,3 +202,13 @@ def test_send_photo_tool_is_explicit_request_only():
     assert "不要改用 play_game" in description
     assert "必须立即调用" not in description
     assert "想给主人一个惊喜" not in description
+
+
+def test_play_game_route_does_not_select_gallery_without_photo_intent():
+    rt = _make_runtime(_FakeBrain())
+    rt.registry = _FakeRegistry([
+        _FakeGame("neko_photo", ["喵图相册", "发图", "照片", "看图"]),
+        _FakeGame("fishing", ["钓鱼", "抛竿"]),
+    ])
+    gid, cmd = rt.parse_input("钓鱼")
+    assert (gid, cmd) == ("fishing", "钓鱼")

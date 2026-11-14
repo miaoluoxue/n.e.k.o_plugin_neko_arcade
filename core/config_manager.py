@@ -20,19 +20,41 @@ DATA_DIR = os.path.join(_PLUGIN_ROOT, "data")
 CONFIG_DIR = os.path.join(DATA_DIR, "config")
 
 
-def resolve_data_dir(plugin: Any = None) -> str:
-    """解析插件的数据目录(优先 SDK 存储目录, 回退代码目录旁 data/)。"""
+def resolve_data_dir_info(plugin: Any = None) -> Dict[str, Any]:
+    """解析数据目录并返回来源/警告，供运行时和面板诊断。"""
     data_path = getattr(plugin, "data_path", None)
     if callable(data_path):
         try:
             resolved = data_path()
             if resolved:
-                return str(resolved)
-        except Exception:
-            pass
+                return {
+                    "path": str(resolved),
+                    "source": "host_data_path",
+                    "warnings": [],
+                }
+            warning = "宿主 data_path() 返回空路径，已回退到插件目录旁 data/。"
+        except Exception as exc:
+            warning = (
+                "宿主 data_path() 调用失败，已回退到插件目录旁 data/；"
+                f"配置和存档可能无法持久化：{exc}"
+            )
+    else:
+        warning = (
+            "宿主未提供 data_path()，已回退到插件目录旁 data/；"
+            "若安装目录只读，面板配置和游戏存档将无法保存。"
+        )
     config_dir = getattr(plugin, "config_dir", None) or getattr(plugin, "plugin_dir", None)
     base = str(config_dir) if config_dir else _PLUGIN_ROOT
-    return os.path.join(base, "data")
+    return {
+        "path": os.path.join(base, "data"),
+        "source": "plugin_dir_fallback" if config_dir else "code_dir_fallback",
+        "warnings": [warning],
+    }
+
+
+def resolve_data_dir(plugin: Any = None) -> str:
+    """解析插件的数据目录(优先 SDK 存储目录, 回退代码目录旁 data/)。"""
+    return str(resolve_data_dir_info(plugin)["path"])
 
 
 #: 出厂内容文件(随插件升级刷新)。config.json 是**用户设置**, 永不覆盖。

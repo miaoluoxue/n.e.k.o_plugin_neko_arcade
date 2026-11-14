@@ -441,7 +441,8 @@ class NekoArcadePlugin(NekoPluginBase):
             main_config = {}
         return Ok({"games": games, "statuses": statuses, "brain": brain_snap,
                    "started": True, "enabled_count": len(enabled),
-                   "token_stats": token_stats, "main_config": main_config})
+                   "token_stats": token_stats, "main_config": main_config,
+                   "runtime": self.rt.capabilities()})
 
     @llm_tool(
         name="play_game",

@@ -210,6 +210,7 @@ body::before {
       <span class="pill"><span class="dot" id="statusDot"></span><span id="statusText">加载中</span></span>
     </div>
   </div>
+  <div id="runtimeWarning" hidden style="margin:0 0 14px;padding:10px 13px;border:1px solid rgba(255,180,80,0.35);border-radius:12px;background:rgba(255,180,80,0.09);color:var(--text2);font-size:0.76rem;line-height:1.55;"></div>
   <div id="gamesView">
     <div class="section-title">游戏列表 <span class="line"></span><span id="gameCountBadge" style="font-size:0.72rem;color:var(--text2);font-weight:400;"></span></div>
     <div class="game-grid" id="gameGrid"></div>
@@ -347,6 +348,12 @@ function render() {
   document.getElementById('statusText').textContent = state.started ? (state.enabled_count||0)+'/'+gs.length+' 运行' : '未启动';
   document.getElementById('navBadge').textContent = gs.length;
   document.getElementById('gameCountBadge').textContent = '· '+(state.enabled_count||0)+'/'+gs.length+' 启用';
+  var warningEl = document.getElementById('runtimeWarning');
+  if (warningEl) {
+    var warnings = ((state.runtime||{}).warnings)||[];
+    warningEl.hidden = !warnings.length;
+    warningEl.textContent = warnings.length ? ('⚠️ '+warnings.join(' ')) : '';
+  }
   renderGames(); renderHints();
   // LLM 页可见时, 顺带刷新 token 统计环(轮询驱动增长动画)
   var ls = document.getElementById('llmSection');
