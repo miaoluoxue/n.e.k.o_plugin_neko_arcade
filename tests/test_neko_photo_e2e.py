@@ -4,10 +4,13 @@
 覆盖: 发图、分类发图、图鉴、每日上限、on_tick 自动发图、工具发图、上传。
 """
 import asyncio
+import io
 import json
+import shutil
 import time
 from pathlib import Path
 
+from PIL import Image
 from plugin.plugins.neko_arcade.adapters.photo_bridge import PhotoBridge
 from plugin.plugins.neko_arcade.games.neko_photo.game import NekoPhotoGame
 
@@ -21,8 +24,13 @@ KWS = json.loads((ROOT / "data" / "config" / "neko_photo" / "keywords.json").rea
 _TMP = ROOT / ".tmp_neko_photo_test"
 _TMP.mkdir(parents=True, exist_ok=True)
 
-# 造一张假的本地图, 验证扫描逻辑
-_FAKE_IMG = b"\x89PNG\r\n\x1a\n" + b"0" * 64
+def _png_bytes() -> bytes:
+    buffer = io.BytesIO()
+    Image.new("RGB", (2, 2), (200, 120, 80)).save(buffer, format="PNG")
+    return buffer.getvalue()
+
+
+_FAKE_IMG = _png_bytes()
 
 
 class StubStore:
@@ -85,13 +93,14 @@ def _make_game(tmp_path):
 
     # 注入临时图片目录: static/img/neko/可爱/ + static/img/neko/日常/
     img_root = tmp_path / "static" / "img" / "neko"
+    shutil.rmtree(img_root, ignore_errors=True)
+    shutil.rmtree(img_root.parent / "_user_galleries", ignore_errors=True)
     (img_root / "可爱").mkdir(parents=True, exist_ok=True)
     (img_root / "日常").mkdir(parents=True, exist_ok=True)
     (img_root / "可爱" / "cute_photo.png").write_bytes(_FAKE_IMG)
     (img_root / "日常" / "daily_photo.png").write_bytes(_FAKE_IMG)
     bridge._local_scan_dir = str(img_root)
-    bridge._img_scan_ts = 0.0
-    bridge._img_cache = []
+    bridge._invalidate_scan_cache()
 
     game = NekoPhotoGame(plugin)
     game._push = push
@@ -106,13 +115,10 @@ def _make_game(tmp_path):
 
 def _clean_uploads(game, fname: str, category: str) -> None:
     """删除共享 tmp 目录里上次运行残留的同名上传文件(测试隔离)。"""
-    cat_dir = game._photo._img_root() / category
-    target = cat_dir / fname
-    if target.exists():
-        target.unlink()
+    for target in game._photo._img_root().rglob(fname):
+        target.unlink(missing_ok=True)
     # 扫描缓存刷新
-    game._photo._img_cache = []
-    game._photo._img_scan_ts = 0.0
+    game._photo._invalidate_scan_cache()
 
 
 def test_neko_photo_send_and_album():
@@ -210,13 +216,30 @@ def test_neko_photo_on_tick_auto_send():
         # 定时刷图默认关闭(频率交给 LLM), 本用例显式打开
         game._config = {**CFG, "auto_send_enabled": True, "send_min_interval": 90}
         plugin.pushes.clear()
-        game._next_auto_ts = 0.0
+        game._next_auto_ts[uid] = 0.0
         await game.on_tick(uid)
         assert plugin.pushes, "on_tick 打开后应自动推图"
         # 频率闸门生效: 紧接着再 tick 不应再推(受 _next_auto_ts 与冷却双重限制)
         before = len(plugin.pushes)
         await game.on_tick(uid)
         assert len(plugin.pushes) == before, "冷却期内不应重复发图"
+
+    asyncio.run(run())
+
+
+def test_neko_photo_auto_schedule_is_per_user():
+    async def run():
+        game, plugin = _make_game(_TMP)
+        game._config = {**CFG, "auto_send_enabled": True,
+                        "send_min_interval": 0, "send_max_per_hour": 99,
+                        "max_photos_per_day": 99}
+        game._next_auto_ts["alice"] = time.time() + 999
+        game._next_auto_ts["bob"] = 0.0
+        plugin.pushes.clear()
+        await game.on_tick("alice")
+        assert not plugin.pushes
+        await game.on_tick("bob")
+        assert plugin.pushes, "一个用户的冷却不应阻塞另一个用户"
 
     asyncio.run(run())
 
@@ -229,7 +252,7 @@ def test_neko_photo_timed_auto_send_is_on_by_default():
         assert game._cfg("auto_send_enabled", False) is True, "定时随机发图默认应开启"
         # 开着的时候 tick 会推图
         plugin.pushes.clear()
-        game._next_auto_ts = 0.0
+        game._next_auto_ts["user_3"] = 0.0
         await game.on_tick("user_3")
         assert plugin.pushes, "定时随机发图开启时 on_tick 应推图"
         # LLM 主动调用仍受同一套闸门约束(刚自动发过 → limited)
@@ -270,7 +293,7 @@ def test_neko_photo_brain_background_tick():
         brain._last_activity_ts_by_session = {key: time.time()}
         brain._background_active_window = 900.0
 
-        game._next_auto_ts = 0.0  # 立即触发
+        game._next_auto_ts[key.storage_id] = 0.0  # 立即触发
         await brain._tick_background_games(key)
         assert plugin.pushes, "后台 tick 应触发自动发图"
 
@@ -309,7 +332,7 @@ def test_neko_photo_brain_background_tick_activity_gate():
         brain._last_activity_ts_by_session = {key: time.time() - 7200.0}
         brain._background_active_window = 900.0
 
-        game._next_auto_ts = 0.0
+        game._next_auto_ts[key.storage_id] = 0.0
         await brain._tick_background_games(key)
         assert not plugin.pushes, "超窗口后不应自动发图"
         # 从未聊过天也不应发图
@@ -352,7 +375,7 @@ def test_neko_photo_brain_on_owner_speak_refreshes_activity():
         brain._last_activity_ts_by_session = {key: time.time() - 7200.0}
         brain._background_active_window = 900.0
 
-        game._next_auto_ts = 0.0
+        game._next_auto_ts[key.storage_id] = 0.0
         await brain._tick_background_games(key)
         assert not plugin.pushes, "超窗口时不应自动发图"
 
@@ -389,8 +412,7 @@ def test_gallery_scan_does_not_read_image_bytes(monkeypatch):
     async def run():
         game, _plugin = _make_game(_TMP)
         bridge = game._photo
-        bridge._img_cache = []
-        bridge._img_scan_ts = 0.0
+        bridge._invalidate_scan_cache()
         monkeypatch.setattr("pathlib.Path.read_bytes", should_not_read)
         imgs = bridge.scan_images()
         assert imgs and all("path" in item for item in imgs)
@@ -446,7 +468,7 @@ def test_neko_photo_upload_with_category():
         assert r["ok"] is True, r
         assert "我的图" in r["message"], r
         # 新分类自动创建, 图库扫描能看到
-        imgs = game._photo.scan_images()
+        imgs = game._photo.scan_images(uid)
         assert any("mypic" in i["style"] and i["category"] == "我的图" for i in imgs), imgs
         # 非法扩展名拒绝
         r2 = await game.upload_photo(uid, name="bad.txt", data_b64=fake_b64)
@@ -476,9 +498,9 @@ def test_neko_photo_upload_to_existing_category():
                                     category="可爱")
         assert r["ok"] is True, r
         assert "可爱" in r["message"], r
-        imgs = game._photo.scan_images()
+        imgs = game._photo.scan_images(uid)
         assert any("more_cute" in i["style"] and i["category"] == "可爱" for i in imgs), imgs
-        cats = game._photo.get_categories()
+        cats = game._photo.get_categories(uid)
         assert cats.count("可爱") == 1, cats
 
     asyncio.run(run())
@@ -493,10 +515,11 @@ def test_neko_photo_upload_duplicate_rejected():
         uid = "user_8"
         fake_b64 = base64.b64encode(_FAKE_IMG).decode()
         # 清理共享 tmp 目录里上次运行的残留(测试隔离)
-        cat_dir = game._photo._img_root() / "可爱"
-        for p in list(cat_dir.iterdir()):
-            if p.name.startswith("dupkeep"):
-                p.unlink()
+        cat_dir = game._photo._private_root(uid) / "可爱"
+        if cat_dir.exists():
+            for p in list(cat_dir.iterdir()):
+                if p.name.startswith("dupkeep"):
+                    p.unlink()
         r1 = await game.upload_photo(uid, name="dupkeep.png", data_b64=fake_b64,
                                      category="可爱")
         assert r1["ok"] is True, r1
@@ -536,11 +559,11 @@ def test_neko_photo_custom_category_command():
         assert r["ok"] is True, r
 
         # 1. 直接「喵图 我的猫图」→ 应命中该分类
-        photo = await game._photo.pick_photo(category="我的猫图")
+        photo = await game._photo.pick_photo(category="我的猫图", user_id=uid)
         assert photo is not None and photo.get("category") == "我的猫图", photo
 
         # 2. 提取分类: 自创分类名应被直接匹配(不剥词)
-        cat = game._extract_category("喵图 我的猫图")
+        cat = game._extract_category("喵图 我的猫图", user_id=uid)
         assert cat == "我的猫图", cat
 
         # 3. 自创分类经命令发图成功
@@ -548,7 +571,7 @@ def test_neko_photo_custom_category_command():
         assert r2["outcome"] in ("photo", "collect_new", "rare"), r2
 
         # 4. 「发张我的猫图的照片」也能命中
-        cat2 = game._extract_category("发张我的猫图的照片")
+        cat2 = game._extract_category("发张我的猫图的照片", user_id=uid)
         assert cat2 == "我的猫图", cat2
 
         # 5. 不存在的自创分类 → 提取出来但发图报错

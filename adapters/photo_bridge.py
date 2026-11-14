@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
 import logging
 import os
 import random
@@ -31,6 +32,7 @@ log = logging.getLogger("neko_arcade.photo")
 
 IMG_EXTS = (".png", ".jpg", ".jpeg", ".webp", ".gif")
 MAX_UPLOAD_BYTES = 8 * 1024 * 1024
+MAX_IMAGE_PIXELS = 40_000_000
 MAX_UPLOAD_FILES = 20
 MAX_UPLOAD_B64_CHARS = ((MAX_UPLOAD_BYTES + 2) // 3) * 4
 _INVALID_NAME_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
@@ -119,8 +121,7 @@ class PhotoBridge:
         self._push = push
         self._img = img
         self._img_root_override = img_root  # 自定义图库根目录(默认 games/neko_photo/data)
-        self._img_cache: List[Dict[str, Any]] = []
-        self._img_scan_ts = 0.0
+        self._img_cache: Dict[str, tuple[float, List[Dict[str, Any]]]] = {}
         self._cache_lock = threading.Lock()
         self._capability_warning_logged = False
 
@@ -138,8 +139,7 @@ class PhotoBridge:
 
     def _invalidate_scan_cache(self) -> None:
         with self._cache_lock:
-            self._img_cache = []
-            self._img_scan_ts = 0.0
+            self._img_cache = {}
 
     # ── 图库根目录 ─────────────────────────
 
@@ -182,6 +182,24 @@ class PhotoBridge:
             log.warning("图库目录不可用 %s: %s", root, exc)
         return root
 
+    def _private_root(self, user_id: str) -> Optional[Path]:
+        """某用户的私有上传目录；用户 ID 只以摘要形式进入路径。"""
+        user = str(user_id or "").strip()
+        if not user:
+            return None
+        info = _data_root_info(self.plugin)
+        if info.get("available"):
+            base = Path(str(info["path"])) / "neko_photo"
+        else:
+            base = self._ensure_root().parent / "_user_galleries"
+        digest = hashlib.sha256(user.encode("utf-8", "ignore")).hexdigest()[:24]
+        root = base / "users" / digest
+        try:
+            root.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            log.warning("用户图库目录不可用 %s: %s", root, exc)
+        return root
+
     # ── 图库扫描 / 分类 ─────────────────────
 
     def _user_gallery_root(self) -> Optional[Path]:
@@ -196,10 +214,11 @@ class PhotoBridge:
             return None
         return Path(str(info["path"])) / "neko_photo"
 
-    def _scan_roots(self) -> List[Path]:
+    def _scan_roots(self, user_id: str = "") -> List[Path]:
         """所有可能放图的根目录(去重, 只保留存在的)。"""
         roots: List[Path] = []
         candidates = [self._img_root(), self._user_gallery_root()]
+        candidates.append(self._private_root(user_id))
         storage = getattr(self.plugin, "storage_dir", None)
         if storage:
             try:
@@ -216,39 +235,43 @@ class PhotoBridge:
                 continue
         return roots
 
-    def get_categories(self) -> List[str]:
+    def get_categories(self, user_id: str = "") -> List[str]:
         """返回图库分类名列表(子文件夹名)。"""
         names: set = set()
-        for root in self._scan_roots():
+        for root in self._scan_roots(user_id):
             try:
-                names.update(d.name for d in root.iterdir() if d.is_dir())
+                names.update(
+                    d.name for d in root.iterdir()
+                    if d.is_dir() and d.name != "users"
+                )
             except OSError:
                 continue
         return sorted(names)
 
-    async def get_categories_async(self) -> List[str]:
+    async def get_categories_async(self, user_id: str = "") -> List[str]:
         """目录遍历走线程池，避免阻塞宿主事件循环。"""
-        return await asyncio.to_thread(self.get_categories)
+        return await asyncio.to_thread(self.get_categories, user_id)
 
-    def scan_images(self) -> List[Dict[str, Any]]:
+    def scan_images(self, user_id: str = "") -> List[Dict[str, Any]]:
         """递归扫描图库目录下所有分类的图片(带 10s 缓存)。
 
         缓存只保存路径与元数据；真正发送时才读取图片字节。
         """
         with self._cache_lock:
             now = time.time()
-            if self._img_cache and now - self._img_scan_ts < 10.0:
-                return self._img_cache
-            self._img_cache = []
-            self._img_scan_ts = now
+            cache_key = str(user_id or "")
+            cached = self._img_cache.get(cache_key)
+            if cached and now - cached[0] < 10.0:
+                return list(cached[1])
+            images: List[Dict[str, Any]] = []
             seen: set = set()
-            for root in self._scan_roots():
+            for root in self._scan_roots(cache_key):
                 try:
                     cat_dirs = sorted(root.iterdir())
                 except OSError:
                     continue
                 for cat_dir in cat_dirs:
-                    if not cat_dir.is_dir():
+                    if not cat_dir.is_dir() or cat_dir.name == "users":
                         continue
                     cat = cat_dir.name
                     try:
@@ -265,7 +288,7 @@ class PhotoBridge:
                         path = cat_dir / fname
                         try:
                             stat = path.stat()
-                            self._img_cache.append({
+                            images.append({
                                 "path": str(path),
                                 "size": stat.st_size,
                                 "mtime_ns": stat.st_mtime_ns,
@@ -278,11 +301,12 @@ class PhotoBridge:
                             seen.add(key)
                         except OSError:
                             continue
-            return self._img_cache
+            self._img_cache[cache_key] = (now, images)
+            return list(images)
 
-    async def scan_images_async(self) -> List[Dict[str, Any]]:
+    async def scan_images_async(self, user_id: str = "") -> List[Dict[str, Any]]:
         """目录扫描放到线程池；返回项不包含图片字节。"""
-        return await asyncio.to_thread(self.scan_images)
+        return await asyncio.to_thread(self.scan_images, user_id)
 
     async def _materialize_photo(
         self, photo: Optional[Dict[str, Any]]
@@ -318,13 +342,13 @@ class PhotoBridge:
     # ── 挑图 ──────────────────────────────
 
     async def pick_photo(self, category: Optional[str] = None,
-                         auto: bool = False) -> Optional[Dict[str, Any]]:
+                         auto: bool = False, user_id: str = "") -> Optional[Dict[str, Any]]:
         """随机挑一张图(永不返回 None, 保证指令/自动发图都有图可发)。
 
         优先级: 本地图库 → 动态猫娘表情(PIL) → 插件自带默认图(assets/icon.png)。
         最后一档让"默认空图库"也能发图——打包发出去是空库, 但猫娘照样能晒图。
         """
-        local = await self.scan_images_async()
+        local = await self.scan_images_async(user_id)
         if category:
             in_cat = [i for i in local if i.get("category") == category]
             if in_cat:
@@ -406,7 +430,7 @@ class PhotoBridge:
             summary: 给 LLM 看的简短描述
             caption: 实际配文
         """
-        photo = await self.pick_photo(category=category, auto=auto)
+        photo = await self.pick_photo(category=category, auto=auto, user_id=user_id)
         if not photo:
             if category:
                 return {"ok": False, "summary": f"分类「{category}」里还没有图喵",
@@ -439,13 +463,13 @@ class PhotoBridge:
                                      caption=random.choice(AUTO_LINES))
 
     async def pick_for_delivery(self, category: Optional[str] = None,
-                                caption: str = "") -> Dict[str, Any]:
+                                caption: str = "", user_id: str = "") -> Dict[str, Any]:
         """取一张图(不推送), 供游戏 handle_action 返回 images 数据交 brain 推送。
 
         这是"游戏适配插件"的输出契约: 游戏不直接 push, 只通过桥接取图,
         brain 统一编排推送。返回 {ok, image: {text, bytes, mime}, style, ...}。
         """
-        photo = await self.pick_photo(category=category)
+        photo = await self.pick_photo(category=category, user_id=user_id)
         if not photo:
             if category:
                 return {"ok": False, "error": "category_empty",
@@ -521,13 +545,16 @@ class PhotoBridge:
         fname = self._safe_filename(name)
         if fname is None:
             return {"ok": False, "message": "只支持 png/jpg/webp/gif 图片喵"}
+        if not await asyncio.to_thread(self._validate_image_bytes, fname, raw):
+            return {"ok": False, "message": "文件内容不是有效图片或尺寸过大喵"}
 
         raw_category = str(category or "").strip()
         cat = "默认" if not raw_category else self._sanitize_category(raw_category)
         if not cat:
             return {"ok": False, "code": "invalid_category",
                     "message": "分类名包含不支持的字符喵"}
-        path = self._ensure_root() / cat / fname
+        base = self._private_root(user_id) or self._ensure_root()
+        path = base / cat / fname
         write_state = await asyncio.to_thread(self._write_upload, path, raw)
         if write_state == "duplicate":
             return {"ok": False, "duplicate": True, "filename": fname,
@@ -538,7 +565,7 @@ class PhotoBridge:
 
         # 立即刷新缓存
         self._invalidate_scan_cache()
-        count = len(await self.scan_images_async())
+        count = len(await self.scan_images_async(user_id))
         return {"ok": True, "message": f"图片已存入「{cat}」分类喵({fname})",
                 "filename": fname, "category": cat,
                 "count": count}
@@ -582,3 +609,31 @@ class PhotoBridge:
             return None
         fname = f"{stem}{ext}"
         return fname if len(fname) <= 120 else None
+
+    @staticmethod
+    def _validate_image_bytes(name: str, raw: bytes) -> bool:
+        ext = os.path.splitext(name)[1].lower()
+        magic_ok = (
+            (ext == ".png" and raw.startswith(b"\x89PNG\r\n\x1a\n"))
+            or (ext in (".jpg", ".jpeg") and raw.startswith(b"\xff\xd8\xff"))
+            or (ext == ".gif" and raw.startswith((b"GIF87a", b"GIF89a")))
+            or (ext == ".webp" and len(raw) >= 12
+                and raw.startswith(b"RIFF") and raw[8:12] == b"WEBP")
+        )
+        if not magic_ok:
+            return False
+        try:
+            import io
+
+            from PIL import Image
+        except ImportError:
+            return True
+        try:
+            with Image.open(io.BytesIO(raw)) as image:
+                width, height = image.size
+                if width <= 0 or height <= 0 or width * height > MAX_IMAGE_PIXELS:
+                    return False
+                image.verify()
+            return True
+        except Exception:
+            return False

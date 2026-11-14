@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import json
 import shutil
 import subprocess
@@ -20,6 +21,7 @@ from pathlib import Path
 from typing import Any, Dict
 
 import pytest
+from PIL import Image
 from plugin.plugins.neko_arcade.adapters.photo_bridge import (
     MAX_UPLOAD_B64_CHARS,
     MAX_UPLOAD_FILES,
@@ -30,6 +32,15 @@ from plugin.plugins.neko_arcade.adapters.photo_bridge import (
 REPO = Path(__file__).resolve().parents[1]
 WORK = Path(__file__).resolve().parent / "_photo_tmp"
 GALLERY = REPO / "games" / "neko_photo" / "data"
+
+
+def _png_bytes() -> bytes:
+    buffer = io.BytesIO()
+    Image.new("RGB", (2, 2), (10, 20, 30)).save(buffer, format="PNG")
+    return buffer.getvalue()
+
+
+PNG = _png_bytes()
 
 
 class StubPlugin:
@@ -102,13 +113,13 @@ def test_gallery_is_ignored_by_git() -> None:
 
 def test_upload_lands_in_gallery_and_stays_untracked() -> None:
     bridge = _bridge()
-    data = b"\x89PNG" + b"0" * 64
+    data = PNG
     r = asyncio.run(bridge.upload_photo("u1", "cat.png", data_bytes=data,
                                         category="我的猫图"))
     assert r["ok"], r
-    saved = GALLERY / "我的猫图" / "cat.png"
+    saved = bridge._private_root("u1") / "我的猫图" / "cat.png"
     assert saved.is_file() and saved.read_bytes() == data
-    assert bridge.get_categories() == ["我的猫图"]
+    assert bridge.get_categories("u1") == ["我的猫图"]
     status = subprocess.run(["git", "status", "--porcelain", "games/neko_photo/data"],
                             cwd=str(REPO), capture_output=True, text=True)
     assert not (status.stdout or "").strip(), \
@@ -141,6 +152,17 @@ def test_category_without_images_reports_empty() -> None:
     r = asyncio.run(bridge.send_photo("u1", category="不存在的分类"))
     assert not r["ok"] and r.get("error") == "category_empty"
     assert asyncio.run(bridge.send_photo("u1"))["ok"]
+
+
+def test_private_uploads_are_isolated_per_user() -> None:
+    bridge = _bridge()
+    r = asyncio.run(bridge.upload_photo(
+        "alice", "private.png", data_bytes=PNG, category="私有"))
+    assert r["ok"], r
+    assert any(i["style"] == "private" for i in bridge.scan_images("alice"))
+    assert not any(i["style"] == "private" for i in bridge.scan_images("bob"))
+    assert "私有" in bridge.get_categories("alice")
+    assert "私有" not in bridge.get_categories("bob")
 
 
 # ── 发图频率闸门(LLM 想发就发, 插件封顶) ────────────────
@@ -248,21 +270,22 @@ def test_default_config_is_llm_driven() -> None:
 @pytest.mark.parametrize("bad", ["../evil", "a/b", "a\\b"])
 def test_category_is_sanitized(bad: str) -> None:
     bridge = _bridge()
-    r = asyncio.run(bridge.upload_photo("u1", "x.png", data_bytes=b"\x89PNG" + b"0" * 8,
+    r = asyncio.run(bridge.upload_photo("u1", "x.png", data_bytes=PNG,
                                         category=bad))
     assert r["ok"], r
-    saved = list(GALLERY.rglob("x.png"))
+    saved = list(bridge._private_root("u1").rglob("x.png"))
     assert saved and ".." not in str(saved[0])
 
 
 @pytest.mark.parametrize("bad", [".", "..", "CON", "a:b", "坏\x01分类"])
 def test_unsafe_category_is_rejected(bad: str) -> None:
     bridge = _bridge()
-    before = list(GALLERY.rglob("*")) if GALLERY.exists() else []
+    private = bridge._private_root("u1")
+    before = list(private.rglob("*")) if private.exists() else []
     r = asyncio.run(bridge.upload_photo(
-        "u1", "safe.png", data_bytes=b"\x89PNG" + b"0" * 8, category=bad))
+        "u1", "safe.png", data_bytes=PNG, category=bad))
     assert not r["ok"] and r.get("code") == "invalid_category", r
-    assert list(GALLERY.rglob("*")) == before
+    assert list(private.rglob("*")) == before
 
 
 def test_oversized_base64_is_rejected_before_decode(monkeypatch) -> None:
@@ -287,8 +310,17 @@ def test_unsafe_filename_is_rejected() -> None:
     bridge = _bridge()
     for name in ("../evil.png", r"..\evil.png", "CON.png", "bad:name.png"):
         r = asyncio.run(bridge.upload_photo(
-            "u1", name, data_bytes=b"\x89PNG" + b"0" * 8, category="安全"))
+            "u1", name, data_bytes=PNG, category="安全"))
         assert not r["ok"], (name, r)
+
+
+def test_non_image_content_is_rejected_even_with_safe_extension() -> None:
+    bridge = _bridge()
+    r = asyncio.run(bridge.upload_photo(
+        "u1", "not-really.png", data_bytes=b"not an image", category="安全"))
+    assert not r["ok"]
+    assert "有效图片" in r["message"]
+    assert not list((bridge._private_root("u1") / "安全").rglob("*.png"))
 
 
 def test_batch_limit_is_declared_and_enforced_in_entry() -> None:
@@ -302,7 +334,7 @@ def test_batch_limit_is_declared_and_enforced_in_entry() -> None:
 def test_photo_scan_runs_off_event_loop(monkeypatch) -> None:
     bridge = _bridge()
 
-    def slow_scan():
+    def slow_scan(_user_id=""):
         time.sleep(0.05)
         return []
 
@@ -330,7 +362,7 @@ def test_photo_upload_write_runs_off_event_loop(monkeypatch) -> None:
 
     async def run():
         task = asyncio.create_task(bridge.upload_photo(
-            "u1", "slow.png", data_bytes=b"\x89PNG" + b"0" * 8,
+            "u1", "slow.png", data_bytes=PNG,
             category="异步"))
         await asyncio.sleep(0.005)
         assert not task.done(), "文件写入应在线程池运行"

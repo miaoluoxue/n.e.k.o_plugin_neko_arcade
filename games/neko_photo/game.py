@@ -42,7 +42,7 @@ class NekoPhotoGame(GameAdapter):
 
     def __init__(self, plugin: Any) -> None:
         super().__init__(plugin)
-        self._next_auto_ts = 0.0
+        self._next_auto_ts: Dict[str, float] = {}
 
     # ── 指令路由 ──────────────────────────
 
@@ -59,7 +59,7 @@ class NekoPhotoGame(GameAdapter):
         #   「喵图相册」里含「喵图」，旧顺序会把它当成分类「相册」，
         #   于是明明有「猫娘博士」等分类却报「分类「相册」里还没有图」。
         if (not c) or c in (self.name, self.id, "喵图相册", "喵图"):
-            if await self.photo_categories_async():
+            if await self.photo_categories_async(user_id):
                 return await self._send_photo(user_id)
             return await self._categories(user_id)
 
@@ -67,7 +67,7 @@ class NekoPhotoGame(GameAdapter):
         # 支持分类: 「喵图 可爱」「发张 日常 的图」
         if any(k in c for k in ("喵图", "发图", "来张", "来一张", "照片", "自拍")):
             category = self._extract_category(
-                c, cats=await self.photo_categories_async())
+                c, cats=await self.photo_categories_async(user_id))
             if category is None and any(k in c for k in ("图库", "分类", "有哪些图")):
                 return await self._categories(user_id)
             return await self._send_photo(user_id, category=category)
@@ -82,7 +82,8 @@ class NekoPhotoGame(GameAdapter):
 
         return {"facts": [], "outcome": "unknown", "message": ""}
 
-    def _extract_category(self, cmd: str, cats: Optional[List[str]] = None) -> Optional[str]:
+    def _extract_category(self, cmd: str, cats: Optional[List[str]] = None,
+                          user_id: str = "") -> Optional[str]:
         """从指令里提取分类名。例: 「喵图 可爱」→ 可爱; 「发张日常的图」→ 日常。
 
         两步策略:
@@ -91,7 +92,7 @@ class NekoPhotoGame(GameAdapter):
         2. 回退: 若指令是「喵图 X / 发张X的图」这类明确带分类意图的形式, 且 X
            不是已有分类, 把 X 原样返回(由上层提示该分类无图)。
         """
-        cats = list(cats) if cats is not None else self.photo_categories()
+        cats = list(cats) if cats is not None else self.photo_categories(user_id)
         # 1. 直接匹配已有分类(原始指令, 不剥词)
         for cat in sorted(cats, key=len, reverse=True):
             if cat and cat in cmd:
@@ -130,7 +131,8 @@ class NekoPhotoGame(GameAdapter):
                     "message": f"今天已经发过 {max_photos} 张图啦, 明天再来看喵~"}
 
         # 走插件主体 PhotoBridge 取图(不推送), 返回 images 数据交 brain 统一推
-        result = await self.pick_photo_for_delivery(category=category)
+        result = await self.pick_photo_for_delivery(
+            category=category, user_id=user_id)
         if not result.get("ok"):
             if category:
                 return {"facts": [build_fact("error")], "outcome": "error",
@@ -285,12 +287,12 @@ class NekoPhotoGame(GameAdapter):
 
     async def _categories(self, user_id: str) -> Dict[str, Any]:
         """列出图库分类(走桥接)。"""
-        cats = await self.photo_categories_async()
+        cats = await self.photo_categories_async(user_id)
         if not cats:
             return {"facts": [build_fact("categories", count=0)], "outcome": "categories",
                     "message": "图库还是空的喵, 去面板上传几张图吧~"}
         lines = ["📂 猫娘图库分类:"]
-        imgs = await self._photo.scan_images_async() if self._photo else []
+        imgs = await self._photo.scan_images_async(user_id) if self._photo else []
         for cat in cats:
             n = len([i for i in imgs if i.get("category") == cat])
             lines.append(f"  · {cat} ({n} 张)")
@@ -309,12 +311,12 @@ class NekoPhotoGame(GameAdapter):
         if not self._cfg("auto_send_enabled", True):
             return
         now = time.time()
-        if now < self._next_auto_ts:
+        if now < float(self._next_auto_ts.get(user_id, 0.0) or 0.0):
             return
         # 随机间隔后下一次(可配置): 默认 90~240 秒, 避免刷屏
         lo = int(self._cfg("auto_min_interval", 90) or 90)
         hi = int(self._cfg("auto_max_interval", 240) or 240)
-        self._next_auto_ts = now + random.randint(max(30, lo), max(lo, hi))
+        self._next_auto_ts[user_id] = now + random.randint(max(30, lo), max(lo, hi))
 
         # 与 LLM 主动发图共用同一套闸门(最小间隔/每小时/每日上限)
         gate = await self._check_send_gate(user_id)
@@ -345,8 +347,8 @@ class NekoPhotoGame(GameAdapter):
     async def get_status(self, user_id: str = "default") -> Dict[str, Any]:
         data = await self._load_data(user_id)
         stats = data.get("stats", {})
-        imgs = await self._photo.scan_images_async() if self._photo else []
-        categories = await self.photo_categories_async()
+        imgs = await self._photo.scan_images_async(user_id) if self._photo else []
+        categories = await self.photo_categories_async(user_id)
         return {"collected": len(data.get("collection", {})),
                 "total": stats.get("total", 0),
                 "rare": stats.get("rare", 0),

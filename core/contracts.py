@@ -99,7 +99,8 @@ class GameAdapter(abc.ABC):
                                             caption=caption, auto=auto)
 
     async def pick_photo_for_delivery(self, category: Optional[str] = None,
-                                      caption: str = "") -> Dict[str, Any]:
+                                      caption: str = "",
+                                      user_id: str = "") -> Dict[str, Any]:
         """通过桥接取一张图(不推送), 供 handle_action 返回 images 交 brain 推送。
 
         「游戏适配插件」输出契约: 游戏不直接 push, 只取图数据返回 images,
@@ -107,7 +108,9 @@ class GameAdapter(abc.ABC):
         """
         if not self._photo:
             return {"ok": False, "summary": "发图桥接未就绪喵", "error": "no_bridge"}
-        return await self._photo.pick_for_delivery(category=category, caption=caption)
+        return await self._photo.pick_for_delivery(
+            category=category, caption=caption, user_id=user_id
+        )
 
     async def send_auto_photo(self, user_id: str) -> Dict[str, Any]:
         """后台自动发图(桥接): 只发本地图库, 配文随机。"""
@@ -115,18 +118,18 @@ class GameAdapter(abc.ABC):
             return {"ok": False, "summary": "发图桥接未就绪喵", "error": "no_bridge"}
         return await self._photo.send_auto(user_id)
 
-    def photo_categories(self) -> List[str]:
+    def photo_categories(self, user_id: str = "") -> List[str]:
         """图库分类列表(桥接)。"""
-        return self._photo.get_categories() if self._photo else []
+        return self._photo.get_categories(user_id) if self._photo else []
 
-    async def photo_categories_async(self) -> List[str]:
+    async def photo_categories_async(self, user_id: str = "") -> List[str]:
         """图库分类列表(异步入口，目录遍历走线程池)。"""
         if not self._photo:
             return []
         getter = getattr(self._photo, "get_categories_async", None)
         if callable(getter):
-            return await getter()
-        return self.photo_categories()
+            return await getter(user_id)
+        return self.photo_categories(user_id)
 
     async def upload_photo(self, user_id: str, name: str,
                            data_b64: str = "", data_bytes: bytes = b"",
