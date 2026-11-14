@@ -6,6 +6,22 @@ requires-python = ">=3.11"
 license = "Apache-2.0"
 dependencies = []
 
+[project.optional-dependencies]
+test = [
+    "pytest>=8",
+    "pytest-cov>=5",
+    "ruff>=0.6",
+]
+
+[tool.coverage.run]
+source = ["adapters", "core", "games"]
+relative_files = true
+
+[tool.coverage.report]
+fail_under = 60
+show_missing = true
+skip_covered = true
+
 [tool.neko.build]
 exclude_dirs = [
     ".vscode",

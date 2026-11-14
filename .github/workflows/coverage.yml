@@ -1,0 +1,28 @@
+name: Coverage
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  coverage:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install test tools
+        run: python -m pip install --disable-pip-version-check pytest pytest-cov ruff
+      - name: Lint
+        run: ruff check .
+      - name: Tests with coverage
+        run: >-
+          python -m pytest -q -p no:cacheprovider -c tests/pytest.ini
+          --cov=adapters --cov=core --cov=games
+          --cov-report=term-missing --cov-fail-under=60 tests

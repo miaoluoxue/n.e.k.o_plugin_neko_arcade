@@ -140,6 +140,8 @@ N.E.K.O 插件 · 插件化小游戏聚合器 · 支持聊天/语音自然语言
 
 ## 🧑‍💻 开发者
 
+- 安装测试依赖：`python -m pip install -e ".[test]"`
+- 完整覆盖率回归：`python -m pytest -q -c tests/pytest.ini --cov --cov-report=term-missing tests`
 - 📘 开发文档 / 接入规则 / 运行机制：见本仓库 [docs/](docs/) 目录
 - 📖 帮助系统与渲染桥接契约：[docs/help-config.md](docs/help-config.md)
 - 📜 完整版本历史：见 [docs/CHANGELOG.md](docs/CHANGELOG.md)
