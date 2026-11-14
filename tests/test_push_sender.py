@@ -11,7 +11,9 @@
 """
 import asyncio
 import io
+import os
 import shutil
+import time
 from pathlib import Path
 
 from plugin.plugins.neko_arcade.adapters.push_sender import PushSender
@@ -269,5 +271,45 @@ def test_save_image_small_png_kept_as_is():
         sender = _sender(config_dir=tmp, has_images=False)
         url = await sender.save_image(buf.getvalue(), "image/png")
         assert url and url.endswith(".png"), f"小图应保持 png: {url}"
+
+    asyncio.run(run())
+
+
+def test_save_image_prunes_expired_cards(monkeypatch):
+    import plugin.plugins.neko_arcade.adapters.push_sender as sender_mod
+
+    monkeypatch.setattr(sender_mod, "CARD_RETENTION_SECONDS", 1)
+
+    async def run():
+        tmp = _tmp_dir()
+        cards = Path(tmp) / "static" / "cards"
+        cards.mkdir(parents=True)
+        old = cards / "old.png"
+        old.write_bytes(b"old")
+        stamp = time.time() - 10
+        os.utime(old, (stamp, stamp))
+        sender = _sender(config_dir=tmp, has_images=False)
+        url = await sender.save_image(b"PNGDATA", "image/png")
+        assert url
+        assert not old.exists(), "过期卡片应被清理"
+
+    asyncio.run(run())
+
+
+def test_save_image_enforces_file_count(monkeypatch):
+    import plugin.plugins.neko_arcade.adapters.push_sender as sender_mod
+
+    monkeypatch.setattr(sender_mod, "CARD_RETENTION_SECONDS", 0)
+    monkeypatch.setattr(sender_mod, "CARD_CACHE_MAX_FILES", 2)
+
+    async def run():
+        tmp = _tmp_dir()
+        cards = Path(tmp) / "static" / "cards"
+        cards.mkdir(parents=True)
+        (cards / "a.png").write_bytes(b"a")
+        (cards / "b.png").write_bytes(b"b")
+        sender = _sender(config_dir=tmp, has_images=False)
+        assert await sender.save_image(b"PNGDATA", "image/png")
+        assert len(list(cards.iterdir())) <= 2
 
     asyncio.run(run())

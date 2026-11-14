@@ -12,6 +12,8 @@ from .session import SINGLE_SESSION, SessionKey, SessionLike, coerce_session_key
 
 STORE_KEY = "game_memories"
 log = logging.getLogger("neko_arcade.memory")
+MAX_RECENT_SESSIONS = 1000
+RECENT_SESSION_TTL = 7 * 24 * 3600
 
 
 class GameMemory:
@@ -21,6 +23,7 @@ class GameMemory:
         self.plugin = plugin
         self._session_by_key: Dict[SessionKey, List[Dict[str, Any]]] = {}
         self._session = self._session_by_key.setdefault(SINGLE_SESSION, [])
+        self._session_touched: Dict[SessionKey, float] = {SINGLE_SESSION: time.time()}
         self._milestones: Dict[str, Any] = {}
         self._loaded = False
         self._load_failed = False
@@ -90,7 +93,29 @@ class GameMemory:
         return profile
 
     def _recent_for(self, key: SessionKey) -> List[Dict[str, Any]]:
-        return self._session_by_key.setdefault(key, [])
+        now = time.time()
+        expired = [
+            item for item, stamp in self._session_touched.items()
+            if item != SINGLE_SESSION and now - stamp > RECENT_SESSION_TTL
+        ]
+        for item in expired:
+            self._session_by_key.pop(item, None)
+            self._session_touched.pop(item, None)
+        self._session_touched[key] = now
+        result = self._session_by_key.setdefault(key, [])
+        if len(self._session_by_key) > MAX_RECENT_SESSIONS:
+            removable = sorted(
+                (
+                    (stamp, item)
+                    for item, stamp in self._session_touched.items()
+                    if item != SINGLE_SESSION and item != key
+                ),
+                key=lambda pair: pair[0],
+            )
+            for _, item in removable[:len(self._session_by_key) - MAX_RECENT_SESSIONS]:
+                self._session_by_key.pop(item, None)
+                self._session_touched.pop(item, None)
+        return result
 
     def record(self, game_id: str, outcome: str, facts: List[Dict], text: str,
                *, session_key: SessionLike = SINGLE_SESSION) -> None:

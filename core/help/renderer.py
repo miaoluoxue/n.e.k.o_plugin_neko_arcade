@@ -14,10 +14,12 @@
 """
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import html as _html
 import logging
 import os
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 
 from .contract import Group, HelpDoc, Page
@@ -334,8 +336,7 @@ class HelpRenderer:
         cache_path = os.path.join(self.cache_dir, f"help-{key}.png") if self.cache_dir else ""
         if use_cache and cache_path and os.path.isfile(cache_path):
             try:
-                with open(cache_path, "rb") as fh:
-                    data = fh.read()
+                data = await asyncio.to_thread(Path(cache_path).read_bytes)
                 if data:
                     return data
             except OSError:
@@ -348,8 +349,7 @@ class HelpRenderer:
             return None
         if cache_path:
             try:
-                with open(cache_path, "wb") as fh:
-                    fh.write(png)
+                await asyncio.to_thread(Path(cache_path).write_bytes, png)
             except OSError:
                 pass
         return png

@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import copy
 
-from plugin.plugins.neko_arcade.core.memory import GameMemory
+from plugin.plugins.neko_arcade.core.memory import MAX_RECENT_SESSIONS, GameMemory
 from plugin.plugins.neko_arcade.core.session import SessionKey
 
 
@@ -141,3 +141,13 @@ def test_failed_session_save_does_not_restore_speculative_state():
 
     fresh = _memory(store)
     assert asyncio.run(fresh.load_sessions()) == {}
+
+
+def test_recent_session_keys_are_bounded():
+    memory = _memory(_Store({"profiles": {}}))
+    for index in range(MAX_RECENT_SESSIONS + 20):
+        memory.record(
+            "fishing", "done", [], "x",
+            session_key=SessionKey("qq", f"user-{index}"),
+        )
+    assert len(memory._session_by_key) <= MAX_RECENT_SESSIONS

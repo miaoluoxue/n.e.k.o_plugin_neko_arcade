@@ -13,6 +13,7 @@ import time
 from typing import Any, Dict, List, Optional, Tuple
 
 from ...core.contracts import GameAdapter, build_fact
+from ...core.user_cache import UserValueCache
 
 game_class = "RussianGame"
 
@@ -59,7 +60,7 @@ class RussianGame(GameAdapter):
 
     def __init__(self, plugin: Any) -> None:
         super().__init__(plugin)
-        self._cache: Dict[str, Dict[str, Any]] = {}
+        self._cache: UserValueCache[str, Dict[str, Any]] = UserValueCache()
 
     # ── 配置/存档 ─────────────────────────
 

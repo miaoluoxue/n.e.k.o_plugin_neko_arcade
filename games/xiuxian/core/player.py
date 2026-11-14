@@ -10,6 +10,7 @@ import time
 from dataclasses import asdict, dataclass, field
 from typing import Any, Dict, List, Optional
 
+from ....core.user_cache import UserValueCache
 from .realm import RealmSystem
 
 DEFAULT_BASE_HP = 100
@@ -144,7 +145,7 @@ class PlayerStore:
 
     def __init__(self, game: Any) -> None:
         self.game = game
-        self._cache: Dict[str, PlayerSave] = {}
+        self._cache: UserValueCache[str, PlayerSave] = UserValueCache()
 
     async def load(self, user_id: str) -> PlayerSave:
         if user_id in self._cache:

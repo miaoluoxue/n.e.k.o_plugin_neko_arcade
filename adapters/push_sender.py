@@ -20,13 +20,18 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import os
+import threading
 import time
 from pathlib import Path
 from typing import Any, List, Optional
 
 DEFAULT_PLUGIN_SERVER_PORT = "48916"
+CARD_RETENTION_SECONDS = 7 * 24 * 3600
+CARD_CACHE_MAX_FILES = 500
+CARD_CACHE_MAX_BYTES = 128 * 1024 * 1024
 
 
 class PushSender:
@@ -35,6 +40,7 @@ class PushSender:
     def __init__(self, plugin: Any) -> None:
         self.plugin = plugin
         self.source = "neko_arcade"
+        self._card_lock = threading.Lock()
 
     # ── 图片落盘 → markdown URL ─────────────────────────
 
@@ -65,25 +71,68 @@ class PushSender:
         if not static:
             return None
         try:
-            # 缩放(仅静态图; 失败则原样落盘)。PNG 缩放后转 JPEG, 扩展名跟着变。
-            scaled = self._resize_for_markdown(image_bytes)
-            data = scaled if scaled is not None else image_bytes
-            cards = static / "cards"
-            cards.mkdir(parents=True, exist_ok=True)
-            if scaled is not None:
-                ext = ".jpg"  # 缩放输出恒为 JPEG
-            elif "jpeg" in mime or "jpg" in mime:
-                ext = ".jpg"
-            elif "gif" in mime:
-                ext = ".gif"
-            else:
-                ext = ".png"
-            digest = hashlib.md5(data[:4096]).hexdigest()[:8]
-            name = f"{int(time.time() * 1000)}_{digest}{ext}"
-            (cards / name).write_bytes(data)
+            name = await asyncio.to_thread(
+                self._write_card, static / "cards", image_bytes, mime
+            )
             return f"{self._base_url()}cards/{name}"
         except Exception:
             return None
+
+    def _prepare_card(self, image_bytes: bytes, mime: str) -> tuple[str, bytes]:
+        scaled = self._resize_for_markdown(image_bytes)
+        data = scaled if scaled is not None else image_bytes
+        if scaled is not None:
+            ext = ".jpg"
+        elif "jpeg" in mime or "jpg" in mime:
+            ext = ".jpg"
+        elif "gif" in mime:
+            ext = ".gif"
+        else:
+            ext = ".png"
+        digest = hashlib.md5(data[:4096]).hexdigest()[:8]
+        return f"{int(time.time() * 1000)}_{digest}{ext}", data
+
+    def _write_card(self, cards: Path, image_bytes: bytes, mime: str) -> str:
+        name, data = self._prepare_card(image_bytes, mime)
+        with self._card_lock:
+            cards.mkdir(parents=True, exist_ok=True)
+            self._prune_cards(cards, len(data))
+            target = cards / name
+            tmp = target.with_name(target.name + ".tmp")
+            tmp.write_bytes(data)
+            os.replace(tmp, target)
+        return name
+
+    @staticmethod
+    def _prune_cards(cards: Path, incoming_size: int) -> None:
+        now = time.time()
+        files: List[tuple[float, int, Path]] = []
+        try:
+            entries = list(cards.iterdir())
+        except OSError:
+            return
+        for path in entries:
+            try:
+                if not path.is_file():
+                    continue
+                stat = path.stat()
+            except OSError:
+                continue
+            files.append((stat.st_mtime, stat.st_size, path))
+        total = sum(size for _, size, _ in files)
+        count = len(files)
+        for stamp, size, path in sorted(files):
+            too_old = CARD_RETENTION_SECONDS > 0 and now - stamp > CARD_RETENTION_SECONDS
+            too_many = CARD_CACHE_MAX_FILES > 0 and count + 1 > CARD_CACHE_MAX_FILES
+            too_large = CARD_CACHE_MAX_BYTES > 0 and total + incoming_size > CARD_CACHE_MAX_BYTES
+            if not (too_old or too_many or too_large):
+                break
+            try:
+                path.unlink()
+                count -= 1
+                total -= size
+            except OSError:
+                continue
 
     @staticmethod
     def _resize_for_markdown(image_bytes: bytes, max_side: int = 720) -> Optional[bytes]:

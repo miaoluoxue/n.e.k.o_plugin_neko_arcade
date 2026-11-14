@@ -16,6 +16,8 @@ import time
 from dataclasses import asdict, dataclass, field
 from typing import Any, Dict, List, Optional
 
+from ....core.user_cache import UserValueCache
+
 # 懒结算速率：每级宗门每 10 分钟产出灵石数
 SPIRIT_STONE_PER_10MIN = 50
 # 药田生长周期(秒)
@@ -70,7 +72,7 @@ class GuildStore:
 
     def __init__(self, game: Any) -> None:
         self.game = game
-        self._cache: Dict[str, GuildSave] = {}
+        self._cache: UserValueCache[str, GuildSave] = UserValueCache()
 
     async def load(self, guild_id: str) -> Optional[GuildSave]:
         if guild_id in self._cache:

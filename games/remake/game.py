@@ -12,6 +12,7 @@ import re
 from typing import Any, Dict, List, Optional, Tuple
 
 from ...core.contracts import GameAdapter, build_fact
+from ...core.user_cache import UserValueCache
 from .life import Life
 from .talent import Talent
 
@@ -38,8 +39,8 @@ class RemakeGame(GameAdapter):
 
     def __init__(self, plugin: Any) -> None:
         super().__init__(plugin)
-        self._cache: Dict[str, Dict[str, Any]] = {}
-        self._lives: Dict[str, Life] = {}  # 每用户进行中的 Life
+        self._cache: UserValueCache[str, Dict[str, Any]] = UserValueCache()
+        self._lives: UserValueCache[str, Life] = UserValueCache()
 
     # ── 配置/存档 ─────────────────────────
 

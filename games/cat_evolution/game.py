@@ -17,6 +17,7 @@ import random
 from typing import Any, Dict, List, Optional, Tuple
 
 from ...core.contracts import GameAdapter, build_fact
+from ...core.user_cache import UserValueCache
 from .battle import GameBoard, Logger, MsgManager, Pokemon
 from .battle.tools.tools import get_container
 
@@ -58,7 +59,7 @@ class CatEvolutionGame(GameAdapter):
 
     def __init__(self, plugin: Any) -> None:
         super().__init__(plugin)
-        self._cache: Dict[str, Dict[str, Any]] = {}
+        self._cache: UserValueCache[str, Dict[str, Any]] = UserValueCache()
         self._battle = None  # 惰性初始化战斗系统
 
     # ── 配置加载 ─────────────────────────

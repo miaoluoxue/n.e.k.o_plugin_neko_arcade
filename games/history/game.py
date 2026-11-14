@@ -23,10 +23,12 @@ from datetime import date
 from typing import Any, Dict, List, Optional, Tuple
 
 from ...core.contracts import GameAdapter, build_fact
+from ...core.user_cache import UserValueCache
 
 game_class = "HistoryGame"
 
 API_TEMPLATE = "https://baike.baidu.com/cms/home/eventsOnHistory/{month}.json"
+MAX_RESPONSE_BYTES = 4 * 1024 * 1024
 _UA = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
     "Accept": "application/json, text/plain, */*",
@@ -37,7 +39,9 @@ _UA = {
 TYPE_LABELS = {"birth": "出生", "death": "逝世", "event": "大事", "festival": "节日"}
 
 # 进程级缓存: {month_key: {"fetched": ts, "data": {day: [...]}}}
-_CACHE: Dict[str, Dict[str, Any]] = {}
+_CACHE: UserValueCache[str, Dict[str, Any]] = UserValueCache(
+    max_entries=24, ttl=12 * 3600
+)
 
 
 def _clean_html_to_json(text: str) -> dict:
@@ -76,7 +80,10 @@ def _fetch_month(month: str, retry: int = 3) -> Optional[dict]:
         try:
             req = urllib.request.Request(url, headers=_UA)
             with urllib.request.urlopen(req, timeout=15) as r:
-                raw = r.read().decode("utf-8")
+                body = r.read(MAX_RESPONSE_BYTES + 1)
+            if len(body) > MAX_RESPONSE_BYTES:
+                raise ValueError("history response too large")
+            raw = body.decode("utf-8")
             return _clean_html_to_json(raw)
         except Exception:
             if i < retry - 1:
@@ -115,7 +122,7 @@ class HistoryGame(GameAdapter):
 
     def __init__(self, plugin: Any) -> None:
         super().__init__(plugin)
-        self._cache: Dict[str, Dict[str, Any]] = {}
+        self._cache: UserValueCache[str, Dict[str, Any]] = UserValueCache()
 
     # ── 存档 ─────────────────────────
 
